@@ -8,6 +8,22 @@
 #   scripts/experiments/act/a_sanity.sh --steps=20000 --policy-path="${b0}"
 # Print that same training command without launching it:
 #   scripts/experiments/act/a_sanity.sh --steps=20000 --policy-path="${b0}" --print-command
+#
+# Accepted arguments:
+#   --steps=N           Number of optimizer updates (default: 20000).
+#                       N must be canonical decimal in [0, 2147483647].
+#                       N=0 creates the B0 checkpoint without training.
+#   --policy-path=PATH  Use a complete compatible ACT checkpoint for steps > 0.
+#                       Relative paths resolve from the caller's working directory.
+#   --print-command     Validate and print the command without creating output.
+#   -h, --help          Print usage and exit.
+# Operational options are order-independent and may each appear only once.
+# Unknown options are rejected.
+#
+# Fixed A-Sanity dataset selection (not CLI arguments):
+#   repo_id=lerobot/libero
+#   task_index=29
+#   episodes=[823,826,834,840,841]  (5 episodes, 859 frames total)
 
 set -euo pipefail
 
