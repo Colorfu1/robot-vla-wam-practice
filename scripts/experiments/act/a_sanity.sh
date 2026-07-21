@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# Trigger examples (run from the repository root):
+# Create the zero-update B0 checkpoint:
+#   scripts/experiments/act/a_sanity.sh --steps=0
+# Replace <timestamp> with the directory printed by the B0 command:
+#   b0="outputs/act/a_sanity/<timestamp>/checkpoints/000000/pretrained_model"
+# Train for 20,000 updates from that exact B0 checkpoint:
+#   scripts/experiments/act/a_sanity.sh --steps=20000 --policy-path="${b0}"
+# Print that same training command without launching it:
+#   scripts/experiments/act/a_sanity.sh --steps=20000 --policy-path="${b0}" --print-command
+
 set -euo pipefail
 
 usage() {
