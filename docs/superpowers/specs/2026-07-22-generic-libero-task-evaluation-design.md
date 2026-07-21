@@ -162,8 +162,10 @@ episode namespace before running so this distinction is visible.
 
 `--rebuild-dataset-cache` does not mutate the existing combined 40-task dataset and does not
 delete the raw HDF5. If the combined dataset already satisfies the request, the flag is
-reported as not applicable and that source is still reused unless `--dataset-root` selects a
-different dataset.
+reported as not applicable and that source is still reused. Supplying `--dataset-root`
+together with `--rebuild-dataset-cache` is a parser/configuration error: an explicit root is
+user-managed input, while the rebuild flag is only allowed to replace the evaluator's
+task-local generated cache.
 
 ### Closed Loop
 
@@ -410,6 +412,13 @@ Download and conversion state are separate:
 then swaps it into place without touching the raw HDF5. If replacement fails, the previous
 valid cache remains available and is reported.
 
+Cache validation requires the supported `source_manifest.json` schema version and a converter
+version declared compatible by local code. The initial cache schema and converter compatibility
+version are both `1`. A missing or incompatible manifest is never silently reused. Without
+`--rebuild-dataset-cache`, fail with the cached and required versions plus an exact retry
+command containing that flag. With the flag, build and validate a replacement using the normal
+preserve-old-until-swap procedure.
+
 ## Offline Evaluation Flow
 
 `OfflineEvaluationConfig` gains required `suite` and `task_id`, optional `episodes`, optional
@@ -532,6 +541,7 @@ versioned when columns change.
 | Structural state/action/camera mismatch | Fail before inference |
 | Checkpoint task mismatch/unknown | Warn, record, continue |
 | Explicit dataset root lacks task | Fail; never silently use another root |
+| Explicit dataset root plus rebuild flag | Fail; user roots are never rebuilt |
 | Combined dataset mapping ambiguous | Print reason and use task-local cache |
 | Upstream file missing | Fail with repository/revision/path and retry guidance |
 | Insufficient disk space | Fail before download with required/free sizes |
@@ -541,6 +551,7 @@ versioned when columns change.
 | All demonstrations fail replay | Fail; retain raw HDF5 and replay report |
 | Interrupted conversion | Leave only task-owned incomplete temp state; rebuild next run |
 | Existing valid cache | Print cache hit and reuse |
+| Generated cache manifest version incompatible | Fail with explicit rebuild command |
 | Concurrent preparation | Print wait state, lock, then recheck cache |
 
 ## Tests
@@ -560,6 +571,8 @@ Default tests must not download large remote artifacts.
 - test 8D state construction and 180-degree image rotation;
 - test source-manifest and replay-report schemas;
 - test cache hit/miss/rebuild, stale temp cleanup, lock recheck, and previous-cache preservation;
+- reject explicit dataset roots combined with the rebuild flag;
+- reject incompatible cache schema/converter versions and print an exact rebuild command;
 - test download metadata, disk preflight, and failure messages with a fake Hub client;
 - test checkpoint `match`, `mismatch`, and `unknown` reporting;
 - test suite/task output paths and required stage-prefixed user messages.
