@@ -1,0 +1,89 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.venv/
+venv/
+build/
+dist/
+*.whl
+
+# Test / coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local environment
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+.netrc
+.pypirc
+.npmrc
+credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# LeRobot / ML artifacts
+data/*
+!data/.gitkeep
+datasets/raw/*
+!datasets/raw/.gitkeep
+datasets/lerobot/*
+!datasets/lerobot/.gitkeep
+outputs/*
+!outputs/.gitkeep
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.onnx
+*.rrd
+*.parquet
+*.arrow
+*.feather
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.mp4
+*.avi
+*.mkv
+*.bag
+*.mcap
+*.db3
+*.sqlite
+*.sqlite3
+*.log
+*.incomplete
+*.part
+wandb/
+runs/
+checkpoints/
+
+# Local archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local publication audit
+docs/superpowers/specs/2026-07-21-public-release-sanitization-design.md

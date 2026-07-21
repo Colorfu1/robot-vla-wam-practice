@@ -1,0 +1,9 @@
+lerobot[libero]
+torch
+mani_skill
+ipykernel
+jupyterlab
+matplotlib
+python-dotenv
+python-xlib
+rich
