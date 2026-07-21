@@ -73,13 +73,37 @@ Add `--save outputs/aloha_episode_0.rrd` to write a recording without opening a 
 The 3D skeleton uses nominal ViperX 300S geometry; it is not calibrated or registered to
 the RGB cameras.
 
+## Run the ACT A-Sanity Experiment
+
+Create the training-before baseline without performing an optimizer update:
+
+```bash
+scripts/experiments/act/a_sanity.sh --steps=0
+```
+
+The resulting `checkpoints/000000/pretrained_model` uses the ImageNet-pretrained
+ResNet18 backbone and the normal seeded random initialization for the remaining ACT
+layers. To make a strict before/after comparison, evaluate that checkpoint first and
+then explicitly use the same checkpoint to initialize training:
+
+```bash
+scripts/experiments/act/a_sanity.sh \
+  --steps=20000 \
+  --policy-path=outputs/act/a_sanity/<baseline_timestamp>/checkpoints/000000/pretrained_model
+```
+
+Each invocation is independent and writes a new timestamped directory. Omitting
+`--policy-path` starts a separate fresh model, while omitting `--steps` preserves the
+20,000-step default. Use `--print-command` to inspect a resolved command without
+creating output.
+
 ## Evaluate an ACT A-Sanity Checkpoint
 
 Both evaluators require the complete LeRobot `pretrained_model` directory, not a standalone
 `.pth` or `model.safetensors` file. For example:
 
 ```bash
-policy_path="outputs/act/a_sanity/<train_timestamp>/checkpoints/020000/pretrained_model"
+policy_path="outputs/act/a_sanity/<run_timestamp>/checkpoints/<step>/pretrained_model"
 ```
 
 Run teacher-forced prediction on the five A-Sanity demonstration episodes:
