@@ -42,6 +42,12 @@ personal note-vault locations, credentials, tokens, private endpoints, raw termi
 or generated artifact contents. Local output paths are described with generic placeholders
 such as `outputs/act/a_sanity/<run>/...` rather than machine-specific locations.
 
+`A-Sanity` is this repository's public experiment label and is safe to use. The report may
+publish selected aggregate values derived from `metrics.json`, including dataset/frame
+counts, first-action MAE, per-dimension MAE, TV, jerk, and latency. “Generated artifact
+contents” excludes these aggregate statistics; it means raw observations, actions,
+predictions, media, weights, logs, cache contents, and full machine-specific manifests.
+
 The report distinguishes completed measurements from pending work. It must not claim a
 closed-loop success result unless a formal closed-loop evaluation actually completed.
 
@@ -86,6 +92,14 @@ Formatting and missing-data behavior remain exactly as specified in the predeces
 Non-offline evaluation keeps the current generic bullet presentation. The existing Rerun
 entity `summary/metrics` and Metrics tab stay unchanged.
 
+Formatting accepts only Python or NumPy real numeric values and explicitly rejects booleans,
+numeric strings, `NaN`, and positive or negative infinity. Count rows additionally require a
+non-negative integral value; a finite fractional count renders `N/A`. Float and latency rows
+accept any finite real value and use their specified decimal format. Per-dimension MAE must
+be a non-string sequence of exactly seven finite real, non-boolean values. If its container,
+length, or any element is invalid, the complete per-dimension table is replaced with
+`Per-dimension MAE unavailable`.
+
 ## Verification
 
 Automated verification covers:
@@ -104,7 +118,18 @@ Publication-safety verification covers:
 - no ignored/generated artifacts staged;
 - review of the exact diff limited to the intended files.
 
-After tests pass, rebuild the existing A-Sanity offline recordings for the 100-step and 20k
-checkpoints with the verified `lerobot_180` visualization convention. Verify each RRD and
-confirm the compact Metrics tab is present. Generated outputs remain ignored and are never
-committed.
+After tests pass, discover the existing local 100-step and 20k A-Sanity checkpoints under
+`outputs/act/a_sanity/<run>/checkpoints/{000100,020000}/pretrained_model`. A candidate is
+accepted only when its checkpoint assessment identifies the selected public LIBERO task and
+the same five demonstration episodes. Require exactly one candidate for each step; if none
+or multiple candidates match, stop rather than guess. Reuse the candidate run's existing
+`offline_5` output directory and rebuild with the verified `lerobot_180` visualization
+convention.
+
+Each rebuilt result must have evaluator status `complete`, no `.incomplete` marker, 859
+frames over the five expected episodes, and the resolved convention recorded as
+`lerobot_180`. `rerun rrd verify` must succeed; RRD inspection must contain the
+`summary/metrics` `TextDocument`, both recorded and calibrated agentview image entities, and
+calibration components only on the calibrated entity. Unit tests lock down that the
+blueprint's Metrics tab points to `summary/metrics` and that its Markdown contains the two
+compact tables. Generated outputs remain ignored and are never committed.
