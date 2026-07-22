@@ -1,5 +1,11 @@
 # Offline Agentview Calibration Design
 
+> Orientation correction: the claim below that the stored image follows the standard
+> physical camera projection was disproved with asymmetric episode 823 poses. The camera
+> calibration remains valid, but the stored LeRobot image is horizontally reflected after
+> its 180-degree convention transform. The corrected entity and verification contract are
+> specified in `2026-07-23-offline-agentview-reflection-correction-design.md`.
+
 ## Status
 
 Approved in conversation on 2026-07-22. This design corrects the misleading visual
