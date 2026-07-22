@@ -44,7 +44,7 @@ Create `reports/act_a_sanity.md` with these sections:
 1. experiment purpose and non-goals;
 2. fixed task, dataset, observation, action, policy, and training contract;
 3. formal pass/fail gates;
-4. prerequisites and preflight checks;
+4. minimal startup preparation;
 5. B0 checkpoint creation;
 6. B0 offline and closed-loop evaluation;
 7. 20,000-step training from the same B0;
@@ -153,18 +153,23 @@ These five IDs are combined-dataset-global IDs, not task-cache-local IDs. A form
 always passes the fixed `--dataset-root`; it must fail instead of falling back to downloaded
 or generated task-local data.
 
-## Dataset and B0 Provenance Preflight
+## Minimal Startup Preparation and B0 Provenance
 
-Before B0 evaluation or training, the guide requires a read-only preflight that verifies
-all of the following:
+At the user's request, the canonical startup section contains only what later commands
+actually depend on:
 
-- installed `libero_object` task 8 resolves to the expected language;
-- dataset task index 29 maps to that exact normalized language;
-- episodes 823, 826, 834, 840, and 841 all belong only to task index 29;
-- their frame counts are 162, 161, 159, 153, and 224, totaling 859;
-- the fixed dataset root resolves to the expected local directory;
-- dataset revision metadata, when present, and SHA-256 identities for the relevant
-  metadata/data/video files are written into the dated record.
+- enter the repository root and activate `robot-practice` while preserving
+  `PYTHONNOUSERSITE=1`;
+- define the fixed dataset root and fail early if `meta/info.json` is absent;
+- create one timestamped ignored record/log directory;
+- define the Bash `run_logged` helper that preserves the launcher's exit status across
+  `tee`.
+
+The canonical path does not run `doctor.sh` or `quickstart_info.sh`, capture Git status or
+diffs, recompute dataset task/frame mappings, or hash metadata, Parquet, and video files.
+Those checks add audit detail but are not required to execute A-Sanity. The fixed task,
+dataset root, and episode selection remain explicit in the training and evaluation
+commands, whose loaders reject missing or incompatible data.
 
 After creating B0, the operator validates `initialization_manifest.json`: status is
 `complete`, `initialization_step=0`, `optimizer_updates=0`, the fixed dataset/task fields
@@ -297,10 +302,10 @@ Verification consists of:
 1. validating every shell block syntactically where possible;
 2. running `a_sanity.sh --print-command` for non-mutating training argument validation;
 3. checking both evaluation launchers' `--help` output against the documented flags;
-4. resolving the five episodes from local Parquet metadata and confirming task index 29,
-   the expected language, five episodes, and 859 frames;
+4. confirming the minimal startup block checks the fixed dataset root without hashing or
+   scanning the dataset;
 5. checking that paired evaluation commands differ only in checkpoint/output identities;
-6. checking dataset identity/digest and B0-manifest validation snippets on local inputs;
+6. checking the B0-manifest validation snippet on local inputs;
 7. checking that the detailed template and `experiment_log.md` entry contain every
    required experiment field;
 8. checking Markdown links and repository-relative paths;
@@ -324,7 +329,7 @@ all required metrics satisfy this guide.
 - It requires and explains persistent training-log capture.
 - It preserves the launcher exit status across `tee` and treats missing gate data as
   invalid, never passed.
-- It validates and records fixed dataset and exact B0 lineage identities.
+- It pins the fixed dataset root and episode selection and validates exact B0 lineage.
 - It provides exact-key comparison tables, a dated detailed record template, and the
   required corresponding `reports/experiment_log.md` entry.
 - Its caveats prevent offline error from being presented as success rate or standard
