@@ -120,11 +120,13 @@ Publication-safety verification covers:
 
 After tests pass, discover the existing local 100-step and 20k A-Sanity checkpoints under
 `outputs/act/a_sanity/<run>/checkpoints/{000100,020000}/pretrained_model`. A candidate is
-accepted only when its checkpoint assessment identifies the selected public LIBERO task and
-the same five demonstration episodes. Require exactly one candidate for each step; if none
-or multiple candidates match, stop rather than guess. Reuse the candidate run's existing
-`offline_5` output directory and rebuild with the verified `lerobot_180` visualization
-convention.
+accepted only when its checkpoint assessment identifies `libero_object` task ID 8,
+`pick_up_the_chocolate_pudding_and_place_it_in_the_basket`, and the combined-dataset episode
+set `[823, 826, 834, 840, 841]`. These identifiers are the public A-Sanity experiment
+contract recorded in `reports/act_a_sanity.md`, which is the authoritative reference for
+discovery. Require exactly one candidate for each step; if none or multiple candidates
+match, stop rather than guess. Reuse the candidate run's existing `offline_5` output
+directory and rebuild with the verified `lerobot_180` visualization convention.
 
 Each rebuilt result must have evaluator status `complete`, no `.incomplete` marker, 859
 frames over the five expected episodes, and the resolved convention recorded as
