@@ -153,7 +153,7 @@ These five IDs are combined-dataset-global IDs, not task-cache-local IDs. A form
 always passes the fixed `--dataset-root`; it must fail instead of falling back to downloaded
 or generated task-local data.
 
-## Minimal Startup Preparation and B0 Provenance
+## Minimal Startup Preparation
 
 At the user's request, the canonical startup section contains only what later commands
 actually depend on:
@@ -170,6 +170,10 @@ diffs, recompute dataset task/frame mappings, or hash metadata, Parquet, and vid
 Those checks add audit detail but are not required to execute A-Sanity. The fixed task,
 dataset root, and episode selection remain explicit in the training and evaluation
 commands, whose loaders reject missing or incompatible data.
+
+None of the excluded checks is moved to an appendix or another preparatory subsection.
+
+## B0 and Paired-Training Provenance
 
 After creating B0, the operator validates `initialization_manifest.json`: status is
 `complete`, `initialization_step=0`, `optimizer_updates=0`, the fixed dataset/task fields
@@ -213,8 +217,9 @@ and pass:
    the same `seed=1000`, 20 episodes, and `init_state_id=0..19` sequence.
 
 If all inputs and metrics are valid but one or more numeric gates fail, the result is
-`FAIL`. Missing metrics, missing lineage or data identities, smoke evaluation, incomplete
-artifacts, checkpoint-task `mismatch`/`unknown`, or any configuration mismatch produces
+`FAIL`. Missing metrics, missing B0 lineage, a mismatched fixed dataset-root/task/episode
+configuration in experiment artifacts, smoke evaluation, incomplete artifacts,
+checkpoint-task `mismatch`/`unknown`, or any other configuration mismatch produces
 `INVALID/INCOMPLETE`; it can never be reported as `PASS`.
 
 The guide also requires visual inspection of the saved Rerun/MP4 outputs for obvious
@@ -302,8 +307,11 @@ Verification consists of:
 1. validating every shell block syntactically where possible;
 2. running `a_sanity.sh --print-command` for non-mutating training argument validation;
 3. checking both evaluation launchers' `--help` output against the documented flags;
-4. confirming the minimal startup block checks the fixed dataset root without hashing or
-   scanning the dataset;
+4. confirming Section 4 contains only repository/environment setup, the fixed dataset-root
+   existence check, the timestamped record/log directory, and the exit-code-preserving
+   Bash helper; it must contain no doctor/quickstart invocation, Git snapshot/diff,
+   dataset scan/mapping verification, or dataset-file hashing anywhere, including an
+   appendix;
 5. checking that paired evaluation commands differ only in checkpoint/output identities;
 6. checking the B0-manifest validation snippet on local inputs;
 7. checking that the detailed template and `experiment_log.md` entry contain every
@@ -329,6 +337,9 @@ all required metrics satisfy this guide.
 - It requires and explains persistent training-log capture.
 - It preserves the launcher exit status across `tee` and treats missing gate data as
   invalid, never passed.
+- Its startup preparation contains only the four approved items and does not move
+  doctor/quickstart, Git snapshot/diff, dataset scan/mapping, or dataset-file hashing into
+  an appendix.
 - It pins the fixed dataset root and episode selection and validates exact B0 lineage.
 - It provides exact-key comparison tables, a dated detailed record template, and the
   required corresponding `reports/experiment_log.md` entry.
