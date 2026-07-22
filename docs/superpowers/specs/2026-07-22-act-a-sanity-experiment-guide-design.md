@@ -69,15 +69,16 @@ Retain only four concise expected outcomes:
 
 Provide one linear, copyable command sequence from the repository root:
 
-1. activate `robot-practice` and define one `experiment_id`, log directory, evaluation
-   root, and fixed dataset root;
-2. run `a_sanity.sh --steps=0` through `tee`, parse its printed output directory, and set
-   `b0_policy`;
+1. activate `robot-practice`, enter Bash with `set -euo pipefail`, and define one
+   `experiment_id`, log directory, evaluation root, and fixed dataset root;
+2. run `a_sanity.sh --steps=0` through `tee`, require a successful pipeline, then parse
+   its printed output directory and set `b0_policy`;
 3. run B0 offline evaluation with the explicit dataset root and all five episode IDs;
 4. run B0 closed-loop evaluation with 20 episodes, seed 1000, no perturbation, and no
    smoke step bound;
-5. run 20,000-step training with `--policy-path="${b0_policy}"` through `tee`, parse the
-   printed output directory, and set `trained_policy`;
+5. run 20,000-step training with `--policy-path="${b0_policy}"` through `tee`, require a
+   successful pipeline, then parse the printed output directory and set
+   `trained_policy`;
 6. repeat the same offline and closed-loop commands for `trained_policy`;
 7. show the four exact `metrics.json` paths, the training-log command for loss lines, and
    the four Rerun/MP4 paths used to inspect results;
@@ -114,12 +115,14 @@ Before completion:
 
 1. every Bash block passes `bash -n`;
 2. the B0 and trained offline commands use identical arguments except checkpoint/output;
-3. both offline commands pin the fixed dataset root and five episodes;
-4. both closed-loop commands use 20 episodes, seed 1000, and `perturbation=none` without
+3. the B0 and trained closed-loop commands use identical arguments except
+   checkpoint/output;
+4. both offline commands pin the fixed dataset root and five episodes;
+5. both closed-loop commands use 20 episodes, seed 1000, and `perturbation=none` without
    `--max-steps`;
-5. the positive-step training command names the parsed B0 checkpoint;
-6. all documented output filenames match the current evaluator implementation;
-7. the guide contains exactly the three required H2 sections and no prohibited content.
+6. the positive-step training command names the parsed B0 checkpoint;
+7. all documented output filenames match the current evaluator implementation;
+8. the guide contains exactly the three required H2 sections and no prohibited content.
 
 ## Acceptance Criteria
 
