@@ -1,4 +1,16 @@
-# 2026-07-16 LeRobot Practice 进展
+# 2026-07-16 LeRobot ACT 调试与 ALOHA 数据可视化
+
+## 重要进展
+
+- 确认了 `lerobot-train` 的 ACT 训练入口和安装包源码位置，并完成可复现的最小训练检查。
+- 配置了 VS Code Python Debug，使训练流程可以从命令入口逐步跟进到 policy、dataset 和
+  optimizer 代码。
+- 检查了 ALOHA mobile cabinet 数据的图像、state、action 和视频组织方式，并确认本地数据
+  完整性。
+- 实现了同步的 Rerun 可视化，可逐帧查看三路相机、具名关节信号、双臂标称 3D 骨架和
+  末端轨迹。
+- 当天仅完成工具链和 smoke/debug 验证，没有可报告的正式 train loss、rollout success
+  rate 或 checkpoint 结论。
 
 ## 今日结论
 

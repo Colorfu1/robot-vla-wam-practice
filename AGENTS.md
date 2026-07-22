@@ -83,3 +83,45 @@ Every experiment entry must record:
 - closed-loop success rate
 - latency
 - failure cases
+
+## Summary And Publication Safety
+
+These rules are mandatory whenever Codex writes a progress summary or prepares a commit,
+upload, or push from this repository:
+
+- Write shareable summaries with repository-relative paths. Do not include user names,
+  absolute home paths, machine names, session or conversation identifiers, personal vault
+  locations, credentials, tokens, private endpoints, raw terminal dumps, or cache paths.
+- Summaries may include public benchmark identifiers and selected aggregate experiment
+  metrics, but must not reproduce raw observations, actions, predictions, media, weights,
+  logs, cache contents, or machine-specific manifests.
+- Before any commit, upload, or push, inspect `git status`, review the exact staged diff, and
+  scan tracked content for likely secrets and personal markers. Resolve findings before
+  publication.
+- Never stage or publish generated ML artifacts covered by `.gitignore`, including datasets,
+  checkpoints, model weights, predictions, Rerun recordings, videos, logs, caches, or
+  experiment output directories.
+- Stage only files in the explicitly requested scope. Preserve unrelated dirty-worktree
+  changes as user-owned work.
+- Commit and push are separate permissions. Never push, upload, create a pull request, or
+  otherwise change a remote unless the user explicitly requests that external action.
+- Before a requested push, state the target remote and branch, inspect the outgoing commit
+  range, and repeat the sensitive-content check.
+- Progress reports must distinguish completed work, verification, measured results, and
+  remaining work. Do not turn planned or smoke-test behavior into a claimed formal result.
+
+## Progress Log Writing And Vault Sync
+
+- Treat dated progress reports under `reports/` as the canonical source. Name each one
+  `YYYY-MM-DD-<clear Chinese topic>.md`; the H1 must contain the same date and clear Chinese
+  topic.
+- Immediately after the H1, add `## 重要进展` with four to six concise bullets covering the
+  most important completed outcomes and any crucial limitation.
+- Keep completed work, measured results, limitations, and next steps distinct. Never present
+  a planned, smoke, teacher-forced, or unmeasured result as a formal experiment result.
+- Use repository-relative links and obey all rules in `Summary And Publication Safety`.
+- Sync reports to a personal note vault only when the user explicitly requests it and gives
+  the target directory. Do not persist that absolute vault path in tracked files.
+- Before replacing an older vault note, write and verify the new canonical copies first.
+  Compare each destination byte-for-byte with its repository source, then remove only the
+  explicitly mapped superseded note. Leave unrelated vault notes untouched.

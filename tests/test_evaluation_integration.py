@@ -25,8 +25,9 @@ from robot_practice.evaluation.libero_act import (
     extract_terminal_success,
     make_libero_config,
 )
+from robot_practice.evaluation.libero_dataset_cache import COMBINED_DATASET_REPO_ID
+from robot_practice.evaluation.libero_tasks import resolve_libero_task
 from robot_practice.evaluation.offline_act import (
-    DATASET_REPO_ID,
     OfflineEvaluationConfig,
     evaluate_offline,
 )
@@ -42,7 +43,7 @@ DATASET_ROOT = PRACTICE_ROOT / "datasets" / "lerobot" / "lerobot" / "libero"
 
 @pytest.fixture(scope="module")
 def random_act_checkpoint(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    metadata = LeRobotDatasetMetadata(DATASET_REPO_ID, root=DATASET_ROOT)
+    metadata = LeRobotDatasetMetadata(COMBINED_DATASET_REPO_ID, root=DATASET_ROOT)
     features = dataset_to_policy_features(metadata.features)
     config = ACTConfig(
         input_features={key: value for key, value in features.items() if key != ACTION},
@@ -85,11 +86,14 @@ def test_one_frame_offline_prediction_writes_all_schemas(
     result = evaluate_offline(
         OfflineEvaluationConfig(
             policy_path=random_act_checkpoint,
+            suite="libero_object",
+            task_id=8,
             episodes=(823,),
             dataset_root=DATASET_ROOT,
             output_dir=output,
             max_frames=1,
             open_viewer=False,
+            agentview_image_convention="lerobot_180",
         )
     )
     assert result.metrics["status"] == "smoke"
@@ -102,6 +106,44 @@ def test_one_frame_offline_prediction_writes_all_schemas(
     assert table.schema.metadata[b"chunk_shape"] == b"[20,7]"
 
 
+def test_offline_visualization_does_not_change_policy_predictions(
+    tmp_path: Path,
+    random_act_checkpoint: Path,
+) -> None:
+    outputs: list[tuple[dict, object]] = []
+    for name, visualized in (("metrics_only", 0), ("visualized", 1)):
+        output = tmp_path / name
+        result = evaluate_offline(
+            OfflineEvaluationConfig(
+                policy_path=random_act_checkpoint,
+                suite="libero_object",
+                task_id=8,
+                episodes=(823,),
+                dataset_root=DATASET_ROOT,
+                num_visualized_episodes=visualized,
+                output_dir=output,
+                max_frames=1,
+                open_viewer=False,
+                agentview_image_convention="lerobot_180",
+            )
+        )
+        outputs.append((result.metrics, pq.read_table(output / "predictions.parquet")))
+
+    metrics_only, visualized = outputs
+    for column in ("target_action", "predicted_action", "target_chunk", "predicted_chunk"):
+        assert metrics_only[1][column].to_pylist() == visualized[1][column].to_pylist()
+    ignored = {"mean_model_query_latency_ms", "p95_model_query_latency_ms"}
+    assert {
+        key: value
+        for key, value in metrics_only[0]["aggregate"].items()
+        if key not in ignored
+    } == {
+        key: value
+        for key, value in visualized[0]["aggregate"].items()
+        if key not in ignored
+    }
+
+
 def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
     tmp_path: Path,
     random_act_checkpoint: Path,
@@ -110,6 +152,8 @@ def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
     result = evaluate_libero(
         LiberoEvaluationConfig(
             policy_path=random_act_checkpoint,
+            suite="libero_object",
+            task_id=8,
             n_episodes=2,
             num_visualized_episodes=1,
             output_dir=output,
@@ -134,7 +178,7 @@ def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
 def test_real_vector_final_info_and_controlled_init_state_sequence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    env_config = make_libero_config()
+    env_config = make_libero_config(resolve_libero_task("libero_object", 8))
     envs = make_env(env_config, n_envs=1, use_async_envs=False)
     env = envs["libero_object"][8]
     try:

@@ -1,4 +1,4 @@
-"""Closed-loop ACT evaluation on LIBERO Object task 8."""
+"""Closed-loop ACT evaluation on one explicitly selected LIBERO task."""
 
 from __future__ import annotations
 
@@ -31,10 +31,21 @@ from robot_practice.evaluation.common import (
     load_act_checkpoint,
     log_terminal_metrics,
     mark_run_complete,
+    release_output_directory_lock,
     timed_call,
     validate_complete_checkpoint,
     write_json_atomic,
     write_parquet_atomic,
+)
+from robot_practice.evaluation.libero_checkpoint import (
+    assess_checkpoint_task,
+    log_checkpoint_task_assessment,
+)
+from robot_practice.evaluation.libero_tasks import (
+    SUPPORTED_SUITES,
+    LiberoTaskIdentity,
+    log_task_identity,
+    resolve_libero_task,
 )
 from robot_practice.evaluation.metrics import compute_closed_loop_metrics
 from robot_practice.evaluation.rerun_visualization import (
@@ -47,9 +58,6 @@ from robot_practice.evaluation.rerun_visualization import (
 
 LOGGER = logging.getLogger(__name__)
 
-SUITE = "libero_object"
-TASK_ID = 8
-EPISODE_LENGTH = 280
 CONTROL_FREQUENCY_HZ = 10.0
 RAW_CAMERAS = ("agentview_image", "robot0_eye_in_hand_image")
 CAMERA_KEYS = ("observation.images.image", "observation.images.image2")
@@ -58,11 +66,14 @@ CAMERA_KEYS = ("observation.images.image", "observation.images.image2")
 @dataclass(frozen=True)
 class LiberoEvaluationConfig:
     policy_path: Path
+    suite: str
+    task_id: int
     n_episodes: int = 20
     num_visualized_episodes: int = 1
     perturbation: str = "none"
     seed: int = 1000
     output_dir: Path | None = None
+    overwrite: bool = False
     max_steps: int | None = None
     open_viewer: bool = True
 
@@ -74,7 +85,11 @@ class LiberoEvaluationResult:
     viewer_opened: bool
 
 
-def validate_config(config: LiberoEvaluationConfig) -> None:
+def validate_config(
+    config: LiberoEvaluationConfig,
+    task: LiberoTaskIdentity | None = None,
+) -> LiberoTaskIdentity:
+    task = task or resolve_libero_task(config.suite, config.task_id)
     if config.n_episodes <= 0:
         raise ValueError("--n-episodes must be positive")
     if not 0 <= config.num_visualized_episodes <= config.n_episodes:
@@ -85,16 +100,21 @@ def validate_config(config: LiberoEvaluationConfig) -> None:
         raise ValueError("Only --perturbation=none is implemented in the first version")
     if config.seed < 0:
         raise ValueError("--seed must be non-negative")
-    if config.max_steps is not None and not 1 <= config.max_steps <= EPISODE_LENGTH:
-        raise ValueError(f"--max-steps must be between 1 and {EPISODE_LENGTH}")
+    if config.overwrite and config.output_dir is None:
+        raise ValueError("--overwrite requires an explicit --output-dir")
+    if config.max_steps is not None and not 1 <= config.max_steps <= task.episode_length:
+        raise ValueError(
+            f"--max-steps must be between 1 and {task.episode_length} for {task.suite}"
+        )
+    return task
 
 
-def make_libero_config() -> LiberoEnv:
+def make_libero_config(task: LiberoTaskIdentity) -> LiberoEnv:
     return LiberoEnv(
-        task=SUITE,
-        task_ids=[TASK_ID],
+        task=task.suite,
+        task_ids=[task.task_id],
         fps=int(CONTROL_FREQUENCY_HZ),
-        episode_length=EPISODE_LENGTH,
+        episode_length=task.episode_length,
         obs_type="pixels_agent_pos",
         render_mode="rgb_array",
         camera_name=",".join(RAW_CAMERAS),
@@ -132,6 +152,8 @@ def extract_terminal_success(info: dict[str, Any], *, terminal: bool) -> bool:
 def _rollout_schema() -> pa.Schema:
     return pa.schema(
         [
+            pa.field("suite", pa.string(), nullable=False),
+            pa.field("libero_task_id", pa.int32(), nullable=False),
             pa.field("episode_index", pa.int64(), nullable=False),
             pa.field("seed", pa.int64(), nullable=False),
             pa.field("init_state_id", pa.int64(), nullable=False),
@@ -151,7 +173,7 @@ def _rollout_schema() -> pa.Schema:
             pa.field("visualized", pa.bool_(), nullable=False),
         ],
         metadata={
-            b"schema_version": b"1",
+            b"schema_version": b"2",
             b"action_dimension": b"7",
             b"control_frequency_hz": b"10.0",
         },
@@ -180,6 +202,7 @@ def _extract_policy_images(observation: dict[str, Any]) -> dict[str, torch.Tenso
 def _make_eval_info(
     metrics: dict[str, Any],
     *,
+    task: LiberoTaskIdentity,
     formal: bool,
     elapsed_s: float,
 ) -> dict[str, Any]:
@@ -198,9 +221,11 @@ def _make_eval_info(
     ]
     aggregate = metrics["aggregate"]
     return {
-        "schema_version": 1,
-        "suite": SUITE,
-        "task_id": TASK_ID,
+        "schema_version": 2,
+        "suite": task.suite,
+        "task_id": task.task_id,
+        "task_name": task.task_name,
+        "language": task.language,
         "is_formal": formal,
         "per_episode": per_episode,
         "aggregated": {
@@ -235,44 +260,52 @@ def evaluate_libero(
     *,
     max_steps: int | None = None,
 ) -> LiberoEvaluationResult:
-    """Run serial task-8 rollouts and persist simulator-grounded results."""
+    """Run serial single-task rollouts and persist simulator-grounded results."""
 
     if max_steps is not None:
         if config.max_steps is not None and config.max_steps != max_steps:
             raise ValueError("max_steps was supplied both in config and function arguments")
         config = LiberoEvaluationConfig(**{**asdict(config), "max_steps": max_steps})
-    validate_config(config)
+    task = resolve_libero_task(config.suite, config.task_id)
+    log_task_identity(task, LOGGER)
+    validate_config(config, task)
     manifest = validate_complete_checkpoint(config.policy_path)
-    env_config = make_libero_config()
+    LOGGER.info("[Policy] checkpoint: %s", manifest.path)
+    checkpoint_assessment = assess_checkpoint_task(manifest, task)
+    log_checkpoint_task_assessment(checkpoint_assessment, LOGGER)
+    env_config = make_libero_config(task)
     loaded = load_act_checkpoint(manifest, env_config=env_config)
-    envs = make_env(env_config, n_envs=1, use_async_envs=False)
-    env = envs[SUITE][TASK_ID]
-    if env.autoreset_mode is not gym.vector.AutoresetMode.NEXT_STEP:
-        close_envs(envs)
-        raise RuntimeError(
-            f"Expected Gymnasium NEXT_STEP autoreset, got {env.autoreset_mode}"
-        )
-    env_preprocessor, env_postprocessor = make_env_pre_post_processors(
-        env_cfg=env_config,
-        policy_cfg=loaded.config,
-    )
 
-    step_limit = config.max_steps or EPISODE_LENGTH
-    formal = step_limit == EPISODE_LENGTH
+    step_limit = config.max_steps or task.episode_length
+    formal = step_limit == task.episode_length
     status = "complete" if formal else "smoke"
     output_dir = create_output_directory(
         policy_path=manifest.path,
         mode="libero",
         output_dir=config.output_dir,
+        suite=task.suite,
+        task_id=task.task_id,
+        overwrite=config.overwrite,
     )
+    LOGGER.info("[Evaluation] mode: closed-loop LIBERO rollout")
+    LOGGER.info("[Evaluation] episodes: %d", config.n_episodes)
+    LOGGER.info(
+        "[Evaluation] visualized episodes: %d", config.num_visualized_episodes
+    )
+    LOGGER.info("[Evaluation] episode step limit: %d", step_limit)
+    LOGGER.info("[Evaluation] chunk_size: %d", loaded.config.chunk_size)
+    LOGGER.info("[Evaluation] n_action_steps: %d", loaded.config.n_action_steps)
+    LOGGER.info("[Evaluation] perturbation: %s", config.perturbation)
+    LOGGER.info("[Evaluation] status: %s", status)
+    LOGGER.info("[Output] directory: %s", output_dir)
     input_config = {
-        "suite": SUITE,
-        "task_id": TASK_ID,
+        "task": task.to_dict(),
+        "checkpoint_task_assessment": checkpoint_assessment.to_dict(),
         "cameras": list(RAW_CAMERAS),
         "obs_type": "pixels_agent_pos",
         "control_mode": "relative",
         "observation_size": [256, 256],
-        "episode_length": EPISODE_LENGTH,
+        "episode_length": task.episode_length,
         "control_frequency_hz": CONTROL_FREQUENCY_HZ,
         "seeds": [config.seed + episode for episode in range(config.n_episodes)],
         "init_state_ids": list(range(config.n_episodes)),
@@ -284,7 +317,26 @@ def evaluate_libero(
         input_config=input_config,
         arguments=asdict(config),
     )
-    write_json_atomic(output_dir / "run_config.json", run_config)
+    try:
+        write_json_atomic(output_dir / "run_config.json", run_config)
+        envs = make_env(env_config, n_envs=1, use_async_envs=False)
+    except BaseException:
+        release_output_directory_lock(output_dir)
+        raise
+    try:
+        env = envs[task.suite][task.task_id]
+        if env.autoreset_mode is not gym.vector.AutoresetMode.NEXT_STEP:
+            raise RuntimeError(
+                f"Expected Gymnasium NEXT_STEP autoreset, got {env.autoreset_mode}"
+            )
+        env_preprocessor, env_postprocessor = make_env_pre_post_processors(
+            env_cfg=env_config,
+            policy_cfg=loaded.config,
+        )
+    except BaseException:
+        close_envs(envs)
+        release_output_directory_lock(output_dir)
+        raise
 
     recording_path = output_dir / "rollout.rrd"
     recording_initialized = False
@@ -304,7 +356,7 @@ def evaluate_libero(
         with ModelQueryTimer(loaded.policy, loaded.config.device) as model_timer:
             for episode_index in trange(
                 config.n_episodes,
-                desc="LIBERO task-8 rollout",
+                desc=f"{task.suite} task-{task.task_id} rollout",
                 unit="episode",
             ):
                 episode_seed = config.seed + episode_index
@@ -392,6 +444,8 @@ def evaluate_libero(
 
                     rollout_rows.append(
                         {
+                            "suite": task.suite,
+                            "libero_task_id": task.task_id,
                             "episode_index": episode_index,
                             "seed": episode_seed,
                             "init_state_id": init_state_id,
@@ -446,7 +500,19 @@ def evaluate_libero(
             formal=formal,
             status=status,
         )
-        eval_info = _make_eval_info(metrics, formal=formal, elapsed_s=elapsed_s)
+        metrics["schema_version"] = 2
+        metrics["task"] = task.to_dict()
+        metrics["checkpoint_task_assessment"] = checkpoint_assessment.to_dict()
+        metrics["perturbation"] = config.perturbation
+        metrics["visualized_episodes"] = list(
+            range(config.num_visualized_episodes)
+        )
+        eval_info = _make_eval_info(
+            metrics,
+            task=task,
+            formal=formal,
+            elapsed_s=elapsed_s,
+        )
         log_metric_summary(rr, metrics)
         write_json_atomic(output_dir / "metrics.json", metrics)
         write_json_atomic(output_dir / "eval_info.json", eval_info)
@@ -464,10 +530,18 @@ def evaluate_libero(
         if recording_initialized:
             finish_recording()
         close_envs(envs)
+        release_output_directory_lock(output_dir)
 
     viewer_opened = launch_rerun_viewer(recording_path, enabled=config.open_viewer)
-    LOGGER.info("LIBERO evaluation output: %s", output_dir)
     log_terminal_metrics(metrics, LOGGER)
+    LOGGER.info("[Output] metrics: %s", output_dir / "metrics.json")
+    LOGGER.info("[Output] eval info: %s", output_dir / "eval_info.json")
+    LOGGER.info("[Output] rollouts: %s", output_dir / "rollouts.parquet")
+    LOGGER.info("[Output] Rerun recording: %s", recording_path)
+    LOGGER.info("[Output] run config: %s", output_dir / "run_config.json")
+    if config.num_visualized_episodes:
+        LOGGER.info("[Output] videos: %s", output_dir / "videos")
+    LOGGER.info("[Output] viewer opened: %s", viewer_opened)
     return LiberoEvaluationResult(
         output_dir=output_dir,
         metrics=metrics,
@@ -483,15 +557,31 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Complete local LeRobot pretrained_model directory",
     )
+    parser.add_argument(
+        "--suite",
+        required=True,
+        help=f"LIBERO suite ({', '.join(SUPPORTED_SUITES)})",
+    )
+    parser.add_argument(
+        "--task-id",
+        required=True,
+        type=int,
+        help="Zero-based task ID within --suite",
+    )
     parser.add_argument("--n-episodes", type=int, default=20)
     parser.add_argument("--num-visualized-episodes", type=int, default=1)
     parser.add_argument("--perturbation", default="none")
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace a recognized existing --output-dir (requires --output-dir)",
+    )
+    parser.add_argument(
         "--max-steps",
         type=int,
-        help=f"Debug-only per-episode bound (1..{EPISODE_LENGTH})",
+        help="Debug-only per-episode bound (upper limit depends on --suite)",
     )
     parser.add_argument(
         "--no-open-viewer",

@@ -27,7 +27,9 @@ OFFLINE_METRIC_DEFINITIONS = {
 }
 
 CLOSED_LOOP_METRIC_DEFINITIONS = {
-    "is_formal": "是否使用完整 280 步上限并可作为正式闭环评测",
+    "is_formal": (
+        "是否使用所选 LIBERO suite 的完整步数上限，可作为正式闭环评测"
+    ),
     "num_episodes": "参与闭环评测的 rollout 数量",
     "num_successes": "由 LIBERO final_info 判定成功的 rollout 数量",
     "success_rate": "成功完成任务的 rollout 比例",

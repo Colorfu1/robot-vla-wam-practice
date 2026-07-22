@@ -7,9 +7,12 @@ import pytest
 import torch
 
 from robot_practice.evaluation.common import (
+    INCOMPLETE_MARKER_TEXT,
     ModelQueryTimer,
     create_output_directory,
     mark_run_complete,
+    release_output_directory_lock,
+    validate_act_libero_contract,
     validate_complete_checkpoint,
     write_json_atomic,
 )
@@ -61,8 +64,10 @@ def test_output_derives_from_training_run_and_uses_marker(tmp_path: Path) -> Non
         policy_path=policy_path,
         mode="offline",
         output_dir=None,
+        suite="libero_object",
+        task_id=8,
     )
-    assert output.parent == tmp_path / "run" / "eval" / "offline"
+    assert output.parent == tmp_path / "run" / "eval" / "offline" / "libero_object" / "task_008"
     assert (output / ".incomplete").is_file()
     mark_run_complete(output)
     assert not (output / ".incomplete").exists()
@@ -79,10 +84,263 @@ def test_output_override_must_not_exist(tmp_path: Path) -> None:
         )
 
 
+def _run_config(*, mode: str = "offline") -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "complete",
+        "mode": mode,
+        "created_at": "2026-07-22T12:00:00+08:00",
+        "policy": {"type": "act"},
+        "runtime": {},
+        "input": {},
+        "arguments": {},
+    }
+
+
+def test_output_overwrite_replaces_recognized_result(tmp_path: Path) -> None:
+    output = tmp_path / "result"
+    output.mkdir()
+    (output / "run_config.json").write_text(json.dumps(_run_config()))
+    (output / "stale.txt").write_text("old")
+    result = create_output_directory(
+        policy_path=tmp_path,
+        mode="offline",
+        output_dir=output,
+        overwrite=True,
+    )
+    try:
+        assert result == output.resolve()
+        assert (result / ".incomplete").read_text() == INCOMPLETE_MARKER_TEXT
+        assert not (result / "stale.txt").exists()
+    finally:
+        release_output_directory_lock(result)
+
+
+def test_output_overwrite_creates_missing_and_replaces_empty_target(tmp_path: Path) -> None:
+    missing = tmp_path / "missing"
+    created = create_output_directory(
+        policy_path=tmp_path,
+        mode="offline",
+        output_dir=missing,
+        overwrite=True,
+    )
+    release_output_directory_lock(created)
+    assert (created / ".incomplete").is_file()
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    replaced = create_output_directory(
+        policy_path=tmp_path,
+        mode="offline",
+        output_dir=empty,
+        overwrite=True,
+    )
+    release_output_directory_lock(replaced)
+    assert (replaced / ".incomplete").is_file()
+
+
+def test_output_overwrite_requires_explicit_output_dir(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="requires an explicit --output-dir"):
+        create_output_directory(
+            policy_path=tmp_path,
+            mode="offline",
+            output_dir=None,
+            overwrite=True,
+        )
+
+
+@pytest.mark.parametrize("kind", ["file", "unrelated_directory"])
+def test_output_overwrite_rejects_unrecognized_targets(tmp_path: Path, kind: str) -> None:
+    output = tmp_path / "result"
+    if kind == "file":
+        output.write_text("not a directory")
+    else:
+        output.mkdir()
+        (output / "notes.txt").write_text("not evaluator output")
+    with pytest.raises(ValueError, match="Overwrite target|not a recognized"):
+        create_output_directory(
+            policy_path=tmp_path,
+            mode="offline",
+            output_dir=output,
+            overwrite=True,
+        )
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_output_overwrite_rejects_output_symlink(tmp_path: Path, dangling: bool) -> None:
+    target = tmp_path / "target"
+    if not dangling:
+        target.mkdir()
+    output = tmp_path / "result"
+    output.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic link"):
+        create_output_directory(
+            policy_path=tmp_path,
+            mode="offline",
+            output_dir=output,
+            overwrite=True,
+        )
+
+
+@pytest.mark.parametrize("sentinel", [".incomplete", "run_config.json"])
+@pytest.mark.parametrize("dangling", [False, True])
+def test_output_overwrite_rejects_sentinel_symlink(
+    tmp_path: Path,
+    sentinel: str,
+    dangling: bool,
+) -> None:
+    output = tmp_path / "result"
+    output.mkdir()
+    target = tmp_path / "sentinel-target"
+    if not dangling:
+        if sentinel == ".incomplete":
+            target.write_text(INCOMPLETE_MARKER_TEXT)
+        else:
+            target.write_text(json.dumps(_run_config()))
+    (output / sentinel).symlink_to(target)
+    with pytest.raises(ValueError, match="sentinel must not be a symlink"):
+        create_output_directory(
+            policy_path=tmp_path,
+            mode="offline",
+            output_dir=output,
+            overwrite=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("contents", "mode"),
+    [
+        ("not json", "offline"),
+        (json.dumps({"schema_version": 1, "mode": "offline"}), "offline"),
+        (json.dumps(_run_config(mode="libero")), "offline"),
+    ],
+)
+def test_output_overwrite_rejects_invalid_or_mismatched_run_config(
+    tmp_path: Path,
+    contents: str,
+    mode: str,
+) -> None:
+    output = tmp_path / "result"
+    output.mkdir()
+    (output / "run_config.json").write_text(contents)
+    with pytest.raises(ValueError, match="Invalid|not a recognized"):
+        create_output_directory(
+            policy_path=tmp_path,
+            mode=mode,
+            output_dir=output,
+            overwrite=True,
+        )
+
+
+def test_output_overwrite_rejects_invalid_marker_even_with_run_config(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "result"
+    output.mkdir()
+    (output / ".incomplete").write_text("not an evaluator marker\n")
+    (output / "run_config.json").write_text(json.dumps(_run_config()))
+    with pytest.raises(ValueError, match="Invalid evaluator incomplete marker"):
+        create_output_directory(
+            policy_path=tmp_path,
+            mode="offline",
+            output_dir=output,
+            overwrite=True,
+        )
+
+
+def test_output_overwrite_rejects_invalid_run_config_even_with_marker(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "result"
+    output.mkdir()
+    (output / ".incomplete").write_text(INCOMPLETE_MARKER_TEXT)
+    (output / "run_config.json").write_text("not json")
+    with pytest.raises(ValueError, match="Invalid or mismatched evaluator run config"):
+        create_output_directory(
+            policy_path=tmp_path,
+            mode="offline",
+            output_dir=output,
+            overwrite=True,
+        )
+
+
+def test_output_lock_blocks_active_overwrite_and_releases_on_completion(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "result"
+    active = create_output_directory(
+        policy_path=tmp_path,
+        mode="offline",
+        output_dir=output,
+    )
+    with pytest.raises(RuntimeError, match="active evaluator"):
+        create_output_directory(
+            policy_path=tmp_path,
+            mode="offline",
+            output_dir=output,
+            overwrite=True,
+        )
+    mark_run_complete(active)
+
+    replacement = create_output_directory(
+        policy_path=tmp_path,
+        mode="offline",
+        output_dir=output,
+        overwrite=True,
+    )
+    release_output_directory_lock(replacement)
+
+
+def test_output_lock_can_be_released_after_failure(tmp_path: Path) -> None:
+    output = create_output_directory(
+        policy_path=tmp_path,
+        mode="offline",
+        output_dir=tmp_path / "result",
+    )
+    release_output_directory_lock(output)
+    replacement = create_output_directory(
+        policy_path=tmp_path,
+        mode="offline",
+        output_dir=output,
+        overwrite=True,
+    )
+    release_output_directory_lock(replacement)
+
+
 def test_atomic_json_rejects_nan(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="NaN or Infinity"):
         write_json_atomic(tmp_path / "bad.json", {"value": float("nan")})
     assert not (tmp_path / "bad.json").exists()
+
+
+def test_output_task_identity_must_be_complete(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="both be supplied"):
+        create_output_directory(
+            policy_path=tmp_path,
+            mode="offline",
+            output_dir=None,
+            suite="libero_object",
+        )
+
+
+def test_libero_contract_requires_exact_input_features() -> None:
+    from lerobot.configs.types import FeatureType, PolicyFeature
+    from lerobot.policies.act.configuration_act import ACTConfig
+
+    config = ACTConfig(
+        input_features={
+            "observation.images.image": PolicyFeature(FeatureType.VISUAL, (3, 256, 256)),
+            "observation.images.image2": PolicyFeature(FeatureType.VISUAL, (3, 256, 256)),
+            "observation.state": PolicyFeature(FeatureType.STATE, (8,)),
+        },
+        output_features={"action": PolicyFeature(FeatureType.ACTION, (7,))},
+        pretrained_backbone_weights=None,
+    )
+    validate_act_libero_contract(config)
+    config.input_features["observation.state"] = PolicyFeature(FeatureType.STATE, (7,))
+    with pytest.raises(ValueError, match="observation.state.*shape"):
+        validate_act_libero_contract(config)
+
 
 
 class FakeACT(torch.nn.Module):

@@ -1,6 +1,8 @@
 lerobot[libero]
 torch
 mani_skill
+h5py
+huggingface_hub
 ipykernel
 jupyterlab
 matplotlib

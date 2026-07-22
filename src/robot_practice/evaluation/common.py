@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import math
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import time
 from contextlib import AbstractContextManager
@@ -41,6 +43,8 @@ PROCESSOR_CONFIG_FILES = (
     "policy_postprocessor.json",
 )
 T = TypeVar("T")
+INCOMPLETE_MARKER_TEXT = "Evaluation did not reach its atomic completion step.\n"
+_OUTPUT_DIRECTORY_LOCKS: dict[Path, Any] = {}
 
 
 @dataclass(frozen=True)
@@ -180,6 +184,7 @@ def load_act_checkpoint(
     if not isinstance(config, ACTConfig):
         raise TypeError(f"Expected ACTConfig, got {type(config).__name__}")
     config.pretrained_path = manifest.path
+    validate_act_libero_contract(config)
 
     policy = make_policy(
         cfg=config,
@@ -187,11 +192,6 @@ def load_act_checkpoint(
         env_cfg=env_config,
     )
     policy.eval()
-    action_feature = config.action_feature
-    if action_feature is None or tuple(action_feature.shape) != (7,):
-        shape = None if action_feature is None else tuple(action_feature.shape)
-        raise ValueError(f"ACT checkpoint action shape must be (7,), got {shape}")
-
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=config,
         pretrained_path=str(manifest.path),
@@ -204,6 +204,33 @@ def load_act_checkpoint(
         preprocessor=preprocessor,
         postprocessor=postprocessor,
     )
+
+
+def validate_act_libero_contract(config: ACTConfig) -> None:
+    """Require the exact state, camera, and action contract used by local LIBERO ACT."""
+
+    expected_inputs = {
+        "observation.images.image": (3, 256, 256),
+        "observation.images.image2": (3, 256, 256),
+        "observation.state": (8,),
+    }
+    input_features = config.input_features or {}
+    if set(input_features) != set(expected_inputs):
+        raise ValueError(
+            "ACT checkpoint LIBERO inputs must be exactly "
+            f"{sorted(expected_inputs)}, got {sorted(input_features)}"
+        )
+    for key, expected_shape in expected_inputs.items():
+        actual_shape = tuple(input_features[key].shape)
+        if actual_shape != expected_shape:
+            raise ValueError(
+                f"ACT checkpoint input {key} must have shape {expected_shape}, "
+                f"got {actual_shape}"
+            )
+    action_feature = config.action_feature
+    if action_feature is None or tuple(action_feature.shape) != (7,):
+        shape = None if action_feature is None else tuple(action_feature.shape)
+        raise ValueError(f"ACT checkpoint action shape must be (7,), got {shape}")
 
 
 def _run_root_from_checkpoint(policy_path: Path) -> Path | None:
@@ -222,11 +249,20 @@ def create_output_directory(
     policy_path: Path,
     mode: str,
     output_dir: Path | None,
+    suite: str | None = None,
+    task_id: int | None = None,
+    overwrite: bool = False,
 ) -> Path:
-    """Create an exclusive result leaf and its incomplete marker."""
+    """Create an evaluator result leaf and hold its explicit-path lifecycle lock."""
 
     if mode not in {"offline", "libero"}:
         raise ValueError(f"Unknown evaluation mode: {mode}")
+    if (suite is None) != (task_id is None):
+        raise ValueError("suite and task_id must either both be supplied or both be omitted")
+    if task_id is not None and task_id < 0:
+        raise ValueError("task_id must be non-negative")
+    if overwrite and output_dir is None:
+        raise ValueError("--overwrite requires an explicit --output-dir")
     if output_dir is None:
         run_root = _run_root_from_checkpoint(policy_path)
         if run_root is None:
@@ -234,19 +270,159 @@ def create_output_directory(
                 "--output-dir is required when --policy-path is not under "
                 "<run>/checkpoints/<step>/pretrained_model"
             )
-        result = run_root / "eval" / mode / local_timestamp()
+        result_root = run_root / "eval" / mode
+        if suite is not None and task_id is not None:
+            result_root = result_root / suite / f"task_{task_id:03d}"
+        result = result_root / local_timestamp()
     else:
-        result = output_dir.expanduser().resolve()
+        requested = output_dir.expanduser().absolute()
+        if _path_is_symlink(requested):
+            raise ValueError(f"Output directory must not be a symbolic link: {requested}")
+        result = requested.resolve()
+        _acquire_output_directory_lock(result)
 
     try:
+        if result.exists() or result.is_symlink():
+            if not overwrite:
+                raise FileExistsError(f"Output directory already exists: {result}")
+            _validate_overwrite_target(result, mode=mode)
+            LOGGER.warning("[Output] overwriting existing evaluator result: %s", result)
+            shutil.rmtree(result)
         result.mkdir(parents=True, exist_ok=False)
-    except FileExistsError as exc:
-        raise FileExistsError(f"Output directory already exists: {result}") from exc
-    (result / ".incomplete").write_text(
-        "Evaluation did not reach its atomic completion step.\n",
-        encoding="utf-8",
-    )
+        (result / ".incomplete").write_text(
+            INCOMPLETE_MARKER_TEXT,
+            encoding="utf-8",
+        )
+    except BaseException:
+        release_output_directory_lock(result)
+        raise
     return result
+
+
+def _path_is_symlink(path: Path) -> bool:
+    try:
+        return stat.S_ISLNK(path.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _is_regular_non_symlink_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _acquire_output_directory_lock(result: Path) -> None:
+    if result in _OUTPUT_DIRECTORY_LOCKS:
+        raise RuntimeError(f"Output directory is locked by an active evaluator: {result}")
+    result.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = result.parent / f".{result.name}.evaluation.lock"
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise RuntimeError(f"Cannot open evaluator output lock {lock_path}: {exc}") from exc
+    lock_stream = os.fdopen(descriptor, "r+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        lock_stream.close()
+        raise RuntimeError(
+            f"Output directory is locked by an active evaluator: {result}"
+        ) from exc
+    try:
+        lock_stream.seek(0)
+        lock_stream.truncate()
+        json.dump(
+            {
+                "pid": os.getpid(),
+                "mode": "evaluation-output",
+                "acquired_at": iso_timestamp(),
+            },
+            lock_stream,
+        )
+        lock_stream.write("\n")
+        lock_stream.flush()
+    except BaseException:
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+        lock_stream.close()
+        raise
+    _OUTPUT_DIRECTORY_LOCKS[result] = lock_stream
+
+
+def release_output_directory_lock(output_dir: Path) -> None:
+    """Release an explicit evaluator output lock, if this process owns it."""
+
+    result = output_dir.expanduser().resolve()
+    lock_stream = _OUTPUT_DIRECTORY_LOCKS.pop(result, None)
+    if lock_stream is None:
+        return
+    try:
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_stream.close()
+
+
+def _valid_run_config_sentinel(path: Path, *, mode: str) -> bool:
+    if not _is_regular_non_symlink_file(path):
+        return False
+    try:
+        payload = read_json(path)
+    except (OSError, ValueError):
+        return False
+    return (
+        payload.get("schema_version") == 1
+        and payload.get("mode") == mode
+        and payload.get("status") in {"incomplete", "smoke", "complete"}
+        and isinstance(payload.get("created_at"), str)
+        and isinstance(payload.get("policy"), dict)
+        and payload["policy"].get("type") == "act"
+        and isinstance(payload.get("runtime"), dict)
+        and isinstance(payload.get("input"), dict)
+        and isinstance(payload.get("arguments"), dict)
+    )
+
+
+def _valid_incomplete_sentinel(path: Path) -> bool:
+    if not _is_regular_non_symlink_file(path):
+        return False
+    try:
+        return path.read_text(encoding="utf-8") == INCOMPLETE_MARKER_TEXT
+    except OSError:
+        return False
+
+
+def _validate_overwrite_target(result: Path, *, mode: str) -> None:
+    if _path_is_symlink(result):
+        raise ValueError(f"Output directory must not be a symbolic link: {result}")
+    if not result.is_dir():
+        raise ValueError(f"Overwrite target must be a directory: {result}")
+    if not any(result.iterdir()):
+        return
+    incomplete_path = result / ".incomplete"
+    run_config_path = result / "run_config.json"
+    for sentinel in (incomplete_path, run_config_path):
+        if _path_is_symlink(sentinel):
+            raise ValueError(f"Evaluator output sentinel must not be a symlink: {sentinel}")
+        if sentinel.exists() and not _is_regular_non_symlink_file(sentinel):
+            raise ValueError(f"Evaluator output sentinel must be a regular file: {sentinel}")
+    incomplete_exists = incomplete_path.exists()
+    run_config_exists = run_config_path.exists()
+    valid_incomplete = _valid_incomplete_sentinel(incomplete_path)
+    valid_run_config = _valid_run_config_sentinel(run_config_path, mode=mode)
+    if incomplete_exists and not valid_incomplete:
+        raise ValueError(f"Invalid evaluator incomplete marker: {incomplete_path}")
+    if run_config_exists and not valid_run_config:
+        raise ValueError(f"Invalid or mismatched evaluator run config: {run_config_path}")
+    if valid_incomplete or valid_run_config:
+        return
+    raise ValueError(
+        "Refusing to overwrite a non-empty directory that is not a recognized "
+        f"{mode} evaluator result: {result}"
+    )
 
 
 def _jsonable(value: Any) -> Any:
@@ -307,6 +483,7 @@ def write_parquet_atomic(path: Path, table: pa.Table) -> None:
 
 def mark_run_complete(output_dir: Path) -> None:
     (output_dir / ".incomplete").unlink(missing_ok=True)
+    release_output_directory_lock(output_dir)
 
 
 def package_version(name: str) -> str:

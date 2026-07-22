@@ -1,9 +1,10 @@
-"""Teacher-forced ACT prediction on the local five-episode LIBERO A-Sanity set."""
+"""Teacher-forced ACT prediction on one explicitly selected LIBERO task."""
 
 from __future__ import annotations
 
 import argparse
 import logging
+from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -29,14 +30,38 @@ from robot_practice.evaluation.common import (
     load_act_checkpoint,
     log_terminal_metrics,
     mark_run_complete,
-    practice_root,
+    release_output_directory_lock,
     timed_call,
+    validate_act_libero_contract,
     validate_complete_checkpoint,
     write_json_atomic,
     write_parquet_atomic,
 )
+from robot_practice.evaluation.libero_checkpoint import (
+    assess_checkpoint_task,
+    log_checkpoint_task_assessment,
+)
+from robot_practice.evaluation.libero_kinematics import (
+    FixedCameraCalibration,
+    PandaSkeletonPose,
+    PandaSkeletonReconstructor,
+)
+from robot_practice.evaluation.libero_dataset_cache import (
+    AGENTVIEW_IMAGE_CONVENTIONS,
+    DatasetSelection,
+    resolve_agentview_image_convention,
+    resolve_offline_dataset,
+)
+from robot_practice.evaluation.libero_tasks import (
+    SUPPORTED_SUITES,
+    LiberoTaskIdentity,
+    log_task_identity,
+    resolve_libero_task,
+)
 from robot_practice.evaluation.metrics import compute_offline_metrics
 from robot_practice.evaluation.rerun_visualization import (
+    OfflineCommandHistory,
+    OfflineTrajectoryHistory,
     finish_recording,
     initialize_recording,
     log_metric_summary,
@@ -45,20 +70,22 @@ from robot_practice.evaluation.rerun_visualization import (
 
 LOGGER = logging.getLogger(__name__)
 
-DATASET_REPO_ID = "lerobot/libero"
-TASK_INDEX = 29
-DEFAULT_EPISODES = (823, 826, 834, 840, 841)
-
 
 @dataclass(frozen=True)
 class OfflineEvaluationConfig:
     policy_path: Path
-    episodes: tuple[int, ...] = DEFAULT_EPISODES
-    dataset_root: Path = practice_root() / "datasets" / "lerobot" / "lerobot" / "libero"
+    suite: str
+    task_id: int
+    episodes: tuple[int, ...] | None = None
+    dataset_root: Path | None = None
     batch_size: int = 1
+    num_visualized_episodes: int = 1
     output_dir: Path | None = None
+    overwrite: bool = False
     max_frames: int | None = None
+    rebuild_dataset_cache: bool = False
     open_viewer: bool = True
+    agentview_image_convention: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -68,36 +95,52 @@ class OfflineEvaluationResult:
     viewer_opened: bool
 
 
-def validate_config(config: OfflineEvaluationConfig) -> None:
-    if not config.episodes:
-        raise ValueError("--episodes must contain at least one episode index")
-    if len(set(config.episodes)) != len(config.episodes):
-        raise ValueError("--episodes must not contain duplicate indices")
-    if any(index < 0 for index in config.episodes):
-        raise ValueError("--episodes values must be non-negative")
+def validate_config(
+    config: OfflineEvaluationConfig,
+    task: LiberoTaskIdentity | None = None,
+) -> LiberoTaskIdentity:
+    task = task or resolve_libero_task(config.suite, config.task_id)
+    if config.episodes is not None:
+        if not config.episodes:
+            raise ValueError("--episodes must contain at least one episode index")
+        if len(set(config.episodes)) != len(config.episodes):
+            raise ValueError("--episodes must not contain duplicate indices")
+        if any(index < 0 for index in config.episodes):
+            raise ValueError("--episodes values must be non-negative")
     if config.batch_size <= 0:
         raise ValueError("--batch-size must be positive")
+    if config.num_visualized_episodes < 0:
+        raise ValueError("--num-visualized-episodes must be non-negative")
     if config.max_frames is not None and config.max_frames <= 0:
         raise ValueError("--max-frames must be positive")
-    dataset_root = config.dataset_root.expanduser().resolve()
-    if not (dataset_root / "meta" / "info.json").is_file():
-        raise FileNotFoundError(f"LeRobot LIBERO dataset is missing at {dataset_root}")
+    if config.overwrite and config.output_dir is None:
+        raise ValueError("--overwrite requires an explicit --output-dir")
+    if config.dataset_root is not None and config.rebuild_dataset_cache:
+        raise ValueError(
+            "--dataset-root cannot be combined with --rebuild-dataset-cache"
+        )
+    if config.agentview_image_convention not in AGENTVIEW_IMAGE_CONVENTIONS:
+        raise ValueError(
+            "--agentview-image-convention must be one of "
+            f"{list(AGENTVIEW_IMAGE_CONVENTIONS)}"
+        )
+    return task
 
 
 def _load_policy_config(policy_path: Path) -> ACTConfig:
     config = PreTrainedConfig.from_pretrained(policy_path, local_files_only=True)
     if not isinstance(config, ACTConfig):
         raise TypeError(f"Expected ACTConfig, got {type(config).__name__}")
+    validate_act_libero_contract(config)
     return config
 
 
 def _make_dataset(
-    config: OfflineEvaluationConfig,
+    selection: DatasetSelection,
     policy_config: ACTConfig,
 ) -> tuple[LeRobotDataset, LeRobotDatasetMetadata]:
-    root = config.dataset_root.expanduser().resolve()
-    metadata = LeRobotDatasetMetadata(DATASET_REPO_ID, root=root)
-    for episode in config.episodes:
+    metadata = LeRobotDatasetMetadata(selection.repo_id, root=selection.root)
+    for episode in selection.episodes:
         if episode >= metadata.total_episodes:
             raise ValueError(
                 f"Episode {episode} is outside [0, {metadata.total_episodes - 1}]"
@@ -115,16 +158,17 @@ def _make_dataset(
         )
 
     dataset = LeRobotDataset(
-        DATASET_REPO_ID,
-        root=root,
-        episodes=list(config.episodes),
+        selection.repo_id,
+        root=selection.root,
+        episodes=list(selection.episodes),
         delta_timestamps=delta_timestamps,
         download_videos=True,
     )
     task_indices = {int(value) for value in dataset.hf_dataset.unique("task_index")}
-    if task_indices != {TASK_INDEX}:
+    if task_indices != {selection.task_index}:
         raise ValueError(
-            f"All offline episodes must belong to dataset task index {TASK_INDEX}; "
+            "All offline episodes must belong to mapped dataset task index "
+            f"{selection.task_index}; "
             f"got {sorted(task_indices)}"
         )
     return dataset, metadata
@@ -133,6 +177,8 @@ def _make_dataset(
 def _prediction_schema(chunk_size: int) -> pa.Schema:
     schema = pa.schema(
         [
+            pa.field("suite", pa.string(), nullable=False),
+            pa.field("libero_task_id", pa.int32(), nullable=False),
             pa.field("episode_index", pa.int64(), nullable=False),
             pa.field("frame_index", pa.int64(), nullable=False),
             pa.field("dataset_index", pa.int64(), nullable=False),
@@ -154,7 +200,7 @@ def _prediction_schema(chunk_size: int) -> pa.Schema:
             pa.field("model_query_latency_ms", pa.float64(), nullable=True),
         ],
         metadata={
-            b"schema_version": b"1",
+            b"schema_version": b"2",
             b"chunk_shape": f"[{chunk_size},7]".encode(),
             b"action_dimension": b"7",
         },
@@ -180,6 +226,50 @@ def _autocast_context(config: ACTConfig) -> Any:
     return nullcontext()
 
 
+def _make_skeleton_reconstructor(
+    task: LiberoTaskIdentity,
+    visualized_episode_ids: Sequence[int],
+) -> PandaSkeletonReconstructor | None:
+    """Avoid creating a MuJoCo environment for metrics-only offline evaluation."""
+
+    if not visualized_episode_ids:
+        return None
+    return PandaSkeletonReconstructor(task)
+
+
+def _camera_hwc_shape(
+    metadata: LeRobotDatasetMetadata,
+    camera_key: str,
+) -> tuple[int, int, int]:
+    """Read and validate the LeRobot HWC contract for one video feature."""
+
+    feature = metadata.features.get(camera_key)
+    if not isinstance(feature, Mapping):
+        raise ValueError(f"Camera feature metadata is missing for {camera_key!r}")
+    names = tuple(feature.get("names", ()))
+    if names != ("height", "width", "channel"):
+        raise ValueError(
+            f"Camera feature {camera_key!r} must use HWC names "
+            f"['height', 'width', 'channel'], got {list(names)}"
+        )
+    shape = tuple(feature.get("shape", ()))
+    if (
+        len(shape) != 3
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, np.integer))
+            or value <= 0
+            for value in shape
+        )
+        or shape[2] not in (1, 3, 4)
+    ):
+        raise ValueError(
+            f"Camera feature {camera_key!r} must have a positive HWC shape with "
+            f"1, 3, or 4 channels, got {shape}"
+        )
+    return tuple(int(value) for value in shape)
+
+
 def evaluate_offline(
     config: OfflineEvaluationConfig,
     *,
@@ -191,10 +281,31 @@ def evaluate_offline(
         if config.max_frames is not None and config.max_frames != max_frames:
             raise ValueError("max_frames was supplied both in config and function arguments")
         config = OfflineEvaluationConfig(**{**asdict(config), "max_frames": max_frames})
-    validate_config(config)
+    task = resolve_libero_task(config.suite, config.task_id)
+    log_task_identity(task, LOGGER)
+    validate_config(config, task)
     manifest = validate_complete_checkpoint(config.policy_path)
+    LOGGER.info("[Policy] checkpoint: %s", manifest.path)
     policy_config = _load_policy_config(manifest.path)
-    dataset, metadata = _make_dataset(config, policy_config)
+    checkpoint_assessment = assess_checkpoint_task(manifest, task)
+    log_checkpoint_task_assessment(checkpoint_assessment, LOGGER)
+    selection = resolve_offline_dataset(
+        task,
+        episodes=config.episodes,
+        dataset_root=config.dataset_root,
+        rebuild_dataset_cache=config.rebuild_dataset_cache,
+    )
+    if config.num_visualized_episodes > len(selection.episodes):
+        raise ValueError(
+            "--num-visualized-episodes must not exceed the number of selected "
+            f"episodes ({len(selection.episodes)})"
+        )
+    resolved_agentview_image_convention = resolve_agentview_image_convention(
+        selection,
+        config.agentview_image_convention,
+        visualization_enabled=config.num_visualized_episodes > 0,
+    )
+    dataset, metadata = _make_dataset(selection, policy_config)
     loaded = load_act_checkpoint(manifest, dataset_metadata=metadata)
 
     total_frames = min(len(dataset), config.max_frames or len(dataset))
@@ -205,14 +316,45 @@ def evaluate_offline(
         policy_path=manifest.path,
         mode="offline",
         output_dir=config.output_dir,
+        suite=task.suite,
+        task_id=task.task_id,
+        overwrite=config.overwrite,
     )
     camera_keys = tuple(metadata.camera_keys)
+    visualized_episode_ids = tuple(
+        selection.episodes[: config.num_visualized_episodes]
+    )
+    visualized_episode_set = set(visualized_episode_ids)
+    LOGGER.info("[Evaluation] mode: offline teacher-forced prediction")
+    LOGGER.info("[Evaluation] selected episodes: %d", len(selection.episodes))
+    LOGGER.info("[Evaluation] selected frames: %d", total_frames)
+    LOGGER.info(
+        "[Evaluation] visualized episodes: %d %s",
+        len(visualized_episode_ids),
+        list(visualized_episode_ids),
+    )
+    LOGGER.info("[Evaluation] chunk_size: %d", loaded.config.chunk_size)
+    LOGGER.info("[Evaluation] n_action_steps: %d", loaded.config.n_action_steps)
+    LOGGER.info("[Evaluation] perturbation: none (teacher-forced observations)")
+    LOGGER.info(
+        "[Visualization] agentview image convention: %s",
+        resolved_agentview_image_convention or "not used",
+    )
+    LOGGER.info("[Evaluation] status: %s", status)
+    LOGGER.info("[Output] directory: %s", output_dir)
     input_config = {
-        "dataset_repo_id": DATASET_REPO_ID,
+        "task": task.to_dict(),
+        "checkpoint_task_assessment": checkpoint_assessment.to_dict(),
+        "dataset_repo_id": selection.repo_id,
         "dataset_root": dataset.root.resolve(),
+        "dataset_source": selection.source,
+        "episode_namespace": selection.episode_namespace,
+        "source_manifest": selection.source_manifest,
+        "agentview_image_convention": resolved_agentview_image_convention,
         "fps": float(dataset.fps),
-        "task_index": TASK_INDEX,
-        "episodes": list(config.episodes),
+        "task_index": selection.task_index,
+        "episodes": list(selection.episodes),
+        "visualized_episodes": list(visualized_episode_ids),
     }
     arguments = asdict(config)
     run_config = build_run_config(
@@ -222,7 +364,11 @@ def evaluate_offline(
         input_config=input_config,
         arguments=arguments,
     )
-    write_json_atomic(output_dir / "run_config.json", run_config)
+    try:
+        write_json_atomic(output_dir / "run_config.json", run_config)
+    except BaseException:
+        release_output_directory_lock(output_dir)
+        raise
 
     recording_path = output_dir / "prediction.rrd"
     recording_initialized = False
@@ -232,13 +378,36 @@ def evaluate_offline(
     valid_masks: list[np.ndarray] = []
     episode_indices: list[int] = []
     query_latencies: list[float] = []
+    trajectory_history = OfflineTrajectoryHistory()
+    command_history = OfflineCommandHistory()
+    skeleton_episode_index: int | None = None
+    previous_skeleton_pose: PandaSkeletonPose | None = None
+    skeleton_reconstructor: PandaSkeletonReconstructor | None = None
+    agentview_calibration: FixedCameraCalibration | None = None
 
     try:
+        skeleton_reconstructor = _make_skeleton_reconstructor(
+            task,
+            visualized_episode_ids,
+        )
+        if skeleton_reconstructor is not None:
+            agentview_calibration = skeleton_reconstructor.fixed_camera_calibration(
+                "agentview",
+                _camera_hwc_shape(metadata, "observation.images.image"),
+            )
+            LOGGER.info(
+                "[Visualization] calibrated fixed camera %s at %dx%d",
+                agentview_calibration.camera_name,
+                agentview_calibration.image_width,
+                agentview_calibration.image_height,
+            )
         initialize_recording(
             output_path=recording_path,
             mode="offline",
             camera_keys=camera_keys,
             fps=float(dataset.fps),
+            offline_camera_calibration=agentview_calibration,
+            agentview_image_convention=resolved_agentview_image_convention,
         )
         recording_initialized = True
         selected = Subset(dataset, range(total_frames))
@@ -291,20 +460,66 @@ def evaluate_offline(
                 model_latency = latency_ms if batch_row == 0 else None
                 target_action = target_numpy[batch_row, 0]
                 predicted_action = predicted_numpy[batch_row, 0]
-                images = {key: batch[key][batch_row] for key in camera_keys}
-                log_offline_frame(
-                    rr,
-                    global_frame=global_frame,
-                    episode_index=episode_index,
-                    frame_index=frame_index,
-                    batch_id=batch_id,
-                    target_action=target_action,
-                    predicted_action=predicted_action,
-                    model_query_latency_ms=model_latency,
-                    images=images,
-                )
+                if episode_index in visualized_episode_set:
+                    if skeleton_reconstructor is None:
+                        raise RuntimeError(
+                            "Offline skeleton reconstructor was not initialized"
+                        )
+                    episode_changed = skeleton_episode_index != episode_index
+                    if episode_changed:
+                        skeleton_episode_index = episode_index
+                        previous_skeleton_pose = None
+                        skeleton_reconstructor.reset_episode()
+                    raw_observation_state = batch["observation.state"][batch_row]
+                    ik_result = skeleton_reconstructor.reconstruct(
+                        raw_observation_state.detach().cpu().numpy()
+                    )
+                    if ik_result.pose is not None:
+                        skeleton_pose = ik_result.pose
+                        previous_skeleton_pose = skeleton_pose
+                        skeleton_stale = False
+                    else:
+                        skeleton_pose = previous_skeleton_pose
+                        skeleton_stale = skeleton_pose is not None
+                        LOGGER.warning(
+                            "[Visualization] Panda IK failed at episode=%d frame=%d: "
+                            "reason=%s position_residual_m=%.6f "
+                            "rotation_residual_deg=%.3f; skeleton=%s",
+                            episode_index,
+                            frame_index,
+                            ik_result.reason,
+                            ik_result.position_residual_m,
+                            np.degrees(ik_result.rotation_residual_rad),
+                            "previous pose (stale)" if skeleton_stale else "omitted",
+                        )
+                    images = {key: batch[key][batch_row] for key in camera_keys}
+                    log_offline_frame(
+                        rr,
+                        global_frame=global_frame,
+                        episode_index=episode_index,
+                        frame_index=frame_index,
+                        batch_id=batch_id,
+                        observation_state=raw_observation_state,
+                        target_action=target_action,
+                        predicted_action=predicted_action,
+                        target_chunk=target_numpy[batch_row],
+                        predicted_chunk=predicted_numpy[batch_row],
+                        valid_horizon=valid_numpy[batch_row],
+                        trajectory_history=trajectory_history,
+                        command_history=command_history,
+                        display_frame=skeleton_reconstructor.display_frame,
+                        skeleton_pose=skeleton_pose,
+                        skeleton_stale=skeleton_stale,
+                        clear_skeleton=episode_changed,
+                        model_query_latency_ms=model_latency,
+                        images=images,
+                        agentview_calibration=agentview_calibration,
+                        agentview_image_convention=resolved_agentview_image_convention,
+                    )
                 rows.append(
                     {
+                        "suite": task.suite,
+                        "libero_task_id": task.task_id,
                         "episode_index": episode_index,
                         "frame_index": frame_index,
                         "dataset_index": int(_batch_value(batch, "index", batch_row)),
@@ -334,6 +549,19 @@ def evaluate_offline(
             model_query_latencies_ms=query_latencies,
             status=status,
         )
+        metrics["schema_version"] = 2
+        metrics["task"] = task.to_dict()
+        metrics["checkpoint_task_assessment"] = checkpoint_assessment.to_dict()
+        metrics["dataset"] = {
+            "repo_id": selection.repo_id,
+            "root": selection.root,
+            "source": selection.source,
+            "task_index": selection.task_index,
+            "episode_namespace": selection.episode_namespace,
+            "episodes": list(selection.episodes),
+            "source_manifest": selection.source_manifest,
+        }
+        metrics["visualized_episodes"] = list(visualized_episode_ids)
         log_metric_summary(rr, metrics)
         write_json_atomic(output_dir / "metrics.json", metrics)
         table = pa.Table.from_pylist(rows, schema=_prediction_schema(loaded.config.chunk_size))
@@ -347,12 +575,19 @@ def evaluate_offline(
         write_json_atomic(output_dir / "run_config.json", run_config)
         mark_run_complete(output_dir)
     finally:
+        if skeleton_reconstructor is not None:
+            skeleton_reconstructor.close()
         if recording_initialized:
             finish_recording()
+        release_output_directory_lock(output_dir)
 
     viewer_opened = launch_rerun_viewer(recording_path, enabled=config.open_viewer)
-    LOGGER.info("Offline evaluation output: %s", output_dir)
     log_terminal_metrics(metrics, LOGGER)
+    LOGGER.info("[Output] metrics: %s", output_dir / "metrics.json")
+    LOGGER.info("[Output] predictions: %s", output_dir / "predictions.parquet")
+    LOGGER.info("[Output] Rerun recording: %s", recording_path)
+    LOGGER.info("[Output] run config: %s", output_dir / "run_config.json")
+    LOGGER.info("[Output] viewer opened: %s", viewer_opened)
     return OfflineEvaluationResult(
         output_dir=output_dir,
         metrics=metrics,
@@ -369,21 +604,50 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Complete local LeRobot pretrained_model directory",
     )
     parser.add_argument(
+        "--suite",
+        required=True,
+        help=f"LIBERO suite ({', '.join(SUPPORTED_SUITES)})",
+    )
+    parser.add_argument(
+        "--task-id",
+        required=True,
+        type=int,
+        help="Zero-based task ID within --suite",
+    )
+    parser.add_argument(
         "--episodes",
         nargs="+",
         type=int,
-        default=list(DEFAULT_EPISODES),
-        help="Same-task dataset episode indices",
+        help="Dataset-native episode indices (default: all task demonstrations)",
     )
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=OfflineEvaluationConfig.__dataclass_fields__["dataset_root"].default,
-        help="Exact local lerobot/libero dataset root",
+        help="Exact existing LeRobot dataset override for the selected task",
     )
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--num-visualized-episodes", type=int, default=1)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace a recognized existing --output-dir (requires --output-dir)",
+    )
     parser.add_argument("--max-frames", type=int, help="Debug-only global frame bound")
+    parser.add_argument(
+        "--rebuild-dataset-cache",
+        action="store_true",
+        help="Rebuild a generated task-local cache (never mutates an explicit root)",
+    )
+    parser.add_argument(
+        "--agentview-image-convention",
+        choices=AGENTVIEW_IMAGE_CONVENTIONS,
+        default="auto",
+        help=(
+            "Stored agentview orientation used only for calibrated visualization; "
+            "auto requires explicit cache provenance"
+        ),
+    )
     parser.add_argument(
         "--no-open-viewer",
         action="store_false",
@@ -401,7 +665,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         datefmt="%H:%M:%S",
     )
     args = build_argument_parser().parse_args(argv)
-    args.episodes = tuple(args.episodes)
+    if args.episodes is not None:
+        args.episodes = tuple(args.episodes)
     evaluate_offline(OfflineEvaluationConfig(**vars(args)))
 
 

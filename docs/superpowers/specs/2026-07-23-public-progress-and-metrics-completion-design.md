@@ -26,8 +26,9 @@ and completion of the already-approved compact offline metrics presentation.
 
 ## Daily Progress Report
 
-Create `reports/2026-07-23-progress.md`. It records only repository-relevant, public-safe
-facts:
+Create the report now maintained as
+`reports/2026-07-23-ACT离线评测与标定可视化.md`. It records only repository-relevant,
+public-safe facts:
 
 - the A-Sanity 100-step and 20k checkpoint evaluation comparison;
 - the generic offline and closed-loop evaluator workflow;

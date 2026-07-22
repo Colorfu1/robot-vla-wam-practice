@@ -97,7 +97,7 @@ Each invocation is independent and writes a new timestamped directory. Omitting
 20,000-step default. Use `--print-command` to inspect a resolved command without
 creating output.
 
-## Evaluate an ACT A-Sanity Checkpoint
+## Evaluate an ACT Checkpoint on One LIBERO Task
 
 Both evaluators require the complete LeRobot `pretrained_model` directory, not a standalone
 `.pth` or `model.safetensors` file. For example:
@@ -106,23 +106,51 @@ Both evaluators require the complete LeRobot `pretrained_model` directory, not a
 policy_path="outputs/act/a_sanity/<run_timestamp>/checkpoints/<step>/pretrained_model"
 ```
 
-Run teacher-forced prediction on the five A-Sanity demonstration episodes:
+Run teacher-forced prediction on every available demonstration for one task:
 
 ```bash
 scripts/experiments/act/eval_offline.sh \
-  --policy-path="${policy_path}"
+  --policy-path="${policy_path}" \
+  --suite=libero_object \
+  --task-id=8 \
+  --agentview-image-convention=lerobot_180
 ```
 
 This saves `metrics.json`, `predictions.parquet`, and `prediction.rrd`, then opens Rerun.
-Use `--episodes 823 826` to select a same-task subset, `--batch-size N` to change model-call
-batching, or `--no-open-viewer` for a headless run. `--max-frames N` is only for smoke tests
-and marks the output as non-formal.
+The original camera panes remain unchanged in the model-facing LeRobot/OpenVLA orientation.
+The upper-right pane defaults to a physically calibrated agentview overlay built from the
+selected task's fixed MuJoCo camera pose and intrinsics. For the `lerobot_180` convention,
+that visualization-only image is horizontally reflected so physical projection agrees;
+its second tab is a free 3D orbit view whose cyan frustum marks that real camera. The
+eye-in-hand image remains image-only because exact moving-camera reconstruction would need
+joint states absent from this dataset. The 3D frame puts the robot base at the origin,
+labels `X`, `Y Forward`, and `Z Up`, and
+shows the recorded EEF history in deep blue. At every recorded EEF, a light-blue segment
+shows the GT first-action translation command and a deep-orange segment shows the
+teacher-forced Pred first-action command; pairs from different frames are retained but never
+connected. A translucent orange line previews only the current Pred future chunk. These are
+OSC command goals, not measured next poses or executed trajectories. The blue Panda skeleton
+is reconstructed from the recorded 8D end-effector state with continuous IK; it is not
+recorded joint-state ground truth. The action chart contains 14 individually toggleable
+series, with each dimension's GT and Pred curves adjacent in the legend and assigned distinct
+colors.
+Only the three coordinate-axis labels remain permanently visible in 3D. Select a joint,
+end-effector point, or trajectory to inspect its retained label in Rerun's Selection panel.
+The evaluator first reuses a matching local dataset. If the task is missing, it downloads
+only that task's upstream HDF5, replays it into a 256x256 LeRobot dataset, and retains both
+caches. Use `--episodes 823 826` to select dataset-native episode IDs, `--batch-size N` to
+change model-call batching, `--num-visualized-episodes N` to control Rerun volume, or
+`--no-open-viewer` for a headless run. `--max-frames N` marks the output as smoke-only.
+When intentionally reusing an explicit result path, pass `--overwrite`; without it an
+existing directory is still protected. Active runs and unrelated directories are refused.
 
-Run simulator-grounded evaluation on `libero_object` task 8:
+Run simulator-grounded evaluation for the same task:
 
 ```bash
 scripts/experiments/act/eval_libero.sh \
   --policy-path="${policy_path}" \
+  --suite=libero_object \
+  --task-id=8 \
   --n-episodes=20 \
   --num-visualized-episodes=1 \
   --perturbation=none
@@ -133,11 +161,16 @@ policy/model-query latency, `rollouts.parquet`, `eval_info.json`, Rerun, and MP4
 simulator run reports task success. Offline prediction cannot establish success because it
 never executes an action.
 
+Both commands require `--suite` and `--task-id`. Supported suites are `libero_spatial`,
+`libero_object`, `libero_goal`, `libero_10`, and `libero_90`; one invocation evaluates one
+zero-based task ID. A checkpoint/task mismatch is warned because ACT has no language input,
+while incompatible 8D-state/7D-action/two-camera checkpoint structure fails immediately.
+
 To reopen a saved recording later:
 
 ```bash
-rerun outputs/act/a_sanity/<train_timestamp>/eval/offline/<eval_timestamp>/prediction.rrd
-rerun outputs/act/a_sanity/<train_timestamp>/eval/libero/<eval_timestamp>/rollout.rrd
+rerun outputs/act/a_sanity/<train_timestamp>/eval/offline/libero_object/task_008/<eval_timestamp>/prediction.rrd
+rerun outputs/act/a_sanity/<train_timestamp>/eval/libero/libero_object/task_008/<eval_timestamp>/rollout.rrd
 ```
 
 ## Workspace Shape
