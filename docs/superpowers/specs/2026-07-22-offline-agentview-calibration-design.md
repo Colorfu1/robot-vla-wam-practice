@@ -89,20 +89,24 @@ camera `-Z`. Rerun receives `camera_xyz=rr.ViewCoordinates.RUB`.
 against `(0, pi)`, used in trigonometry, stored in the calibration value, or passed to an API
 that expects radians.
 
-The final stored MP4 must not receive another image rotation. The local replay converter's
-`image[::-1, ::-1]` corrects the renderer buffer before storage. A real episode 823 frame
-confirms that the final image follows the standard camera projection. Four frozen native
-points and their independently calculated pixels provide an asymmetric regression fixture:
+The final stored MP4 follows the LeRobot/OpenVLA 180-degree image convention. On the
+installed renderer, its width reversal makes the stored image horizontally reflected
+relative to the standard physical camera projection. The calibrated overlay therefore uses
+the corrected entity defined by the 2026-07-23 reflection-correction design. Four frozen
+native points and their independently calculated physical-camera pixels provide an
+asymmetric projection fixture:
 
-| Native point | Expected pixel in the stored 256-by-256 frame |
+| Native point | Expected pixel in the corrected/physical 256-by-256 frame |
 |---|---|
 | `[-0.6, 0.2, 0.1]` | `[167.591233, 63.759209]` |
 | `[-0.1, -0.25, 0.3]` | `[53.063350, 59.090222]` |
 | `[-0.1, -0.25, 0.0]` | `[63.056351, 134.426155]` |
 | `[-0.1, 0.25, 0.0]` | `[192.944364, 134.426260]` |
 
-These points span both image halves and upper/lower regions, so horizontal mirror, vertical
-mirror, and 180-degree rotation errors cannot pass by preserving a centerline point.
+These points span both image halves and upper/lower regions. Separate discrete marker tests
+map corrected pixels into the original stored array using `x_original = width - 1 -
+x_physical`, including both X boundaries, so reflection and off-by-one errors cannot pass by
+preserving a centerline point.
 
 Dataset resolution is parsed from the metadata image shape, which is HWC for LeRobot video
 features. The parser requires shape `(height, width, channels)` with channels in `{1, 3, 4}`

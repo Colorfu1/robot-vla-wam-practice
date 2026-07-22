@@ -37,7 +37,8 @@ horizontally reflected visualization image.
 ## Goals
 
 - Preserve the exact image tensor consumed by existing ACT checkpoints.
-- Preserve the two original recorded-image panes byte-for-byte before Rerun compression.
+- Preserve the content and orientation of the two original recorded-image panes through
+  the existing tensor-to-HWC-display conversion.
 - Show a physically calibrated agentview whose image and 3D projection agree.
 - Keep the physical MuJoCo camera pose, positive focal lengths, and free-3D frustum valid.
 - Document the LIBERO image convention and its training implications in the A-Sanity guide.
@@ -101,16 +102,40 @@ The upper-right tabs are:
 
 No corrected eye-in-hand entity is created because no camera calibration exists for it.
 
+## Dataset Image-Convention Contract
+
+The evaluator must not infer horizontal reflection from the word `LIBERO` alone. Add an
+offline-evaluation image convention with these values:
+
+```text
+auto             # accept only provenance that the evaluator can verify
+lerobot_180      # HuggingFaceVLA/OpenVLA/LeRobot fixed 180-degree convention
+physical_opencv  # stored image already matches the physical pinhole projection
+```
+
+`auto` is the CLI default. It resolves `lerobot_180` only for a known repository identity
+or a generated cache manifest written by this workspace and carrying an explicit convention
+field. It resolves `physical_opencv` only from equally explicit provenance. An explicit
+`--dataset-root` without convention metadata is unknown and a visualized run must fail with
+an actionable message requiring `--agentview-image-convention`. The A-Sanity commands use
+`--agentview-image-convention=lerobot_180` because their explicit combined-dataset root has
+already been verified in the reproduction.
+
+For `lerobot_180`, the corrected entity is `image_hwc[:, ::-1]`. For
+`physical_opencv`, the corrected entity is a contiguous copy with no geometric transform.
+The resolved convention is recorded in `run_config.json` and the Rerun semantics document.
+Metrics-only runs do not need to resolve a visualization convention.
+
 ## Evaluation Data Flow
 
 For each visualized offline frame:
 
 1. Convert the dataset tensor to HWC uint8 once.
-2. Log that unchanged array at the original camera entity.
-3. Validate the agentview array against the calibrated HWC metadata.
-4. Create `np.ascontiguousarray(image_hwc[:, ::-1])` only inside the Rerun logging path.
-5. Log the corrected array at the calibrated entity.
-6. Log the existing world geometry without changing coordinates.
+2. Validate the agentview shape and dtype against the calibrated HWC metadata.
+3. Construct the convention-specific contiguous corrected copy without mutating the source.
+4. Only after both arrays are valid, log the original array at the recorded camera entity
+   and the corrected copy at the calibrated entity.
+5. Log the existing world geometry without changing coordinates.
 
 Policy inference occurs before this logging branch and receives the original dataset tensor.
 Offline metrics and predictions are therefore unchanged. With
@@ -118,7 +143,9 @@ Offline metrics and predictions are therefore unchanged. With
 
 ## Error Handling
 
-- A calibrated run fails if agentview metadata or decoded HWC shape does not match.
+- A calibrated run fails before recording frames if image convention is unknown.
+- A calibrated frame validates image metadata, dtype, and corrected copy before logging
+  either original or corrected image.
 - The correction helper rejects non-HWC images and returns a contiguous array with identical
   dtype and shape.
 - The evaluator does not silently attach physical calibration to the reflected original
@@ -144,7 +171,8 @@ The README and evaluator script comments should use the same concise distinction
 
 Automated tests must prove:
 
-- the original agentview array logged to Rerun is byte-for-byte unchanged;
+- the original agentview content and orientation logged to Rerun are unchanged after the
+  existing CHW/float-to-HWC/uint8 display conversion;
 - the corrected entity equals only `original[:, ::-1]`, with no vertical flip, transpose, or
   channel change;
 - the corrected result is contiguous and does not share writable storage with the original;
@@ -152,8 +180,16 @@ Automated tests must prove:
 - only the corrected entity receives `Transform3D` and `Pinhole`;
 - the calibrated overlay origin, tab name, tab order, and active tab are exact;
 - the free-3D view contains the corrected calibrated camera entity;
-- a synthetic asymmetric marker fixture fails under the old orientation and aligns after
-  the single width reversal;
+- `auto` accepts verified convention metadata and rejects an unknown explicit dataset root;
+- explicit `lerobot_180` and `physical_opencv` select exactly their documented transforms;
+- a synthetic asymmetric discrete-pixel marker fixture uses
+  `x_original = width - 1 - x_physical`, fails under the old orientation, aligns after the
+  single width reversal, and covers both X boundaries to lock down off-by-one behavior;
+- the predecessor's four floating-point pinhole fixtures are labeled as corrected/physical
+  projection coordinates rather than stored-image coordinates;
+- a deterministic evaluator harness captures the policy input tensor with visualization
+  disabled and enabled and proves bitwise equality of the image tensors plus equality of
+  predictions and offline metrics;
 - metrics-only evaluation still skips calibration work;
 - a real RRD passes `rerun rrd verify` and contains both image entities plus calibration only
   on the corrected entity.
