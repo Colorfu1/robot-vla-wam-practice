@@ -81,22 +81,24 @@ Use distinct paths:
 
 ```text
 demonstration/cameras/image       # original checkpoint input / recorded evidence
-calibration/agentview_corrected   # visualization-only horizontal correction
+calibration/agentview_corrected   # visualization-only physical-camera image
 ```
 
 The original entity receives only the unchanged dynamic `rr.Image`. The corrected entity
 receives:
 
-- the horizontally corrected dynamic `rr.Image`;
+- the convention-corrected physical-camera `rr.Image`;
 - the static task-specific `rr.Transform3D` using parent-from-child;
 - the static positive-focal-length `rr.Pinhole` using RUB camera coordinates.
 
 The left-side camera panes continue to include only the two original image entity paths.
 The upper-right tabs are:
 
-1. `Agentview calibrated (horizontal reflection corrected)`, active by default, with origin
+1. `Physically calibrated agentview`, active by default, with origin
    `calibration/agentview_corrected` and contents containing that image plus the existing
-   robot, trajectory, GT command, prediction command, and chunk-preview geometry;
+   robot, trajectory, GT command, prediction command, and chunk-preview geometry. Its
+   semantics panel reports whether the resolved convention required a horizontal
+   reflection or no transform;
 2. `Free 3D - recorded geometry and commands`, including the corrected camera entity so its
    physical cyan frustum remains visible.
 
@@ -113,11 +115,13 @@ lerobot_180      # HuggingFaceVLA/OpenVLA/LeRobot fixed 180-degree convention
 physical_opencv  # stored image already matches the physical pinhole projection
 ```
 
-`auto` is the CLI default. It resolves `lerobot_180` only for a known repository identity
-or a generated cache manifest written by this workspace and carrying an explicit convention
-field. It resolves `physical_opencv` only from equally explicit provenance. An explicit
-`--dataset-root` without convention metadata is unknown and a visualized run must fail with
-an actionable message requiring `--agentview-image-convention`. The A-Sanity commands use
+`auto` is the CLI default. It resolves a convention only from explicit convention metadata
+in a generated cache manifest. A future repository allowlist may resolve a convention only
+when it matches both repository identity and a pinned revision or content identifier; an
+unpinned repository name is never sufficient evidence. An explicit `--dataset-root`, an
+unpinned remote selection, or any manifest without convention metadata is unknown and a
+visualized run must fail with an actionable message requiring
+`--agentview-image-convention`. The A-Sanity commands use
 `--agentview-image-convention=lerobot_180` because their explicit combined-dataset root has
 already been verified in the reproduction.
 
@@ -161,8 +165,9 @@ The A-Sanity guide must state:
 - training and closed-loop preprocessing match, so existing checkpoints remain valid;
 - changing the training-image convention requires rebuilding data, matching rollout
   preprocessing, recomputing statistics, and retraining;
-- the left panes show the exact model input, while the calibrated tab is a visualization-only
-  horizontal reflection correction;
+- the left panes preserve the model-facing content and orientation after HWC/uint8 display
+  conversion; the calibrated tab is a visualization-only physical-camera copy whose
+  transform depends on the resolved convention;
 - geometry-aware work must treat this convention explicitly.
 
 The README and evaluator script comments should use the same concise distinction.
@@ -173,8 +178,9 @@ Automated tests must prove:
 
 - the original agentview content and orientation logged to Rerun are unchanged after the
   existing CHW/float-to-HWC/uint8 display conversion;
-- the corrected entity equals only `original[:, ::-1]`, with no vertical flip, transpose, or
-  channel change;
+- for `lerobot_180`, the corrected entity equals only `original[:, ::-1]`, with no vertical
+  flip, transpose, or channel change;
+- for `physical_opencv`, the corrected entity equals the original content and orientation;
 - the corrected result is contiguous and does not share writable storage with the original;
 - original and corrected images use different entity paths;
 - only the corrected entity receives `Transform3D` and `Pinhole`;
@@ -196,4 +202,6 @@ Automated tests must prove:
 
 After tests pass, regenerate the existing five-episode `offline_5` result with `--overwrite`.
 On asymmetric episode 823 frames, the corrected overlay EEF must lie on the visible gripper.
-The original left pane must continue to show the exact image consumed by ACT.
+The original left pane must continue to show the same content and orientation consumed by
+ACT after display conversion; the separate invariance test proves that enabling
+visualization does not alter the exact CHW/float policy tensor.

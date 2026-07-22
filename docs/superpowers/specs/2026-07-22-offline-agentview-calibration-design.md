@@ -129,32 +129,20 @@ camera is a configuration error rather than a reason to log a stale static trans
 
 ## Rerun Entity Contract
 
-Keep the recorded agentview image at:
+> Superseded by the 2026-07-23 reflection-correction design.
 
-```text
-demonstration/cameras/image
-```
-
-Log the following static components at that same entity:
-
-- `rr.Transform3D` containing the camera-to-display pose, explicitly using the
-  parent-from-child relation;
-- `rr.Pinhole` containing the metadata-derived projection, `RUB` coordinates, frustum color
-  `(0, 220, 255, 210)`, image-plane distance `0.25 m`, and line width `0.003`.
-
-The dynamic `rr.Image` remains on the same path. The original agentview Spatial2D view
-continues to include only that image entity, so it remains an unmodified ground-truth RGB
-reference.
-
-The free 3D contents explicitly include the calibrated agentview entity. This renders the
-camera origin, direction, frustum, and image plane in their real display-frame pose. The
-stable entity path remains inspectable without introducing an always-visible 3D label.
+The recorded image remains at `demonstration/cameras/image` and receives no calibration
+components. The visualization-only physical-camera image, `Transform3D`, and `Pinhole` are
+all logged at `calibration/agentview_corrected`. The free 3D contents include only that
+calibrated entity for the cyan camera frustum.
 
 ## Calibrated Overlay
 
-Add a `Spatial2DView` with origin `demonstration/cameras/image`. Its contents include:
+> Superseded by the 2026-07-23 reflection-correction design.
 
-- the recorded agentview image;
+Add a `Spatial2DView` with origin `calibration/agentview_corrected`. Its contents include:
+
+- the convention-corrected physical-camera image;
 - `demonstration/robot/**`;
 - `demonstration/trajectory/**`;
 - `comparison/commands/**`;
@@ -174,12 +162,15 @@ The overlay retains existing colors and semantics:
 | deep orange | teacher-forced predicted first-action command, not executed |
 | translucent orange | current predicted future command preview, not executed |
 
-The overlay does not include display-axis labels. The source image remains a recorded frame;
-only the vector geometry is projected over it. The current EEF projection should align with
-the visible gripper. The reconstructed elbow can differ from the RGB robot because the
-dataset does not contain the seven recorded arm joint positions.
+The overlay does not include display-axis labels. Only the visualization copy may be
+orientation-corrected; the recorded image entity and all robot coordinates stay unchanged.
+The current EEF projection should align with the visible gripper. The reconstructed elbow
+can differ from the RGB robot because the dataset does not contain the seven recorded arm
+joint positions.
 
 ## Blueprint Layout
+
+> Superseded by the 2026-07-23 reflection-correction design where wording differs.
 
 The upper left retains the existing two original camera views side by side:
 
@@ -190,8 +181,8 @@ Demonstration (recorded) - image2
 
 The upper right becomes a tab container:
 
-1. `Agentview calibrated overlay` (active by default)
-2. `Free 3D - camera frustum and commands`
+1. `Physically calibrated agentview` (active by default)
+2. `Free 3D - recorded geometry and commands`
 
 This allows the untouched agentview image and calibrated overlay to remain visible next to
 each other without compressing the interface into four narrow horizontal panes. The action,
@@ -199,15 +190,19 @@ error, latency, semantics, and metrics tabs below remain unchanged.
 
 ## Evaluation Data Flow
 
+> Superseded by the 2026-07-23 convention resolution and two-image logging flow.
+
 For offline evaluation with at least one visualized episode:
 
 1. Construct the existing task-specific `PandaSkeletonReconstructor`.
 2. Read `agentview` calibration from its already initialized MuJoCo model.
 3. Parse the stored agentview HWC resolution from LeRobot dataset metadata.
 4. Validate and convert the camera pose through the existing `DisplayFrame`.
-5. Initialize Rerun and log static world axes, action-series styles, camera transform, and
-   pinhole model before sending the blueprint.
-6. Log images and the existing per-frame geometry without altering their coordinates.
+5. Resolve the dataset image convention before recording any visualized frame.
+6. Initialize Rerun and attach camera calibration only to the corrected physical-camera
+   entity before sending the blueprint.
+7. Validate both recorded and corrected display arrays, then log both images and the
+   existing per-frame geometry without altering robot coordinates.
 
 When `--num-visualized-episodes=0`, the evaluator continues to skip the MuJoCo environment.
 It does not require camera calibration and does not expose the calibrated overlay tab.
@@ -233,13 +228,15 @@ Tests cover:
   vertical mirror, axis swap, and 180-degree rotation;
 - exact HWC metadata parsing, `[width, height]` Rerun ordering, and per-frame resolution
   validation;
-- byte-for-byte equality between the decoded dataset frame and the HWC array passed to
-  `rr.Image` before compression, plus a bounded decoded-RRD tolerance for lossy compression;
+- unchanged content and orientation between the decoded dataset frame and the original HWC
+  display array passed to `rr.Image`, plus a bounded decoded-RRD tolerance for compression;
 - rejection of a moving, body-attached, or non-fixed agentview camera;
-- exact static `Transform3D` and `Pinhole` entity paths and components;
+- exact static `Transform3D` and `Pinhole` components at only
+  `calibration/agentview_corrected`;
 - exact frustum RGBA, image-plane distance, and line width;
 - original RGB views containing no projected geometry;
-- the calibrated overlay containing the image plus the intended 3D geometry paths;
+- the calibrated overlay originating at the corrected image and containing the intended 3D
+  geometry paths;
 - the upper-right tab order and calibrated overlay being active by default;
 - the free 3D view including the agentview camera/frustum entity;
 - metrics-only evaluation avoiding camera-model construction;
