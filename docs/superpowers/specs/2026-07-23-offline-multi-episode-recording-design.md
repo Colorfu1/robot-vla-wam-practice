@@ -158,9 +158,10 @@ pre-publication finalization fails:
 - per-episode temporary RRDs are retained for diagnosis.
 
 If the atomic RRD rename succeeds but removing `.incomplete` or subsequent cleanup fails,
-retain the published RRD, `.incomplete`, and temporary episode RRDs. The marker makes the
-run explicitly incomplete rather than deleting an already verified artifact. Overwrite
-safety continues to treat it as an incomplete evaluator result.
+retain the published RRD, `.incomplete`, and any temporary episode RRDs not yet removed.
+Already deleted temporary files are not recreated. The marker makes the run explicitly
+incomplete rather than deleting an already verified artifact. Overwrite safety continues
+to treat it as an incomplete evaluator result.
 
 A missing Rerun CLI is an evaluation error because publication requires merge and verify.
 
