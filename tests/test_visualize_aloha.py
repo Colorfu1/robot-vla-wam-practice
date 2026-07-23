@@ -320,7 +320,7 @@ def test_save_sink_is_configured_before_blueprint(
     monkeypatch.setattr(
         viz.rr,
         "send_blueprint",
-        lambda value: events.append(("blueprint", value)),
+        lambda value, **kwargs: events.append(("blueprint", (value, kwargs))),
     )
     monkeypatch.setattr(
         viz.rr,
@@ -341,7 +341,16 @@ def test_save_sink_is_configured_before_blueprint(
     assert events == [
         ("init", {"spawn": False}),
         ("save", output),
-        ("blueprint", blueprint),
+        (
+            "blueprint",
+            (
+                blueprint,
+                {
+                    "make_active": False,
+                    "make_default": True,
+                },
+            ),
+        ),
     ]
 
 

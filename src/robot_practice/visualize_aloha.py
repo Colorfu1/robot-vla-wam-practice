@@ -333,7 +333,11 @@ def _initialize_recording(
         rr.save(config.save)
     else:
         rr.spawn()
-    rr.send_blueprint(blueprint)
+    rr.send_blueprint(
+        blueprint,
+        make_active=False,
+        make_default=True,
+    )
     return blueprint
 
 

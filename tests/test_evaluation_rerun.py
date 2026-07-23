@@ -1100,7 +1100,9 @@ def test_recording_configures_file_sink_before_blueprint(
     monkeypatch.setattr(viz.rr, "init", lambda *args, **kwargs: events.append(("init", kwargs)))
     monkeypatch.setattr(viz.rr, "save", lambda path: events.append(("save", path)))
     monkeypatch.setattr(
-        viz.rr, "send_blueprint", lambda value: events.append(("blueprint", value))
+        viz.rr,
+        "send_blueprint",
+        lambda value, **kwargs: events.append(("blueprint", (value, kwargs))),
     )
     monkeypatch.setattr(
         viz,
@@ -1127,7 +1129,16 @@ def test_recording_configures_file_sink_before_blueprint(
                 },
             ),
         ),
-        ("blueprint", blueprint),
+        (
+            "blueprint",
+            (
+                blueprint,
+                {
+                    "make_active": False,
+                    "make_default": True,
+                },
+            ),
+        ),
     ]
 
 

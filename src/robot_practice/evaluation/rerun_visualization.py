@@ -715,7 +715,11 @@ def initialize_recording(
             agentview_calibration=agentview_calibration,
             agentview_image_convention=agentview_image_convention,
         )
-    rr.send_blueprint(blueprint)
+    rr.send_blueprint(
+        blueprint,
+        make_active=False,
+        make_default=True,
+    )
 
 
 def finish_recording() -> None:
