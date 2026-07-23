@@ -258,3 +258,37 @@ GT 首动作平移指令，深橙是 teacher-forced、未执行的 Pred 首动�
 
 实验完成后，将 task、数据量、observation/action、horizon、loss、offline error、
 closed-loop success rate、latency 和 failure cases 写入 `reports/experiment_log.md`。
+
+## 4. 实际结果（2026-07-23）
+
+20,000-step checkpoint 在五条训练 demonstration 的全部 859 帧上完成了 offline
+evaluation，并在相同 LIBERO task 上完成了 20 次正式 closed-loop rollout。
+
+| 指标 | 100-step 参考 | 20,000-step |
+|---|---:|---:|
+| First-action MAE | 0.16989 | 0.02076 |
+| Delta-action MAE | 0.02365 | 0.00972 |
+| Teacher-forced Action TV | 0.02039 | 0.02011 |
+| Teacher-forced Action Jerk | 0.02991 | 0.01146 |
+| Closed-loop success rate | 未评测 | 18/20（90%） |
+
+相对 100-step checkpoint，20,000-step checkpoint 的 first-action MAE 降低约
+87.8%，delta-action MAE 降低约 58.9%。正式 closed-loop evaluation 成功
+18 次、失败 2 次。执行动作的 Action TV 为 0.02195，Action Jerk 为 0.02210；
+model-query latency p50/p95 分别为 18.28/24.47 ms。
+
+本次训练关闭了 W&B，且训练终端日志没有保留，因此无法补录完整 loss 曲线，也不能验证
+`loss@20000 <= 0.2 × loss@100`。零更新 B0 checkpoint 没有保留下来，表中的
+100-step 结果只能作为近似参考，不能写成严格的 B0 对照。两次 closed-loop 失败尚未做
+逐帧失败类型标注。
+
+在这些证据限制下，A-Sanity 可以判定为完成：20,000-step 模型在五条训练轨迹上的
+open-loop error 明显下降，并在对应任务取得 90% closed-loop success rate。
+
+结果文件：
+
+```text
+outputs/act/a_sanity/20260721_171753/offline_5_recordings/metrics.json
+outputs/act/a_sanity/20260721_171753/offline_5_recordings/prediction.rrd
+outputs/act/a_sanity/20260721_171753/eval/libero/libero_object/task_008/20260723_152040/metrics.json
+```
