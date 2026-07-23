@@ -64,6 +64,141 @@ class LoadedACT:
     postprocessor: Any
 
 
+@dataclass(frozen=True)
+class ActionPlanStep:
+    """One selected ACT action and the policy-space plan that produced it."""
+
+    model_queried: bool
+    plan_step_index: int | None
+    queried_chunk_policy: torch.Tensor | None
+    queued_actions_policy: torch.Tensor
+    discarded_actions_policy: torch.Tensor
+    new_prediction_chunk_policy: torch.Tensor | None
+
+
+class ActionPlanTracker:
+    """Track ACT queue progression without performing or altering model inference."""
+
+    def __init__(
+        self,
+        *,
+        n_action_steps: int,
+        temporal_ensemble_coeff: float | None,
+        action_dim: int = 7,
+    ) -> None:
+        if n_action_steps <= 0:
+            raise ValueError("n_action_steps must be positive")
+        if action_dim <= 0:
+            raise ValueError("action_dim must be positive")
+        self.n_action_steps = n_action_steps
+        self.temporal_ensemble = temporal_ensemble_coeff is not None
+        self.action_dim = action_dim
+        self._active_chunk: torch.Tensor | None = None
+        self._next_index = 0
+
+    def reset_episode(self) -> None:
+        self._active_chunk = None
+        self._next_index = 0
+
+    def _validate_chunk(self, chunk: torch.Tensor) -> torch.Tensor:
+        if (
+            not isinstance(chunk, torch.Tensor)
+            or chunk.ndim != 3
+            or chunk.shape[0] != 1
+            or chunk.shape[2] != self.action_dim
+            or chunk.shape[1] == 0
+            or not bool(torch.isfinite(chunk).all())
+        ):
+            shape = getattr(chunk, "shape", None)
+            raise ValueError(
+                "queried ACT chunk must have finite shape "
+                f"[1,horizon,{self.action_dim}], got {shape}"
+            )
+        if not self.temporal_ensemble and self.n_action_steps > chunk.shape[1]:
+            raise ValueError(
+                "n_action_steps cannot exceed the queried ACT chunk length: "
+                f"{self.n_action_steps} > {chunk.shape[1]}"
+            )
+        return chunk.detach().clone()
+
+    def record_step(
+        self,
+        *,
+        selected_action_policy: torch.Tensor,
+        queried_chunk_policy: torch.Tensor | None,
+    ) -> ActionPlanStep:
+        if (
+            not isinstance(selected_action_policy, torch.Tensor)
+            or selected_action_policy.shape != (1, self.action_dim)
+            or not bool(torch.isfinite(selected_action_policy).all())
+        ):
+            shape = getattr(selected_action_policy, "shape", None)
+            raise ValueError(
+                "selected ACT action must have finite shape "
+                f"[1,{self.action_dim}], got {shape}"
+            )
+
+        queried = (
+            self._validate_chunk(queried_chunk_policy)
+            if queried_chunk_policy is not None
+            else None
+        )
+        if self.temporal_ensemble:
+            if queried is None:
+                raise RuntimeError(
+                    "Temporal Ensemble must query predict_action_chunk every control step"
+                )
+            empty = queried.new_empty((0, self.action_dim))
+            return ActionPlanStep(
+                model_queried=True,
+                plan_step_index=None,
+                queried_chunk_policy=queried,
+                queued_actions_policy=empty,
+                discarded_actions_policy=empty,
+                new_prediction_chunk_policy=queried,
+            )
+
+        if queried is not None:
+            if self._active_chunk is not None:
+                raise RuntimeError(
+                    "ACT queried a new chunk before the active action queue was exhausted"
+                )
+            self._active_chunk = queried[0]
+            self._next_index = 0
+        elif self._active_chunk is None:
+            raise RuntimeError("ACT selected an action without an active or newly queried chunk")
+
+        if self._active_chunk is None:
+            raise RuntimeError("ACT action plan tracker has no active chunk")
+        plan_step_index = self._next_index
+        expected = self._active_chunk[plan_step_index : plan_step_index + 1]
+        selected = selected_action_policy.detach()
+        if not torch.allclose(expected, selected, rtol=1e-5, atol=1e-6):
+            max_error = float(torch.max(torch.abs(expected - selected)).detach().cpu())
+            raise RuntimeError(
+                "ACT selected action does not match the tracked policy-space queue "
+                f"at plan index {plan_step_index}; max_abs_error={max_error:.6g}"
+            )
+
+        queued = self._active_chunk[
+            plan_step_index + 1 : self.n_action_steps
+        ].detach().clone()
+        discarded = self._active_chunk[self.n_action_steps :].detach().clone()
+        self._next_index += 1
+        if self._next_index == self.n_action_steps:
+            self._active_chunk = None
+            self._next_index = 0
+
+        return ActionPlanStep(
+            model_queried=queried is not None,
+            plan_step_index=plan_step_index,
+            queried_chunk_policy=queried,
+            queued_actions_policy=queued,
+            discarded_actions_policy=discarded,
+            new_prediction_chunk_policy=None,
+        )
+
+
 def practice_root() -> Path:
     """Return the editable-install workspace root."""
 
@@ -566,12 +701,14 @@ class ModelQueryTimer(AbstractContextManager["ModelQueryTimer"]):
         self.policy = policy
         self.device = device
         self.current_latency_ms: float | None = None
+        self.current_chunk_policy: torch.Tensor | None = None
         self._original_bound: Callable[..., Any] | None = None
         self._had_instance_value = False
         self._instance_value: Any = None
 
     def begin_step(self) -> None:
         self.current_latency_ms = None
+        self.current_chunk_policy = None
 
     def __enter__(self) -> "ModelQueryTimer":
         self._had_instance_value = "predict_action_chunk" in self.policy.__dict__
@@ -592,7 +729,13 @@ class ModelQueryTimer(AbstractContextManager["ModelQueryTimer"]):
                 device=self.device,
                 **kwargs,
             )
+            if not isinstance(result, torch.Tensor):
+                raise TypeError(
+                    "ACT predict_action_chunk must return a tensor, "
+                    f"got {type(result).__name__}"
+                )
             self.current_latency_ms = latency
+            self.current_chunk_policy = result.detach().clone()
             return result
 
         setattr(self.policy, "predict_action_chunk", measured)

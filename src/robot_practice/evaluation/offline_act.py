@@ -406,7 +406,7 @@ def evaluate_offline(
             mode="offline",
             camera_keys=camera_keys,
             fps=float(dataset.fps),
-            offline_camera_calibration=agentview_calibration,
+            agentview_calibration=agentview_calibration,
             agentview_image_convention=resolved_agentview_image_convention,
         )
         recording_initialized = True

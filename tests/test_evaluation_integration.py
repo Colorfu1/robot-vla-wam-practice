@@ -173,6 +173,14 @@ def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
     assert table.column("init_state_id").to_pylist() == [0, 1]
     assert table.column("truncated").to_pylist() == [True, True]
     assert table.column("termination_reason").to_pylist() == ["time_limit", "time_limit"]
+    assert table.column("model_queried").to_pylist() == [True, True]
+    assert table.column("plan_step_index").to_pylist() == [0, 0]
+    assert all(len(value) == 8 for value in table["observation_state"].to_pylist())
+    assert all(
+        len(value) == 7
+        for value in table["next_observation_joint_positions"].to_pylist()
+    )
+    assert all(len(value) == 20 for value in table["predicted_chunk"].to_pylist())
 
 
 def test_real_vector_final_info_and_controlled_init_state_sequence(
@@ -187,10 +195,23 @@ def test_real_vector_final_info_and_controlled_init_state_sequence(
         env.reset(seed=[1000])
         assert base_env.init_state_id == 1
         monkeypatch.setattr(base_env._env, "check_success", lambda: True)
-        _, _, terminated, _, info = env.step(np.zeros((1, 7), dtype=np.float32))
+        real_reset = base_env.reset
+
+        def sentinel_reset(*args: object, **kwargs: object) -> tuple[dict, dict]:
+            reset_observation, reset_info = real_reset(*args, **kwargs)
+            reset_observation["robot_state"]["joints"]["pos"] = np.full(7, 123.0)
+            return reset_observation, reset_info
+
+        monkeypatch.setattr(base_env, "reset", sentinel_reset)
+        terminal_observation, _, terminated, _, info = env.step(
+            np.zeros((1, 7), dtype=np.float32)
+        )
         assert bool(terminated[0])
         assert extract_terminal_success(info, terminal=True)
         assert base_env.init_state_id == 2
+        assert not np.all(
+            terminal_observation["robot_state"]["joints"]["pos"] == 123.0
+        )
 
         _set_init_state_id(env, 1)
         env.reset(seed=[1001])

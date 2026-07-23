@@ -157,9 +157,14 @@ scripts/experiments/act/eval_libero.sh \
 ```
 
 This additionally writes simulator success/reward data, executed-action TV and jerk,
-policy/model-query latency, `rollouts.parquet`, `eval_info.json`, Rerun, and MP4. Only the
-simulator run reports task success. Offline prediction cannot establish success because it
-never executes an action.
+policy/model-query latency, `rollouts.parquet`, `eval_info.json`, Rerun, and MP4. The
+closed-loop Rerun aligns the policy inputs at `t` with the executed command and post-action
+agentview at `t+1`. It shows the Panda from measured simulator joints, measured EEF history
+and response, the remaining executable ACT queue, the discarded chunk tail (or Temporal
+Ensemble's new prediction chunk), selectable 7D action/8D state curves, and metrics. It does
+not present a demonstration as frame-aligned closed-loop GT. Only the simulator run reports
+task success; offline prediction cannot establish success because it never executes an
+action.
 
 Both commands require `--suite` and `--task-id`. Supported suites are `libero_spatial`,
 `libero_object`, `libero_goal`, `libero_10`, and `libero_90`; one invocation evaluates one

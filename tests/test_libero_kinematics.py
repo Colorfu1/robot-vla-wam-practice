@@ -12,6 +12,7 @@ from robot_practice.evaluation.libero_kinematics import (
     IK_ROTATION_TOLERANCE_RAD,
     DisplayFrame,
     FixedCameraCalibration,
+    PandaMeasuredPose,
     PandaSkeletonReconstructor,
     extract_fixed_camera_calibration,
     rotation_geodesic_error,
@@ -223,6 +224,62 @@ def test_reconstructor_close_is_idempotent_and_context_safe() -> None:
             raise RuntimeError("test failure")
     reconstructor.close()
     assert environment.close_calls == 1
+
+
+def test_forward_measured_uses_exact_joint_positions() -> None:
+    class FakeData:
+        def __init__(self) -> None:
+            self.qpos = np.zeros(9, dtype=np.float64)
+
+    class FakeSim:
+        def __init__(self) -> None:
+            self.data = FakeData()
+            self.forward_calls = 0
+
+        def forward(self) -> None:
+            self.forward_calls += 1
+
+    reconstructor = object.__new__(PandaSkeletonReconstructor)
+    reconstructor._closed = False
+    reconstructor._environment = object()
+    reconstructor._sim = FakeSim()
+    reconstructor._gripper_qpos_indices = np.asarray([7, 8])
+    captured_arm: list[np.ndarray] = []
+    reconstructor._set_arm_qpos = lambda value: captured_arm.append(value.copy())
+    reconstructor._body_points = lambda names: np.zeros((len(names), 3))
+    arm = np.linspace(-0.3, 0.3, 7)
+    gripper = np.asarray([0.02, -0.02])
+
+    pose = reconstructor.forward_measured(arm, gripper)
+
+    assert isinstance(pose, PandaMeasuredPose)
+    np.testing.assert_array_equal(captured_arm, [arm])
+    np.testing.assert_array_equal(reconstructor._sim.data.qpos[7:9], gripper)
+    np.testing.assert_array_equal(pose.arm_qpos, arm)
+    np.testing.assert_array_equal(pose.gripper_qpos, gripper)
+    assert reconstructor._sim.forward_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("arm", "gripper", "message"),
+    [
+        (np.zeros(6), np.zeros(2), "seven finite"),
+        (np.full(7, np.nan), np.zeros(2), "seven finite"),
+        (np.zeros(7), np.zeros(1), "two finite"),
+        (np.zeros(7), np.full(2, np.nan), "two finite"),
+    ],
+)
+def test_forward_measured_rejects_invalid_joint_positions(
+    arm: np.ndarray,
+    gripper: np.ndarray,
+    message: str,
+) -> None:
+    reconstructor = object.__new__(PandaSkeletonReconstructor)
+    reconstructor._closed = False
+    reconstructor._environment = object()
+
+    with pytest.raises(ValueError, match=message):
+        reconstructor.forward_measured(arm, gripper)
 
 
 RUN_REAL_KINEMATICS = os.environ.get("RUN_LIBERO_KINEMATICS_INTEGRATION") == "1"

@@ -7,6 +7,7 @@ import gymnasium as gym
 import numpy as np
 import pyarrow as pa
 import pytest
+import torch
 
 import robot_practice.evaluation.libero_act as libero
 import robot_practice.evaluation.offline_act as offline
@@ -277,7 +278,14 @@ def test_rollout_schema_distinguishes_instant_and_cumulative_success() -> None:
         "step_index",
         "global_step",
         "timestamp_s",
+        "observation_state",
+        "next_observation_state",
+        "observation_joint_positions",
+        "next_observation_joint_positions",
         "executed_action",
+        "model_queried",
+        "plan_step_index",
+        "predicted_chunk",
         "reward",
         "terminated",
         "truncated",
@@ -291,7 +299,87 @@ def test_rollout_schema_distinguishes_instant_and_cumulative_success() -> None:
     ]
     assert schema.field("model_query_latency_ms").nullable
     assert schema.field("termination_reason").nullable
+    assert schema.field("plan_step_index").nullable
+    assert schema.field("predicted_chunk").nullable
+    assert not schema.field("observation_state").nullable
+    assert not schema.field("next_observation_joint_positions").nullable
     assert not schema.field("policy_step_latency_ms").nullable
+    assert schema.metadata[b"schema_version"] == b"3"
+
+
+def test_libero_extracts_policy_state_and_measured_raw_joints() -> None:
+    policy_observation = {
+        "observation.state": torch.arange(8, dtype=torch.float32).reshape(1, 8)
+    }
+    raw_observation = {
+        "robot_state": {
+            "joints": {
+                "pos": np.arange(7, dtype=np.float64).reshape(1, 7),
+            }
+        }
+    }
+
+    np.testing.assert_array_equal(
+        libero._extract_policy_state(policy_observation),
+        np.arange(8, dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        libero._extract_measured_joint_positions(raw_observation),
+        np.arange(7, dtype=np.float32),
+    )
+
+
+def test_policy_chunk_postprocessing_matches_selected_action_processing() -> None:
+    chunk = torch.arange(3 * 7, dtype=torch.float32).reshape(1, 3, 7)
+    seen_shapes: list[tuple[int, ...]] = []
+
+    def checkpoint_postprocessor(value: torch.Tensor) -> torch.Tensor:
+        seen_shapes.append(tuple(value.shape))
+        return value * 2 + 1
+
+    def env_postprocessor(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        return {"action": batch["action"] - 3}
+
+    processed_chunk = libero._postprocess_policy_action_tensor(
+        chunk,
+        checkpoint_postprocessor=checkpoint_postprocessor,
+        env_postprocessor=env_postprocessor,
+    )
+    processed_action = libero._postprocess_policy_action_tensor(
+        chunk[:, 1],
+        checkpoint_postprocessor=checkpoint_postprocessor,
+        env_postprocessor=env_postprocessor,
+    )
+
+    assert seen_shapes == [(3, 7), (1, 7)]
+    torch.testing.assert_close(processed_chunk[:, 1], processed_action)
+    torch.testing.assert_close(processed_chunk, chunk * 2 - 2)
+
+
+def test_controller_plan_partitions_validate_and_advance_standard_queue() -> None:
+    policy_chunk = torch.arange(20 * 7, dtype=torch.float32).reshape(1, 20, 7)
+    plan_step = libero.ActionPlanStep(
+        model_queried=True,
+        plan_step_index=0,
+        queried_chunk_policy=policy_chunk,
+        queued_actions_policy=policy_chunk[0, 1:5],
+        discarded_actions_policy=policy_chunk[0, 5:],
+        new_prediction_chunk_policy=None,
+    )
+    controller_chunk = policy_chunk[0].numpy()
+
+    active, queued, discarded, temporal = libero._controller_plan_partitions(
+        plan_step,
+        queried_chunk_controller=controller_chunk,
+        active_chunk_controller=None,
+        executed_action_controller=controller_chunk[0],
+        n_action_steps=5,
+    )
+
+    np.testing.assert_array_equal(active, controller_chunk)
+    np.testing.assert_array_equal(queued, controller_chunk[1:5])
+    np.testing.assert_array_equal(discarded, controller_chunk[5:])
+    assert temporal is None
 
 
 def test_eval_info_uses_percentage_only_for_formal_run() -> None:

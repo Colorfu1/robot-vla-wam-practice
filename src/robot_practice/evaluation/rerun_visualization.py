@@ -19,10 +19,21 @@ from robot_practice.evaluation.libero_kinematics import (
     PANDA_SKELETON_LABELS,
     DisplayFrame,
     FixedCameraCalibration,
+    PandaMeasuredPose,
     PandaSkeletonPose,
 )
 
 ACTION_NAMES = ("x", "y", "z", "roll", "pitch", "yaw", "gripper")
+LIBERO_STATE_NAMES = (
+    "eef_x",
+    "eef_y",
+    "eef_z",
+    "axis_angle_x",
+    "axis_angle_y",
+    "axis_angle_z",
+    "gripper_left_qpos",
+    "gripper_right_qpos",
+)
 OFFLINE_METRIC_ROWS = (
     ("Episodes", "num_episodes", "integer"),
     ("Frames", "num_frames", "integer"),
@@ -41,6 +52,10 @@ PREDICTION_COLOR = (230, 159, 0)
 GT_COMMAND_COLOR = (86, 180, 233, 190)
 PREDICTION_PREVIEW_COLOR = (255, 190, 80, 96)
 PREDICTION_PREVIEW_ENDPOINT_COLOR = (255, 190, 80, 128)
+ROLLOUT_RESPONSE_COLOR = (0, 190, 210)
+ROLLOUT_QUEUE_COLOR = (255, 190, 80, 160)
+ROLLOUT_DISCARDED_COLOR = (255, 190, 80, 72)
+ROLLOUT_TEMPORAL_CHUNK_COLOR = (180, 120, 220, 96)
 AXIS_COLORS = ((230, 50, 50), (50, 190, 80), (60, 110, 230))
 ACTION_COLOR_HEX = {
     "x": ("#4E79A7", "#A0CBE8"),
@@ -131,9 +146,28 @@ def _action_series_specs() -> tuple[ActionSeriesSpec, ...]:
 
 ACTION_SERIES_SPECS = _action_series_specs()
 ACTION_SERIES_PATHS = tuple(spec.path for spec in ACTION_SERIES_SPECS)
+LIBERO_ACTION_SERIES_PATHS = tuple(
+    f"actions/executed/{name}" for name in ACTION_NAMES
+)
+LIBERO_STATE_SERIES_PATHS = tuple(
+    f"state/observation/{name}" for name in LIBERO_STATE_NAMES
+)
+LIBERO_STATE_COLORS = (
+    (78, 121, 167),
+    (242, 142, 43),
+    (89, 161, 79),
+    (225, 87, 89),
+    (176, 122, 161),
+    (156, 117, 95),
+    (47, 158, 170),
+    (118, 183, 178),
+)
 AGENTVIEW_CAMERA_KEY = "observation.images.image"
 RECORDED_AGENTVIEW_ENTITY_PATH = "demonstration/cameras/image"
 CALIBRATED_AGENTVIEW_ENTITY_PATH = "calibration/agentview_corrected"
+LIBERO_INPUT_CAMERA_ROOT = "rollout/cameras/input"
+LIBERO_POST_ACTION_AGENTVIEW_PATH = "rollout/cameras/post_action/agentview"
+LIBERO_CALIBRATED_AGENTVIEW_PATH = "rollout/calibration/agentview_corrected"
 # Compatibility alias for callers that mean the original recorded camera image.
 AGENTVIEW_ENTITY_PATH = RECORDED_AGENTVIEW_ENTITY_PATH
 AGENTVIEW_FRUSTUM_COLOR = (0, 220, 255, 210)
@@ -158,6 +192,47 @@ OFFLINE_AGENTVIEW_OVERLAY_CONTENTS = (
     "prediction/not_executed/chunk_preview",
     "prediction/not_executed/chunk_endpoint",
 )
+LIBERO_3D_CONTENTS = (
+    "display_frame/**",
+    "rollout/robot/**",
+    "rollout/trajectory/**",
+    "rollout/command/**",
+    "rollout/response/**",
+    "rollout/plan/**",
+)
+LIBERO_CALIBRATED_3D_CONTENTS = LIBERO_3D_CONTENTS + (
+    LIBERO_CALIBRATED_AGENTVIEW_PATH,
+)
+LIBERO_AGENTVIEW_OVERLAY_CONTENTS = (
+    LIBERO_CALIBRATED_AGENTVIEW_PATH,
+    "rollout/robot/**",
+    "rollout/trajectory/**",
+    "rollout/command/**",
+    "rollout/response/**",
+    "rollout/plan/**",
+)
+LIBERO_SEMANTICS_MARKDOWN = """\
+# LIBERO closed-loop visualization semantics
+
+Each `global_step` combines the policy inputs at `t`, the controller-space action actually
+sent to LIBERO, and the simulator result at `t+1`.
+
+- **Blue Panda:** forward kinematics from measured simulator arm and gripper joints.
+- **Deep-blue path:** measured end-effector history through observation `t`.
+- **Deep-orange segment:** the current controller command sent to `env.step`.
+- **Cyan segment:** measured end-effector displacement from `t` to `t+1`.
+- **Light-orange solid preview:** remaining standard ACT queue entries that can execute.
+- **Faint-orange dashed preview:** standard ACT chunk tail that will be discarded.
+- **Violet dashed preview:** Temporal Ensemble's new prediction chunk; it is not an
+  execution queue.
+
+Command and plan endpoints visualize relative OSC commands. They are not simulated future
+states. The post-action agentview is the observation returned by the same simulator step,
+including terminal transitions. No demonstration or frame-aligned GT is shown.
+
+Only XYZ labels remain permanently visible. Select robot, trajectory, command, response, or
+plan entities to inspect their labels.
+"""
 
 
 @dataclass
@@ -186,6 +261,36 @@ class OfflineTrajectoryHistory:
                 f"got {frame_index} after {self.last_frame_index}"
             )
         self.last_frame_index = frame_index
+        self._positions.append(state[:3].copy())
+        return np.stack(self._positions)
+
+
+@dataclass
+class LiberoTrajectoryHistory:
+    """Accumulate measured closed-loop EEF positions within one episode."""
+
+    episode_index: int | None = None
+    last_step_index: int | None = None
+    _positions: list[NDArray[np.float64]] = field(default_factory=list)
+
+    def append(
+        self,
+        *,
+        episode_index: int,
+        step_index: int,
+        observation_state: Sequence[float] | torch.Tensor | NDArray[Any],
+    ) -> NDArray[np.float64]:
+        state = _validate_observation_state(observation_state)
+        if self.episode_index != episode_index:
+            self.episode_index = episode_index
+            self.last_step_index = None
+            self._positions.clear()
+        if self.last_step_index is not None and step_index <= self.last_step_index:
+            raise ValueError(
+                "LIBERO visualization step_index must increase within an episode; "
+                f"got {step_index} after {self.last_step_index}"
+            )
+        self.last_step_index = step_index
         self._positions.append(state[:3].copy())
         return np.stack(self._positions)
 
@@ -426,12 +531,50 @@ def build_offline_blueprint(
     )
 
 
+def _build_libero_spatial_view() -> rrb.Container:
+    calibrated_overlay = rrb.Spatial2DView(
+        origin=LIBERO_CALIBRATED_AGENTVIEW_PATH,
+        contents=list(LIBERO_AGENTVIEW_OVERLAY_CONTENTS),
+        name="Physically calibrated rollout agentview",
+    )
+    free_3d = rrb.Spatial3DView(
+        origin="/",
+        contents=list(LIBERO_CALIBRATED_3D_CONTENTS),
+        name="Free 3D - measured rollout and ACT plan",
+        line_grid=True,
+    )
+    return rrb.Tabs(
+        calibrated_overlay,
+        free_3d,
+        active_tab=0,
+        name="Calibrated rollout and free 3D",
+    )
+
+
 def build_libero_blueprint(camera_keys: Sequence[str], fps: float) -> rrb.Blueprint:
+    policy_inputs = _camera_views(
+        camera_keys,
+        root=LIBERO_INPUT_CAMERA_ROOT,
+        group_name="Policy inputs at t",
+        view_name_prefix="Policy input t - ",
+    )
+    post_action = rrb.Spatial2DView(
+        origin=LIBERO_POST_ACTION_AGENTVIEW_PATH,
+        contents=[LIBERO_POST_ACTION_AGENTVIEW_PATH],
+        name="Post-action simulator result t+1",
+    )
     charts = rrb.Tabs(
         rrb.TimeSeriesView(
-            origin="actions/executed",
-            contents=["actions/executed/**"],
-            name="Executed actions",
+            origin="/",
+            contents=list(LIBERO_ACTION_SERIES_PATHS),
+            name="Executed actions (click legend to toggle)",
+            plot_legend=rrb.PlotLegend(visible=True),
+        ),
+        rrb.TimeSeriesView(
+            origin="/",
+            contents=list(LIBERO_STATE_SERIES_PATHS),
+            name="Simulator state (click legend to toggle)",
+            plot_legend=rrb.PlotLegend(visible=True),
         ),
         rrb.TimeSeriesView(
             origin="rollout",
@@ -444,6 +587,11 @@ def build_libero_blueprint(camera_keys: Sequence[str], fps: float) -> rrb.Bluepr
             name="Policy latency",
         ),
         rrb.TextDocumentView(
+            origin="documentation",
+            contents=["documentation/libero_semantics"],
+            name="Visualization semantics",
+        ),
+        rrb.TextDocumentView(
             origin="summary",
             contents=["summary/metrics"],
             name="Metrics",
@@ -451,7 +599,16 @@ def build_libero_blueprint(camera_keys: Sequence[str], fps: float) -> rrb.Bluepr
         name="Closed-loop signals",
     )
     return rrb.Blueprint(
-        rrb.Vertical(_camera_views(camera_keys), charts, row_shares=[0.62, 0.38]),
+        rrb.Vertical(
+            rrb.Horizontal(
+                policy_inputs,
+                _build_libero_spatial_view(),
+                post_action,
+                name="Closed-loop transition",
+            ),
+            charts,
+            row_shares=[0.62, 0.38],
+        ),
         rrb.TimePanel(timeline="global_step", fps=fps, expanded=True),
         collapse_panels=False,
     )
@@ -463,12 +620,12 @@ def initialize_recording(
     mode: str,
     camera_keys: Sequence[str],
     fps: float,
-    offline_camera_calibration: FixedCameraCalibration | None = None,
+    agentview_calibration: FixedCameraCalibration | None = None,
     agentview_image_convention: str | None = None,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if mode == "offline":
-        if (offline_camera_calibration is None) != (agentview_image_convention is None):
+        if (agentview_calibration is None) != (agentview_image_convention is None):
             raise ValueError(
                 "Offline camera calibration and resolved agentview image convention "
                 "must be supplied together"
@@ -477,13 +634,12 @@ def initialize_recording(
         blueprint = build_offline_blueprint(
             camera_keys,
             fps,
-            has_agentview_calibration=offline_camera_calibration is not None,
+            has_agentview_calibration=agentview_calibration is not None,
         )
     elif mode == "libero":
-        if offline_camera_calibration is not None or agentview_image_convention is not None:
+        if agentview_calibration is None or agentview_image_convention is None:
             raise ValueError(
-                "Offline camera calibration and image convention are only supported "
-                "for offline recordings"
+                "LIBERO recording requires agentview calibration and image convention"
             )
         application_id = "robot_practice_act_libero"
         blueprint = build_libero_blueprint(camera_keys, fps)
@@ -494,7 +650,15 @@ def initialize_recording(
     if mode == "offline":
         log_offline_static_context(
             rr,
-            agentview_calibration=offline_camera_calibration,
+            agentview_calibration=agentview_calibration,
+            agentview_image_convention=agentview_image_convention,
+        )
+    else:
+        if agentview_calibration is None or agentview_image_convention is None:
+            raise RuntimeError("LIBERO recording calibration contract was not resolved")
+        log_libero_static_context(
+            rr,
+            agentview_calibration=agentview_calibration,
             agentview_image_convention=agentview_image_convention,
         )
     rr.send_blueprint(blueprint)
@@ -570,9 +734,11 @@ def integrate_libero_action_chunk(
 def _log_agentview_calibration(
     recorder: Recorder,
     calibration: FixedCameraCalibration,
+    *,
+    entity_path: str = CALIBRATED_AGENTVIEW_ENTITY_PATH,
 ) -> None:
     recorder.log(
-        CALIBRATED_AGENTVIEW_ENTITY_PATH,
+        entity_path,
         rr.Transform3D(
             translation=calibration.position_display,
             mat3x3=calibration.rotation_display_from_camera,
@@ -581,7 +747,7 @@ def _log_agentview_calibration(
         static=True,
     )
     recorder.log(
-        CALIBRATED_AGENTVIEW_ENTITY_PATH,
+        entity_path,
         rr.Pinhole(
             image_from_camera=calibration.image_from_camera,
             resolution=calibration.resolution_wh,
@@ -651,6 +817,79 @@ def log_offline_static_context(
         _log_agentview_calibration(recorder, agentview_calibration)
 
 
+def log_libero_static_context(
+    recorder: Recorder,
+    *,
+    agentview_calibration: FixedCameraCalibration,
+    agentview_image_convention: str,
+) -> None:
+    if agentview_image_convention not in ("lerobot_180", "physical_opencv"):
+        raise ValueError(
+            "LIBERO agentview image convention must be lerobot_180 or physical_opencv"
+        )
+    recorder.log("/", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
+    recorder.log(
+        "display_frame/base",
+        rr.Points3D(
+            [[0.0, 0.0, 0.0]],
+            colors=[(210, 210, 210)],
+            radii=0.025,
+            labels=["Robot base / display origin"],
+            show_labels=False,
+        ),
+        static=True,
+    )
+    recorder.log(
+        "display_frame/axes",
+        rr.Arrows3D(
+            origins=np.zeros((3, 3), dtype=np.float64),
+            vectors=np.eye(3, dtype=np.float64) * 0.25,
+            colors=AXIS_COLORS,
+            radii=0.006,
+            labels=["X", "Y Forward", "Z Up"],
+            show_labels=True,
+        ),
+        static=True,
+    )
+    for index, name in enumerate(ACTION_NAMES):
+        recorder.log(
+            LIBERO_ACTION_SERIES_PATHS[index],
+            rr.SeriesLines(
+                colors=[_hex_rgb(ACTION_COLOR_HEX[name][0])],
+                widths=[2.0],
+                names=[f"{name} · executed"],
+                visible_series=[True],
+            ),
+            static=True,
+        )
+    for path, name, color in zip(
+        LIBERO_STATE_SERIES_PATHS,
+        LIBERO_STATE_NAMES,
+        LIBERO_STATE_COLORS,
+        strict=True,
+    ):
+        recorder.log(
+            path,
+            rr.SeriesLines(
+                colors=[color],
+                widths=[2.0],
+                names=[name],
+                visible_series=[True],
+            ),
+            static=True,
+        )
+    recorder.log(
+        "documentation/libero_semantics",
+        rr.TextDocument(LIBERO_SEMANTICS_MARKDOWN, media_type="text/markdown"),
+        static=True,
+    )
+    _log_agentview_calibration(
+        recorder,
+        agentview_calibration,
+        entity_path=LIBERO_CALIBRATED_AGENTVIEW_PATH,
+    )
+
+
 def _log_panda_skeleton(
     recorder: Recorder,
     *,
@@ -691,6 +930,54 @@ def _log_panda_skeleton(
         ),
     )
     recorder.log("demonstration/robot/ik_stale", rr.Scalars(int(stale)))
+
+
+def _log_measured_panda(
+    recorder: Recorder,
+    *,
+    pose: PandaMeasuredPose,
+    display_frame: DisplayFrame,
+) -> None:
+    skeleton_points = display_frame.transform_points(pose.skeleton_points_native)
+    left_finger = display_frame.transform_points(pose.left_finger_points_native)
+    right_finger = display_frame.transform_points(pose.right_finger_points_native)
+    recorder.log(
+        "rollout/robot/skeleton",
+        rr.LineStrips3D(
+            [skeleton_points],
+            colors=[DEMONSTRATION_COLOR],
+            radii=0.01,
+            labels=["LIBERO Panda - measured simulator joints"],
+            show_labels=False,
+        ),
+    )
+    recorder.log(
+        "rollout/robot/joints",
+        rr.Points3D(
+            skeleton_points,
+            colors=[DEMONSTRATION_COLOR],
+            radii=0.014,
+            labels=PANDA_SKELETON_LABELS,
+            show_labels=False,
+        ),
+    )
+    recorder.log(
+        "rollout/robot/gripper",
+        rr.LineStrips3D(
+            [left_finger, right_finger],
+            colors=[DEMONSTRATION_COLOR, DEMONSTRATION_COLOR],
+            radii=0.009,
+        ),
+    )
+
+
+def _dashed_line_strips(points: NDArray[np.float64]) -> list[NDArray[np.float64]]:
+    strips: list[NDArray[np.float64]] = []
+    for start, end in zip(points[:-1], points[1:], strict=True):
+        delta = end - start
+        strips.append(np.stack((start, start + 0.42 * delta)))
+        strips.append(np.stack((start + 0.62 * delta, end)))
+    return strips
 
 
 def log_offline_frame(
@@ -888,25 +1175,212 @@ def log_libero_step(
     global_step: int,
     episode_index: int,
     step_index: int,
+    observation_state: Sequence[float] | NDArray[Any],
+    next_observation_state: Sequence[float] | NDArray[Any],
+    measured_pose: PandaMeasuredPose,
+    display_frame: DisplayFrame,
+    trajectory_history: LiberoTrajectoryHistory,
     action: Sequence[float],
+    queued_actions: Sequence[Sequence[float]] | NDArray[Any],
+    discarded_actions: Sequence[Sequence[float]] | NDArray[Any],
+    new_prediction_chunk: Sequence[Sequence[float]] | NDArray[Any] | None,
+    model_queried: bool,
+    plan_step_index: int | None,
     reward: float,
     success_so_far: bool,
     done_after_step: bool,
     policy_step_latency_ms: float,
     model_query_latency_ms: float | None,
     images: Mapping[str, torch.Tensor | NDArray[Any]],
+    post_action_agentview: torch.Tensor | NDArray[Any],
+    agentview_calibration: FixedCameraCalibration,
+    agentview_image_convention: str,
 ) -> None:
     """Log one control transition on the single global-step timeline."""
 
+    state = _validate_observation_state(observation_state)
+    next_state = _validate_observation_state(next_observation_state)
     executed = _validate_action(action, "executed_action")
+    queued = _validate_action_chunk(queued_actions, "queued_actions")
+    discarded = _validate_action_chunk(discarded_actions, "discarded_actions")
+    temporal_chunk = (
+        None
+        if new_prediction_chunk is None
+        else _validate_action_chunk(new_prediction_chunk, "new_prediction_chunk")
+    )
+    if plan_step_index is not None and plan_step_index < 0:
+        raise ValueError("plan_step_index must be non-negative or None")
+    prepared_images = {
+        key: image_to_hwc_uint8(image)
+        for key, image in images.items()
+    }
+    if AGENTVIEW_CAMERA_KEY not in prepared_images:
+        raise ValueError(
+            f"LIBERO visualization requires image {AGENTVIEW_CAMERA_KEY!r}"
+        )
+    post_action_image = image_to_hwc_uint8(post_action_agentview)
+    current_agentview = prepared_images[AGENTVIEW_CAMERA_KEY]
+    agentview_calibration.validate_hwc_image(current_agentview)
+    agentview_calibration.validate_hwc_image(post_action_image)
+    corrected_agentview = physical_agentview_image(
+        current_agentview,
+        agentview_image_convention,
+    )
+    agentview_calibration.validate_hwc_image(corrected_agentview)
+    measured_path = trajectory_history.append(
+        episode_index=episode_index,
+        step_index=step_index,
+        observation_state=state,
+    )
+    command = np.stack(
+        (state[:3], state[:3] + _libero_action_translation(executed))
+    )
+    response = np.stack((state[:3], next_state[:3]))
+
+    queue_anchor = next_state.copy()
+    queued_preview = integrate_libero_action_chunk(
+        queue_anchor,
+        queued,
+        np.ones(len(queued), dtype=bool),
+    )
+    discarded_anchor = next_state.copy()
+    discarded_anchor[:3] = queued_preview[-1]
+    discarded_preview = integrate_libero_action_chunk(
+        discarded_anchor,
+        discarded,
+        np.ones(len(discarded), dtype=bool),
+    )
+    temporal_preview = (
+        None
+        if temporal_chunk is None
+        else integrate_libero_action_chunk(
+            state,
+            temporal_chunk,
+            np.ones(len(temporal_chunk), dtype=bool),
+        )
+    )
+
+    path_display = display_frame.transform_points(measured_path)
+    command_display = display_frame.transform_points(command)
+    response_display = display_frame.transform_points(response)
+    queued_display = display_frame.transform_points(queued_preview)
+    discarded_display = display_frame.transform_points(discarded_preview)
+    temporal_display = (
+        None
+        if temporal_preview is None
+        else display_frame.transform_points(temporal_preview)
+    )
+
     recorder.set_time("global_step", sequence=global_step)
-    for key, image in images.items():
-        recorder.log(_camera_path(key), rr.Image(image_to_hwc_uint8(image)).compress())
-    recorder.log("context/episode_index", rr.Scalars(episode_index))
-    recorder.log("context/step_index", rr.Scalars(step_index))
+    _log_measured_panda(recorder, pose=measured_pose, display_frame=display_frame)
+    for key, image_hwc in prepared_images.items():
+        recorder.log(
+            _camera_path(key, root=LIBERO_INPUT_CAMERA_ROOT),
+            rr.Image(image_hwc).compress(),
+        )
+    recorder.log(
+        LIBERO_POST_ACTION_AGENTVIEW_PATH,
+        rr.Image(post_action_image).compress(),
+    )
+    recorder.log(
+        LIBERO_CALIBRATED_AGENTVIEW_PATH,
+        rr.Image(corrected_agentview).compress(),
+    )
+    recorder.log("rollout/context/episode_index", rr.Scalars(episode_index))
+    recorder.log("rollout/context/step_index", rr.Scalars(step_index))
+    recorder.log("rollout/context/model_queried", rr.Scalars(int(model_queried)))
+    if plan_step_index is None:
+        recorder.log(
+            "rollout/context/plan_step_index",
+            rr.Clear(recursive=False),
+        )
+    else:
+        recorder.log(
+            "rollout/context/plan_step_index",
+            rr.Scalars(plan_step_index),
+        )
+    recorder.log(
+        "rollout/trajectory/eef_measured",
+        rr.LineStrips3D(
+            [path_display],
+            colors=[DEMONSTRATION_COLOR],
+            radii=0.003,
+            labels=["Measured EEF history"],
+            show_labels=False,
+        ),
+    )
+    recorder.log(
+        "rollout/trajectory/eef_current",
+        rr.Points3D(
+            [path_display[-1]],
+            colors=[DEMONSTRATION_COLOR],
+            radii=0.008,
+            labels=["Measured EEF at t"],
+            show_labels=False,
+        ),
+    )
+    recorder.log(
+        "rollout/command/executed",
+        rr.LineStrips3D(
+            [command_display],
+            colors=[PREDICTION_COLOR],
+            radii=0.005,
+            labels=["Executed controller command at t"],
+            show_labels=False,
+        ),
+    )
+    recorder.log(
+        "rollout/response/eef_measured",
+        rr.LineStrips3D(
+            [response_display],
+            colors=[ROLLOUT_RESPONSE_COLOR],
+            radii=0.005,
+            labels=["Measured EEF response t to t+1"],
+            show_labels=False,
+        ),
+    )
+    recorder.log("rollout/plan", rr.Clear(recursive=True))
+    if len(queued):
+        recorder.log(
+            "rollout/plan/queued/preview",
+            rr.LineStrips3D(
+                [queued_display],
+                colors=[ROLLOUT_QUEUE_COLOR],
+                radii=0.004,
+                labels=["Remaining executable ACT queue"],
+                show_labels=False,
+            ),
+        )
+    if len(discarded):
+        recorder.log(
+            "rollout/plan/discarded/preview",
+            rr.LineStrips3D(
+                _dashed_line_strips(discarded_display),
+                colors=[ROLLOUT_DISCARDED_COLOR],
+                radii=0.003,
+                labels=["Predicted ACT tail - discarded"],
+                show_labels=False,
+            ),
+        )
+    if temporal_display is not None and len(temporal_chunk):
+        recorder.log(
+            "rollout/plan/new_prediction_chunk/preview",
+            rr.LineStrips3D(
+                _dashed_line_strips(temporal_display),
+                colors=[ROLLOUT_TEMPORAL_CHUNK_COLOR],
+                radii=0.003,
+                labels=["Temporal Ensemble new prediction chunk - not a queue"],
+                show_labels=False,
+            ),
+        )
     for index, action_name in enumerate(ACTION_NAMES):
         recorder.log(
             f"actions/executed/{action_name}", rr.Scalars(float(executed[index]))
+        )
+    for index, state_name in enumerate(LIBERO_STATE_NAMES):
+        recorder.log(
+            f"state/observation/{state_name}",
+            rr.Scalars(float(state[index])),
         )
     recorder.log("rollout/reward", rr.Scalars(float(reward)))
     recorder.log("rollout/success_so_far", rr.Scalars(int(success_so_far)))

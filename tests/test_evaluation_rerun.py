@@ -71,6 +71,22 @@ def _skeleton_pose() -> viz.PandaSkeletonPose:
     )
 
 
+def _measured_pose() -> viz.PandaMeasuredPose:
+    skeleton = np.zeros((11, 3), dtype=np.float64)
+    skeleton[:, 0] = np.linspace(0.0, 0.5, len(skeleton))
+    return viz.PandaMeasuredPose(
+        skeleton_points_native=skeleton,
+        left_finger_points_native=np.asarray(
+            [[0.5, 0.0, 0.0], [0.55, -0.02, 0.0], [0.6, -0.03, 0.0]]
+        ),
+        right_finger_points_native=np.asarray(
+            [[0.5, 0.0, 0.0], [0.55, 0.02, 0.0], [0.6, 0.03, 0.0]]
+        ),
+        arm_qpos=np.zeros(7),
+        gripper_qpos=np.zeros(2),
+    )
+
+
 def _offline_frame_kwargs() -> dict[str, object]:
     return {
         "global_frame": 12,
@@ -111,6 +127,34 @@ def _camera_calibration() -> viz.FixedCameraCalibration:
             ]
         ),
     )
+
+
+def _libero_step_kwargs() -> dict[str, object]:
+    return {
+        "global_step": 8,
+        "episode_index": 0,
+        "step_index": 8,
+        "observation_state": np.zeros(8),
+        "next_observation_state": np.asarray([0.01, 0.02, 0.03, 0, 0, 0, 0, 0]),
+        "measured_pose": _measured_pose(),
+        "display_frame": viz.DisplayFrame.libero_y_forward([0, 0, 0]),
+        "trajectory_history": viz.LiberoTrajectoryHistory(),
+        "action": np.zeros(7),
+        "queued_actions": np.empty((0, 7)),
+        "discarded_actions": np.empty((0, 7)),
+        "new_prediction_chunk": None,
+        "model_queried": False,
+        "plan_step_index": 1,
+        "reward": 0.0,
+        "success_so_far": False,
+        "done_after_step": False,
+        "policy_step_latency_ms": 1.0,
+        "model_query_latency_ms": None,
+        "images": {"observation.images.image": torch.zeros(3, 4, 5)},
+        "post_action_agentview": torch.zeros(3, 4, 5),
+        "agentview_calibration": _camera_calibration(),
+        "agentview_image_convention": "lerobot_180",
+    }
 
 
 def test_image_conversion_supports_normalized_chw() -> None:
@@ -475,6 +519,39 @@ def test_calibrated_agentview_is_first_tab_and_free_3d_contains_frustum(
     assert free_3d[1]["contents"] == list(viz.OFFLINE_CALIBRATED_3D_CONTENTS)
 
 
+def test_libero_spatial_view_contains_measured_rollout_and_calibrated_camera(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(viz.rrb, "Spatial2DView", lambda **kwargs: ("2d", kwargs))
+    monkeypatch.setattr(viz.rrb, "Spatial3DView", lambda **kwargs: ("3d", kwargs))
+    monkeypatch.setattr(
+        viz.rrb,
+        "Tabs",
+        lambda *args, **kwargs: ("tabs", args, kwargs),
+    )
+
+    tabs = viz._build_libero_spatial_view()
+
+    overlay, free_3d = tabs[1]
+    assert tabs[2]["active_tab"] == 0
+    assert overlay[1]["origin"] == viz.LIBERO_CALIBRATED_AGENTVIEW_PATH
+    assert overlay[1]["contents"] == list(viz.LIBERO_AGENTVIEW_OVERLAY_CONTENTS)
+    assert free_3d[1]["contents"] == list(viz.LIBERO_CALIBRATED_3D_CONTENTS)
+    assert "rollout/robot/**" in free_3d[1]["contents"]
+    assert "rollout/plan/**" in free_3d[1]["contents"]
+
+
+def test_libero_action_and_state_series_are_independently_addressable() -> None:
+    assert viz.LIBERO_ACTION_SERIES_PATHS == tuple(
+        f"actions/executed/{name}" for name in viz.ACTION_NAMES
+    )
+    assert viz.LIBERO_STATE_SERIES_PATHS == tuple(
+        f"state/observation/{name}" for name in viz.LIBERO_STATE_NAMES
+    )
+    assert len(set(viz.LIBERO_ACTION_SERIES_PATHS)) == 7
+    assert len(set(viz.LIBERO_STATE_SERIES_PATHS)) == 8
+
+
 def test_offline_frame_applies_display_transform_to_all_3d_geometry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -627,32 +704,127 @@ def test_stale_skeleton_retains_hidden_inspectable_label(
 def test_libero_queue_hit_omits_model_query_latency(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_entities(monkeypatch)
     recorder = FakeRecorder()
-    viz.log_libero_step(
-        recorder,
-        global_step=8,
-        episode_index=0,
-        step_index=8,
-        action=np.zeros(7),
-        reward=0.0,
-        success_so_far=False,
-        done_after_step=False,
-        policy_step_latency_ms=1.0,
-        model_query_latency_ms=None,
-        images={"observation.images.image": torch.zeros(3, 4, 5)},
-    )
+    viz.log_libero_step(recorder, **_libero_step_kwargs())
     assert recorder.times == [("global_step", 8)]
     paths = {path for path, _, _ in recorder.logs}
     expected = {
-        "context/episode_index",
-        "context/step_index",
-        "cameras/image",
+        "rollout/context/episode_index",
+        "rollout/context/step_index",
+        "rollout/context/model_queried",
+        "rollout/context/plan_step_index",
+        "rollout/cameras/input/image",
+        "rollout/cameras/post_action/agentview",
+        "rollout/calibration/agentview_corrected",
+        "rollout/robot/skeleton",
+        "rollout/trajectory/eef_measured",
+        "rollout/command/executed",
+        "rollout/response/eef_measured",
+        "rollout/plan",
         "rollout/reward",
         "rollout/success_so_far",
         "rollout/done",
         "latency/policy_step_ms",
     }
     expected.update(f"actions/executed/{name}" for name in viz.ACTION_NAMES)
-    assert paths == expected
+    expected.update(
+        f"state/observation/{name}" for name in viz.LIBERO_STATE_NAMES
+    )
+    assert expected <= paths
+    assert "latency/model_query_ms" not in paths
+
+
+def test_libero_geometry_anchors_command_response_queue_and_discarded_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_entities(monkeypatch)
+    recorder = FakeRecorder()
+    kwargs = _libero_step_kwargs()
+    kwargs.update(
+        {
+            "observation_state": np.asarray([0.1, 0.2, 0.3, 0, 0, 0, 0, 0]),
+            "next_observation_state": np.asarray(
+                [0.11, 0.22, 0.33, 0, 0, 0, 0, 0]
+            ),
+            "display_frame": viz.DisplayFrame(np.zeros(3), np.eye(3)),
+            "action": np.asarray([1, 0, 0, 0, 0, 0, 0]),
+            "queued_actions": np.asarray(
+                [
+                    [0, 1, 0, 0, 0, 0, 0],
+                    [0, 1, 0, 0, 0, 0, 0],
+                ]
+            ),
+            "discarded_actions": np.asarray([[0, 0, 1, 0, 0, 0, 0]]),
+            "model_queried": True,
+            "plan_step_index": 0,
+            "model_query_latency_ms": 2.0,
+        }
+    )
+
+    viz.log_libero_step(recorder, **kwargs)
+    entities = {path: entity for path, entity, _ in recorder.logs}
+
+    np.testing.assert_allclose(
+        entities["rollout/command/executed"].positions[0],
+        [[0.1, 0.2, 0.3], [0.15, 0.2, 0.3]],
+    )
+    np.testing.assert_allclose(
+        entities["rollout/response/eef_measured"].positions[0],
+        [[0.1, 0.2, 0.3], [0.11, 0.22, 0.33]],
+    )
+    queue = np.asarray(entities["rollout/plan/queued/preview"].positions[0])
+    np.testing.assert_allclose(queue[0], [0.11, 0.22, 0.33])
+    np.testing.assert_allclose(queue[-1], [0.11, 0.32, 0.33])
+    discarded_dashes = entities["rollout/plan/discarded/preview"].positions
+    np.testing.assert_allclose(discarded_dashes[0][0], queue[-1])
+    assert "latency/model_query_ms" in entities
+
+
+def test_libero_temporal_chunk_is_violet_non_queue_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_entities(monkeypatch)
+    recorder = FakeRecorder()
+    kwargs = _libero_step_kwargs()
+    kwargs.update(
+        {
+            "new_prediction_chunk": np.ones((3, 7)),
+            "model_queried": True,
+            "plan_step_index": None,
+            "model_query_latency_ms": 2.0,
+        }
+    )
+
+    viz.log_libero_step(recorder, **kwargs)
+    entities = {path: entity for path, entity, _ in recorder.logs}
+
+    temporal = entities["rollout/plan/new_prediction_chunk/preview"]
+    assert temporal.kwargs["colors"] == [viz.ROLLOUT_TEMPORAL_CHUNK_COLOR]
+    assert "rollout/plan/queued/preview" not in entities
+    assert "rollout/plan/discarded/preview" not in entities
+    assert entities["rollout/context/plan_step_index"].kwargs["recursive"] is False
+
+
+def test_libero_trajectory_history_resets_between_episodes() -> None:
+    history = viz.LiberoTrajectoryHistory()
+    first = history.append(
+        episode_index=0,
+        step_index=0,
+        observation_state=np.asarray([1, 2, 3, 0, 0, 0, 0, 0]),
+    )
+    second = history.append(
+        episode_index=0,
+        step_index=1,
+        observation_state=np.asarray([4, 5, 6, 0, 0, 0, 0, 0]),
+    )
+    reset = history.append(
+        episode_index=1,
+        step_index=0,
+        observation_state=np.asarray([7, 8, 9, 0, 0, 0, 0, 0]),
+    )
+
+    assert first.shape == (1, 3)
+    assert second.shape == (2, 3)
+    np.testing.assert_array_equal(reset, [[7, 8, 9]])
 
 
 def _offline_metrics_payload() -> dict[str, object]:
@@ -823,7 +995,7 @@ def test_small_rrd_is_valid(tmp_path: Path) -> None:
         mode="offline",
         camera_keys=(),
         fps=10.0,
-        offline_camera_calibration=_camera_calibration(),
+        agentview_calibration=_camera_calibration(),
         agentview_image_convention="lerobot_180",
     )
     viz.log_offline_frame(
@@ -872,3 +1044,55 @@ def test_small_rrd_is_valid(tmp_path: Path) -> None:
     assert "/calibration/agentview_corrected" in printed.stdout
     assert "Pinhole:" in printed.stdout
     assert "Transform3D:" in printed.stdout
+
+
+def test_small_libero_rrd_contains_transition_and_plan_views(tmp_path: Path) -> None:
+    output = tmp_path / "libero.rrd"
+    calibration = _camera_calibration()
+    viz.initialize_recording(
+        output_path=output,
+        mode="libero",
+        camera_keys=(viz.AGENTVIEW_CAMERA_KEY,),
+        fps=10.0,
+        agentview_calibration=calibration,
+        agentview_image_convention="lerobot_180",
+    )
+    kwargs = _libero_step_kwargs()
+    kwargs.update(
+        {
+            "global_step": 0,
+            "step_index": 0,
+            "queued_actions": np.ones((2, 7)),
+            "discarded_actions": np.ones((2, 7)),
+            "model_queried": True,
+            "plan_step_index": 0,
+            "model_query_latency_ms": 2.0,
+        }
+    )
+    viz.log_libero_step(viz.rr, **kwargs)
+    viz.finish_recording()
+
+    assert output.stat().st_size > 0
+    rerun_cli = shutil.which("rerun")
+    if rerun_cli is None:
+        pytest.skip("Rerun CLI is unavailable")
+    verified = subprocess.run(
+        [rerun_cli, "rrd", "verify", str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert verified.returncode == 0, verified.stderr
+    printed = subprocess.run(
+        [rerun_cli, "rrd", "print", str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert printed.returncode == 0, printed.stderr
+    assert "/rollout/cameras/input/image" in printed.stdout
+    assert "/rollout/cameras/post_action/agentview" in printed.stdout
+    assert "/rollout/robot/skeleton" in printed.stdout
+    assert "/rollout/response/eef_measured" in printed.stdout
+    assert "/rollout/plan/queued/preview" in printed.stdout
+    assert "/rollout/plan/discarded/preview" in printed.stdout

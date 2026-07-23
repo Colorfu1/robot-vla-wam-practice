@@ -24,6 +24,8 @@ from lerobot.utils.constants import ACTION
 from lerobot.utils.io_utils import write_video
 
 from robot_practice.evaluation.common import (
+    ActionPlanStep,
+    ActionPlanTracker,
     ModelQueryTimer,
     build_run_config,
     create_output_directory,
@@ -41,6 +43,7 @@ from robot_practice.evaluation.libero_checkpoint import (
     assess_checkpoint_task,
     log_checkpoint_task_assessment,
 )
+from robot_practice.evaluation.libero_kinematics import PandaSkeletonReconstructor
 from robot_practice.evaluation.libero_tasks import (
     SUPPORTED_SUITES,
     LiberoTaskIdentity,
@@ -49,6 +52,7 @@ from robot_practice.evaluation.libero_tasks import (
 )
 from robot_practice.evaluation.metrics import compute_closed_loop_metrics
 from robot_practice.evaluation.rerun_visualization import (
+    LiberoTrajectoryHistory,
     finish_recording,
     image_to_hwc_uint8,
     initialize_recording,
@@ -61,6 +65,7 @@ LOGGER = logging.getLogger(__name__)
 CONTROL_FREQUENCY_HZ = 10.0
 RAW_CAMERAS = ("agentview_image", "robot0_eye_in_hand_image")
 CAMERA_KEYS = ("observation.images.image", "observation.images.image2")
+STATE_KEY = "observation.state"
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,14 @@ class LiberoEvaluationResult:
     output_dir: Path
     metrics: dict[str, Any]
     viewer_opened: bool
+
+
+@dataclass(frozen=True)
+class PreparedLiberoObservation:
+    policy_observation: dict[str, Any]
+    images: dict[str, torch.Tensor]
+    state: np.ndarray
+    joint_positions: np.ndarray
 
 
 def validate_config(
@@ -160,7 +173,30 @@ def _rollout_schema() -> pa.Schema:
             pa.field("step_index", pa.int32(), nullable=False),
             pa.field("global_step", pa.int64(), nullable=False),
             pa.field("timestamp_s", pa.float64(), nullable=False),
+            pa.field("observation_state", pa.list_(pa.float32(), 8), nullable=False),
+            pa.field(
+                "next_observation_state",
+                pa.list_(pa.float32(), 8),
+                nullable=False,
+            ),
+            pa.field(
+                "observation_joint_positions",
+                pa.list_(pa.float32(), 7),
+                nullable=False,
+            ),
+            pa.field(
+                "next_observation_joint_positions",
+                pa.list_(pa.float32(), 7),
+                nullable=False,
+            ),
             pa.field("executed_action", pa.list_(pa.float32(), 7), nullable=False),
+            pa.field("model_queried", pa.bool_(), nullable=False),
+            pa.field("plan_step_index", pa.int32(), nullable=True),
+            pa.field(
+                "predicted_chunk",
+                pa.list_(pa.list_(pa.float32(), 7)),
+                nullable=True,
+            ),
             pa.field("reward", pa.float32(), nullable=False),
             pa.field("terminated", pa.bool_(), nullable=False),
             pa.field("truncated", pa.bool_(), nullable=False),
@@ -173,8 +209,10 @@ def _rollout_schema() -> pa.Schema:
             pa.field("visualized", pa.bool_(), nullable=False),
         ],
         metadata={
-            b"schema_version": b"2",
+            b"schema_version": b"3",
             b"action_dimension": b"7",
+            b"state_dimension": b"8",
+            b"arm_joint_dimension": b"7",
             b"control_frequency_hz": b"10.0",
         },
     )
@@ -197,6 +235,130 @@ def _extract_policy_images(observation: dict[str, Any]) -> dict[str, torch.Tenso
             raise ValueError(f"LIBERO camera {key} must have shape [1,C,H,W], got {type(image)}")
         images[key] = image[0].detach().cpu().clone()
     return images
+
+
+def _extract_policy_state(observation: dict[str, Any]) -> np.ndarray:
+    state = observation.get(STATE_KEY)
+    if (
+        not isinstance(state, torch.Tensor)
+        or state.shape != (1, 8)
+        or not bool(torch.isfinite(state).all())
+    ):
+        shape = getattr(state, "shape", None)
+        raise ValueError(
+            f"Processed LIBERO {STATE_KEY} must have finite shape [1,8], got {shape}"
+        )
+    return state[0].detach().cpu().float().numpy().copy()
+
+
+def _extract_measured_joint_positions(observation: dict[str, Any]) -> np.ndarray:
+    try:
+        raw = observation["robot_state"]["joints"]["pos"]
+    except (KeyError, TypeError) as exc:
+        raise KeyError(
+            "Raw LIBERO observation is missing robot_state.joints.pos"
+        ) from exc
+    joints = np.asarray(raw, dtype=np.float32)
+    if joints.shape != (1, 7) or not np.isfinite(joints).all():
+        raise ValueError(
+            "Raw LIBERO robot_state.joints.pos must have finite shape [1,7], "
+            f"got {joints.shape}"
+        )
+    return joints[0].copy()
+
+
+def _prepare_libero_observation(
+    observation: dict[str, Any],
+    *,
+    env: gym.vector.VectorEnv,
+    env_preprocessor: Any,
+) -> PreparedLiberoObservation:
+    policy_observation = preprocess_observation(observation)
+    policy_observation = add_envs_task(env, policy_observation)
+    policy_observation = env_preprocessor(policy_observation)
+    return PreparedLiberoObservation(
+        policy_observation=policy_observation,
+        images=_extract_policy_images(policy_observation),
+        state=_extract_policy_state(policy_observation),
+        joint_positions=_extract_measured_joint_positions(observation),
+    )
+
+
+def _postprocess_policy_action_tensor(
+    actions_policy: torch.Tensor,
+    *,
+    checkpoint_postprocessor: Any,
+    env_postprocessor: Any,
+) -> torch.Tensor:
+    if (
+        not isinstance(actions_policy, torch.Tensor)
+        or actions_policy.ndim not in (2, 3)
+        or actions_policy.shape[-1] != 7
+        or not bool(torch.isfinite(actions_policy).all())
+    ):
+        shape = getattr(actions_policy, "shape", None)
+        raise ValueError(
+            "Policy actions must have finite shape [batch,7] or "
+            f"[batch,horizon,7], got {shape}"
+        )
+    original_shape = actions_policy.shape
+    flattened = actions_policy.reshape(-1, 7)
+    checkpoint_actions = checkpoint_postprocessor(flattened)
+    transition = env_postprocessor({ACTION: checkpoint_actions})
+    controller_actions = transition[ACTION]
+    if (
+        not isinstance(controller_actions, torch.Tensor)
+        or controller_actions.shape != flattened.shape
+        or not bool(torch.isfinite(controller_actions).all())
+    ):
+        shape = getattr(controller_actions, "shape", None)
+        raise ValueError(
+            "Postprocessed LIBERO actions must preserve finite flattened shape "
+            f"{tuple(flattened.shape)}, got {shape}"
+        )
+    return controller_actions.reshape(original_shape)
+
+
+def _controller_plan_partitions(
+    plan_step: ActionPlanStep,
+    *,
+    queried_chunk_controller: np.ndarray | None,
+    active_chunk_controller: np.ndarray | None,
+    executed_action_controller: np.ndarray,
+    n_action_steps: int,
+) -> tuple[np.ndarray | None, np.ndarray, np.ndarray, np.ndarray | None]:
+    if plan_step.model_queried:
+        if queried_chunk_controller is None:
+            raise RuntimeError("Model query is missing its controller-space chunk")
+        active_chunk_controller = queried_chunk_controller
+    if plan_step.plan_step_index is None:
+        empty = np.empty((0, 7), dtype=np.float32)
+        return None, empty, empty, queried_chunk_controller
+    if active_chunk_controller is None:
+        raise RuntimeError("Standard ACT plan has no controller-space active chunk")
+    index = plan_step.plan_step_index
+    if not np.allclose(
+        active_chunk_controller[index],
+        executed_action_controller,
+        rtol=1e-5,
+        atol=1e-6,
+    ):
+        max_error = float(
+            np.max(
+                np.abs(
+                    active_chunk_controller[index] - executed_action_controller
+                )
+            )
+        )
+        raise RuntimeError(
+            "Controller-space executed action does not match the tracked ACT plan "
+            f"at index {index}; max_abs_error={max_error:.6g}"
+        )
+    queued = active_chunk_controller[index + 1 : n_action_steps].copy()
+    discarded = active_chunk_controller[n_action_steps:].copy()
+    if index + 1 == n_action_steps:
+        active_chunk_controller = None
+    return active_chunk_controller, queued, discarded, None
 
 
 def _make_eval_info(
@@ -338,12 +500,28 @@ def evaluate_libero(
         release_output_directory_lock(output_dir)
         raise
 
+    try:
+        kinematics = PandaSkeletonReconstructor(task)
+        agentview_calibration = kinematics.fixed_camera_calibration(
+            "agentview",
+            (256, 256, 3),
+        )
+    except BaseException:
+        close_envs(envs)
+        release_output_directory_lock(output_dir)
+        raise
+
     recording_path = output_dir / "rollout.rrd"
     recording_initialized = False
     rollout_rows: list[dict[str, Any]] = []
     episode_results: list[dict[str, Any]] = []
     global_step = 0
     evaluation_started = time.perf_counter()
+    plan_tracker = ActionPlanTracker(
+        n_action_steps=loaded.config.n_action_steps,
+        temporal_ensemble_coeff=loaded.config.temporal_ensemble_coeff,
+    )
+    trajectory_history = LiberoTrajectoryHistory()
 
     try:
         initialize_recording(
@@ -351,6 +529,8 @@ def evaluate_libero(
             mode="libero",
             camera_keys=CAMERA_KEYS,
             fps=CONTROL_FREQUENCY_HZ,
+            agentview_calibration=agentview_calibration,
+            agentview_image_convention="lerobot_180",
         )
         recording_initialized = True
         with ModelQueryTimer(loaded.policy, loaded.config.device) as model_timer:
@@ -364,6 +544,13 @@ def evaluate_libero(
                 _set_init_state_id(env, init_state_id)
                 observation, _ = env.reset(seed=[episode_seed])
                 loaded.policy.reset()
+                plan_tracker.reset_episode()
+                active_chunk_controller: np.ndarray | None = None
+                prepared = _prepare_libero_observation(
+                    observation,
+                    env=env,
+                    env_preprocessor=env_preprocessor,
+                )
                 actions: list[np.ndarray] = []
                 rewards: list[float] = []
                 policy_latencies: list[float] = []
@@ -374,33 +561,71 @@ def evaluate_libero(
                 video_frames: list[np.ndarray] = []
 
                 for step_index in range(step_limit):
-                    policy_observation = preprocess_observation(observation)
-                    policy_observation = add_envs_task(env, policy_observation)
-                    policy_observation = env_preprocessor(policy_observation)
-                    images = _extract_policy_images(policy_observation)
-                    processed_observation = loaded.preprocessor(policy_observation)
+                    processed_observation = loaded.preprocessor(
+                        prepared.policy_observation
+                    )
 
                     model_timer.begin_step()
                     with torch.inference_mode(), _autocast_context(
                         str(loaded.config.device), loaded.config.use_amp
                     ):
-                        action, policy_latency_ms = timed_call(
+                        action_policy, policy_latency_ms = timed_call(
                             loaded.policy.select_action,
                             processed_observation,
                             device=loaded.config.device,
                         )
                     model_latency_ms = model_timer.current_latency_ms
-                    action = loaded.postprocessor(action)
-                    action_transition = env_postprocessor({ACTION: action})
-                    action_numpy = action_transition[ACTION].detach().cpu().float().numpy()
+                    plan_step = plan_tracker.record_step(
+                        selected_action_policy=action_policy,
+                        queried_chunk_policy=model_timer.current_chunk_policy,
+                    )
+                    action_controller = _postprocess_policy_action_tensor(
+                        action_policy,
+                        checkpoint_postprocessor=loaded.postprocessor,
+                        env_postprocessor=env_postprocessor,
+                    )
+                    action_numpy = (
+                        action_controller.detach().cpu().float().numpy()
+                    )
                     if action_numpy.shape != (1, 7):
                         raise ValueError(
                             "Postprocessed LIBERO action must have shape (1, 7), "
                             f"got {action_numpy.shape}"
                         )
+                    queried_chunk_controller: np.ndarray | None = None
+                    if plan_step.queried_chunk_policy is not None:
+                        queried_chunk_controller = (
+                            _postprocess_policy_action_tensor(
+                                plan_step.queried_chunk_policy,
+                                checkpoint_postprocessor=loaded.postprocessor,
+                                env_postprocessor=env_postprocessor,
+                            )[0]
+                            .detach()
+                            .cpu()
+                            .float()
+                            .numpy()
+                            .copy()
+                        )
+                    (
+                        active_chunk_controller,
+                        queued_actions,
+                        discarded_actions,
+                        new_prediction_chunk,
+                    ) = _controller_plan_partitions(
+                        plan_step,
+                        queried_chunk_controller=queried_chunk_controller,
+                        active_chunk_controller=active_chunk_controller,
+                        executed_action_controller=action_numpy[0],
+                        n_action_steps=loaded.config.n_action_steps,
+                    )
 
                     next_observation, reward, terminated, truncated, info = env.step(
                         action_numpy
+                    )
+                    next_prepared = _prepare_libero_observation(
+                        next_observation,
+                        env=env,
+                        env_preprocessor=env_preprocessor,
                     )
                     raw_terminated = bool(np.asarray(terminated, dtype=bool)[0])
                     raw_truncated = bool(np.asarray(truncated, dtype=bool)[0])
@@ -426,21 +651,50 @@ def evaluate_libero(
                     if model_latency_ms is not None:
                         model_latencies.append(model_latency_ms)
 
+                    measured_pose = kinematics.forward_measured(
+                        prepared.joint_positions,
+                        prepared.state[6:8],
+                    )
                     if visualized:
                         log_libero_step(
                             rr,
                             global_step=global_step,
                             episode_index=episode_index,
                             step_index=step_index,
+                            observation_state=prepared.state,
+                            next_observation_state=next_prepared.state,
+                            measured_pose=measured_pose,
+                            display_frame=kinematics.display_frame,
+                            trajectory_history=trajectory_history,
                             action=executed_action,
+                            queued_actions=queued_actions,
+                            discarded_actions=discarded_actions,
+                            new_prediction_chunk=new_prediction_chunk,
+                            model_queried=plan_step.model_queried,
+                            plan_step_index=plan_step.plan_step_index,
                             reward=reward_value,
                             success_so_far=success_seen,
                             done_after_step=done_after_step,
                             policy_step_latency_ms=policy_latency_ms,
                             model_query_latency_ms=model_latency_ms,
-                            images=images,
+                            images=prepared.images,
+                            post_action_agentview=next_prepared.images[
+                                CAMERA_KEYS[0]
+                            ],
+                            agentview_calibration=agentview_calibration,
+                            agentview_image_convention="lerobot_180",
                         )
-                        video_frames.append(image_to_hwc_uint8(images[CAMERA_KEYS[0]]))
+                        if step_index == 0:
+                            video_frames.append(
+                                image_to_hwc_uint8(
+                                    prepared.images[CAMERA_KEYS[0]]
+                                )
+                            )
+                        video_frames.append(
+                            image_to_hwc_uint8(
+                                next_prepared.images[CAMERA_KEYS[0]]
+                            )
+                        )
 
                     rollout_rows.append(
                         {
@@ -452,7 +706,22 @@ def evaluate_libero(
                             "step_index": step_index,
                             "global_step": global_step,
                             "timestamp_s": step_index / CONTROL_FREQUENCY_HZ,
+                            "observation_state": prepared.state.tolist(),
+                            "next_observation_state": next_prepared.state.tolist(),
+                            "observation_joint_positions": (
+                                prepared.joint_positions.tolist()
+                            ),
+                            "next_observation_joint_positions": (
+                                next_prepared.joint_positions.tolist()
+                            ),
                             "executed_action": executed_action.tolist(),
+                            "model_queried": plan_step.model_queried,
+                            "plan_step_index": plan_step.plan_step_index,
+                            "predicted_chunk": (
+                                None
+                                if queried_chunk_controller is None
+                                else queried_chunk_controller.tolist()
+                            ),
                             "reward": reward_value,
                             "terminated": raw_terminated,
                             "truncated": recorded_truncated,
@@ -468,7 +737,7 @@ def evaluate_libero(
                     global_step += 1
                     if done_after_step:
                         break
-                    observation = next_observation
+                    prepared = next_prepared
 
                 if termination_reason is None:
                     raise RuntimeError("LIBERO rollout exited without a termination reason")
@@ -529,6 +798,7 @@ def evaluate_libero(
     finally:
         if recording_initialized:
             finish_recording()
+        kinematics.close()
         close_envs(envs)
         release_output_directory_lock(output_dir)
 

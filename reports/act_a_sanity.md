@@ -132,6 +132,19 @@ scripts/experiments/act/eval_libero.sh \
 
 不要添加 `--max-steps`，否则只会得到 smoke evaluation，不能计算正式成功率。
 
+Closed-loop 的 `rollout.rrd` 不加载 demonstration，也不伪造逐帧 GT。每个
+`global_step` 同时展示：
+
+- 模型在 `t` 时刻接收的 agentview 与 eye-in-hand；
+- 基于模拟器真实 7D arm joints 绘制的 Panda 和真实 EEF 历史；
+- 实际发送的 action、模拟器产生的 `EEF[t] -> EEF[t+1]` 响应；
+- ACT 之后会执行的 queue，以及模型预测但会丢弃的 chunk 尾部；
+- `env.step(action[t])` 返回的 post-action agentview；
+- 可点击选择的 7D action、8D simulator state、reward/success、latency 和 metrics。
+
+这里的未来 action 线是控制命令预览，不是模拟出的未来机器人状态。Temporal Ensemble
+模式显示的是当前新预测 chunk，不把它标成执行 queue。
+
 ### 3.5 从 B0 训练 20,000 updates
 
 ```bash

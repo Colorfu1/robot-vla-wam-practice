@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from robot_practice.evaluation.common import (
+    ActionPlanTracker,
     INCOMPLETE_MARKER_TEXT,
     ModelQueryTimer,
     create_output_directory,
@@ -371,5 +372,101 @@ def test_model_query_timer_distinguishes_query_from_queue_hit() -> None:
         assert output.item() == 2.0
         assert timer.current_latency_ms is not None
         assert timer.current_latency_ms >= 0
+        torch.testing.assert_close(timer.current_chunk_policy, torch.tensor([2.0]))
 
     assert policy.predict_action_chunk.__func__ is original.__func__
+
+
+def _policy_chunk(length: int = 20) -> torch.Tensor:
+    return torch.arange(length * 7, dtype=torch.float32).reshape(1, length, 7)
+
+
+def test_action_plan_tracker_partitions_queue_and_discarded_tail() -> None:
+    tracker = ActionPlanTracker(n_action_steps=5, temporal_ensemble_coeff=None)
+    chunk = _policy_chunk()
+
+    first = tracker.record_step(
+        selected_action_policy=chunk[:, 0],
+        queried_chunk_policy=chunk,
+    )
+    assert first.model_queried
+    assert first.plan_step_index == 0
+    torch.testing.assert_close(first.queued_actions_policy, chunk[0, 1:5])
+    torch.testing.assert_close(first.discarded_actions_policy, chunk[0, 5:])
+    assert first.new_prediction_chunk_policy is None
+
+    second = tracker.record_step(
+        selected_action_policy=chunk[:, 1],
+        queried_chunk_policy=None,
+    )
+    assert not second.model_queried
+    assert second.plan_step_index == 1
+    torch.testing.assert_close(second.queued_actions_policy, chunk[0, 2:5])
+    torch.testing.assert_close(second.discarded_actions_policy, chunk[0, 5:])
+
+    for index in range(2, 5):
+        tracker.record_step(
+            selected_action_policy=chunk[:, index],
+            queried_chunk_policy=None,
+        )
+    replacement = chunk + 1000
+    replanned = tracker.record_step(
+        selected_action_policy=replacement[:, 0],
+        queried_chunk_policy=replacement,
+    )
+    assert replanned.model_queried
+    assert replanned.plan_step_index == 0
+
+
+def test_action_plan_tracker_reset_requires_a_new_query() -> None:
+    tracker = ActionPlanTracker(n_action_steps=5, temporal_ensemble_coeff=None)
+    chunk = _policy_chunk()
+    tracker.record_step(
+        selected_action_policy=chunk[:, 0],
+        queried_chunk_policy=chunk,
+    )
+    tracker.reset_episode()
+
+    with pytest.raises(RuntimeError, match="without an active"):
+        tracker.record_step(
+            selected_action_policy=chunk[:, 1],
+            queried_chunk_policy=None,
+        )
+
+
+def test_action_plan_tracker_rejects_policy_queue_mismatch() -> None:
+    tracker = ActionPlanTracker(n_action_steps=5, temporal_ensemble_coeff=None)
+    chunk = _policy_chunk()
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        tracker.record_step(
+            selected_action_policy=chunk[:, 0] + 1,
+            queried_chunk_policy=chunk,
+        )
+
+
+def test_action_plan_tracker_temporal_ensemble_uses_new_chunk_semantics() -> None:
+    tracker = ActionPlanTracker(n_action_steps=1, temporal_ensemble_coeff=0.01)
+    chunk = _policy_chunk()
+    selected = torch.full((1, 7), 42.0)
+
+    step = tracker.record_step(
+        selected_action_policy=selected,
+        queried_chunk_policy=chunk,
+    )
+
+    assert step.model_queried
+    assert step.plan_step_index is None
+    torch.testing.assert_close(step.new_prediction_chunk_policy, chunk)
+    assert step.queued_actions_policy.shape == (0, 7)
+    assert step.discarded_actions_policy.shape == (0, 7)
+
+
+def test_action_plan_tracker_temporal_ensemble_requires_query_every_step() -> None:
+    tracker = ActionPlanTracker(n_action_steps=1, temporal_ensemble_coeff=0.01)
+
+    with pytest.raises(RuntimeError, match="every control step"):
+        tracker.record_step(
+            selected_action_policy=torch.zeros((1, 7)),
+            queried_chunk_policy=None,
+        )

@@ -46,11 +46,16 @@
 #
 # Fixed simulator settings (not CLI arguments):
 #   control_frequency=10 Hz, relative 7D control, 8D state, and two 256x256
-#   RGB cameras. Episode length is selected from the suite's LeRobot contract.
+#   RGB cameras. Closed-loop Panda geometry uses the simulator's measured 7D arm
+#   joints. Episode length is selected from the suite's LeRobot contract.
 #
 # Outputs:
 #   metrics.json, eval_info.json, rollouts.parquet, rollout.rrd, run_config.json,
 #   and videos/episode_000.mp4-style files for visualized episodes.
+#   Rerun shows policy inputs at t, calibrated 3D measured robot/EEF geometry,
+#   executed controller command, measured t->t+1 response, executable ACT queue,
+#   discarded chunk tail (or Temporal Ensemble new chunk), post-action agentview,
+#   selectable 7D action/8D state curves, reward/success, latency, and metrics.
 #   A new result starts with .incomplete; successful completion removes it, while
 #   failure retains it for diagnosis. Rerun launch is attempted by default; a missing
 #   executable or launch failure only emits a warning.

@@ -381,6 +381,39 @@ class PandaIKResult:
         return self.pose is not None
 
 
+@dataclass(frozen=True)
+class PandaMeasuredPose:
+    """Panda geometry produced from measured simulator joint positions."""
+
+    skeleton_points_native: NDArray[np.float64]
+    left_finger_points_native: NDArray[np.float64]
+    right_finger_points_native: NDArray[np.float64]
+    arm_qpos: NDArray[np.float64]
+    gripper_qpos: NDArray[np.float64]
+
+    def __post_init__(self) -> None:
+        expected = {
+            "skeleton_points_native": (
+                np.asarray(self.skeleton_points_native),
+                (len(PANDA_SKELETON_BODY_NAMES), 3),
+            ),
+            "left_finger_points_native": (
+                np.asarray(self.left_finger_points_native),
+                (len(PANDA_LEFT_FINGER_BODY_NAMES), 3),
+            ),
+            "right_finger_points_native": (
+                np.asarray(self.right_finger_points_native),
+                (len(PANDA_RIGHT_FINGER_BODY_NAMES), 3),
+            ),
+            "arm_qpos": (np.asarray(self.arm_qpos), (7,)),
+            "gripper_qpos": (np.asarray(self.gripper_qpos), (2,)),
+        }
+        for name, (array, shape) in expected.items():
+            if array.shape != shape or not np.isfinite(array).all():
+                raise ValueError(f"{name} must be finite shape {shape}, got {array}")
+            object.__setattr__(self, name, _readonly(array))
+
+
 EnvironmentFactory = Callable[[LiberoTaskIdentity], Any]
 
 
@@ -638,6 +671,39 @@ class PandaSkeletonReconstructor(AbstractContextManager["PandaSkeletonReconstruc
             position_residual_m=position_residual,
             rotation_residual_rad=rotation_residual,
             iterations=iterations,
+        )
+
+    def forward_measured(
+        self,
+        arm_qpos: Sequence[float] | NDArray[Any],
+        gripper_qpos: Sequence[float] | NDArray[Any],
+    ) -> PandaMeasuredPose:
+        """Produce exact model geometry from measured LIBERO joint positions."""
+
+        self._ensure_open()
+        arm = np.asarray(arm_qpos, dtype=np.float64)
+        gripper = np.asarray(gripper_qpos, dtype=np.float64)
+        if arm.shape != (7,) or not np.isfinite(arm).all():
+            raise ValueError(
+                "measured arm_qpos must contain seven finite values, "
+                f"got {arm}"
+            )
+        if gripper.shape != (2,) or not np.isfinite(gripper).all():
+            raise ValueError(
+                "measured gripper_qpos must contain two finite values, "
+                f"got {gripper}"
+            )
+        self._set_arm_qpos(arm)
+        self._sim.data.qpos[self._gripper_qpos_indices] = gripper
+        self._sim.forward()
+        return PandaMeasuredPose(
+            skeleton_points_native=self._body_points(PANDA_SKELETON_BODY_NAMES),
+            left_finger_points_native=self._body_points(PANDA_LEFT_FINGER_BODY_NAMES),
+            right_finger_points_native=self._body_points(
+                PANDA_RIGHT_FINGER_BODY_NAMES
+            ),
+            arm_qpos=arm,
+            gripper_qpos=gripper,
         )
 
     def _set_arm_qpos(self, qpos: NDArray[np.float64]) -> None:
