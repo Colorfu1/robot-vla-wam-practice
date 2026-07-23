@@ -1,7 +1,7 @@
 # Offline Multi-Episode Rerun Recording Design
 
 **Date:** 2026-07-23
-**Status:** User-approved; awaiting independent review
+**Status:** User-approved; review issues addressed
 
 ## Goal
 
@@ -32,8 +32,10 @@ scripts/experiments/act/eval_offline.sh \
 
 `--episodes` selects distinct dataset demonstrations for inference.
 `--num-visualized-episodes` selects the leading requested episodes that receive
-per-frame Rerun data. Every selected episode still contributes to metrics and
-`predictions.parquet`, whether or not it is visualized.
+per-frame Rerun data. Every frame reached by evaluation contributes to metrics and
+`predictions.parquet`, whether or not it is visualized. Normally this covers every
+selected episode; the existing global `--max-frames` smoke bound may stop before later
+episodes and therefore remains explicitly non-formal.
 
 ## Output and Interaction
 
@@ -61,7 +63,6 @@ Clicking a Recording switches the complete synchronized visualization:
 
 - both recorded camera streams;
 - GT and predicted first-action curves;
-- GT and predicted action chunks;
 - reconstructed Panda skeleton;
 - recorded EEF history;
 - teacher-forced GT/Pred command segments and predicted future preview;
@@ -124,27 +125,42 @@ every visualized Recording. This keeps the Metrics tab available regardless of t
 episode. `metrics.json` remains the authoritative aggregate result.
 
 When `--num-visualized-episodes=0`, retain the existing summary-only RRD behavior through
-one Recording containing metrics but no per-frame data.
+one named Recording containing metrics but no per-frame data. This summary Recording uses
+the same temporary sink, immediate registration, explicit stream routing, flush,
+disconnect, merge, verification, and atomic-publication lifecycle as episode Recordings.
 
 ## Publication and Failure Handling
 
-All streams are registered immediately after creation and disconnected from an
-exception-safe cleanup path.
+All streams are registered immediately after creation and cleaned up from an
+exception-safe path. Cleanup attempts every registered stream even if one operation
+raises; it first calls `flush()` on every stream, then calls `disconnect()` on every
+stream, and reports the first failure only after all cleanup attempts finish.
 
 After inference, metric logging, JSON, and Parquet writes succeed:
 
-1. disconnect and flush every episode Recording;
-2. merge the temporary RRDs with the installed `rerun rrd merge`;
-3. verify the merged file with `rerun rrd verify`;
-4. atomically rename the verified file to `<output_dir>/prediction.rrd`;
-5. remove per-episode temporary files only after publication succeeds.
+1. flush every registered Recording, continuing across failures;
+2. disconnect every registered Recording, continuing across failures;
+3. abort publication if any flush or disconnect failed;
+4. merge the temporary RRDs with the installed `rerun rrd merge` into a staging file in
+   `<output_dir>`;
+5. verify the staging file with `rerun rrd verify`;
+6. write the final successful `run_config.json`;
+7. atomically replace `<output_dir>/prediction.rrd` with the verified staging file;
+8. remove Recording temporary files;
+9. remove `.incomplete` last.
 
-If inference, logging, metric writing, merge, verification, or publication fails:
+If inference, logging, metric writing, stream cleanup, merge, verification, or
+pre-publication finalization fails:
 
 - no final `prediction.rrd` is published;
 - the evaluator remains marked incomplete;
 - every created stream is disconnected;
 - per-episode temporary RRDs are retained for diagnosis.
+
+If the atomic RRD rename succeeds but removing `.incomplete` or subsequent cleanup fails,
+retain the published RRD, `.incomplete`, and temporary episode RRDs. The marker makes the
+run explicitly incomplete rather than deleting an already verified artifact. Overwrite
+safety continues to treat it as an incomplete evaluator result.
 
 A missing Rerun CLI is an evaluation error because publication requires merge and verify.
 
@@ -152,7 +168,7 @@ A missing Rerun CLI is an evaluation error because publication requires merge an
 
 - One visualized episode produces a one-Recording `prediction.rrd`.
 - A visualization count smaller than the selected episode count records only the leading
-  subset while metrics and Parquet still cover every selected episode.
+  subset while metrics and Parquet cover every frame reached by evaluation.
 - Existing completed RRD files remain readable with their old continuous timeline.
 - Metrics, prediction schema, checkpoint loading, dataset caching, image convention,
   action values, and model inference are unchanged.
@@ -173,8 +189,9 @@ Automated tests cover:
 9. temporary-file retention and stream cleanup on every failure path;
 10. unchanged metrics and Parquet behavior.
 
-Integration verification runs episodes 823, 826, 834, 840, and 841 with a short frame
-bound, verifies the merged RRD, inspects five Recording names, and confirms that
+Integration verification runs the complete episodes 823, 826, 834, 840, and 841 without
+the global `--max-frames` truncation, verifies the merged RRD, inspects five Recording
+names, and confirms that
 `src/robot_practice/evaluation/libero_act.py` has no implementation diff.
 
 Manual acceptance opens:
