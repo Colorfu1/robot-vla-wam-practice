@@ -83,11 +83,13 @@ A-Sanity 使用公开 LIBERO Object task 8、5 条 demonstrations、859 帧，AC
 - A3：不重新训练，使用 source-matched Standard、Replan control 和
   Temporal Ensemble `0.01` 做闭环比较。
 
-正式报告使用可点击的仓库相对链接：
+正式报告与三份指南同在 `reports/`，必须写入以下可点击的同目录链接：
 
-- [ACT 单步预测与 Action Chunking 指南](../../../reports/act_action_chunking.md)；
-- [ACT 动作差分损失指南](../../../reports/act_delta_action_loss.md)；
-- [ACT Temporal Ensemble 指南](../../../reports/act_temporal_ensemble.md)。
+```markdown
+[ACT 单步预测与 Action Chunking 指南](act_action_chunking.md)
+[ACT 动作差分损失指南](act_delta_action_loss.md)
+[ACT Temporal Ensemble 指南](act_temporal_ensemble.md)
+```
 
 必须明确这些是实施指南，不得把尚未运行的 20-demo 训练或评测写成实验结果。
 
