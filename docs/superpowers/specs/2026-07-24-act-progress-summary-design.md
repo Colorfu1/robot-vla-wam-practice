@@ -17,7 +17,7 @@ H1 使用相同日期和主题。
 
 重点记录：
 
-1. A-Sanity 已完成的正式 offline 与 closed-loop 结果；
+1. A-Sanity 已完成的 teacher-forced offline 诊断指标与正式 closed-loop 结果；
 2. A-Sanity 当前证据限制；
 3. 后续 development 数据从 5 条扩展到同任务 20 条、共 3233 帧；
 4. A0/A1 Action Chunking、A2 动作差分损失、A3 Temporal Ensemble 的设计；
@@ -34,7 +34,7 @@ H1 使用相同日期和主题。
 
 H1 后立即写 `## 重要进展`，包含 5 条：
 
-1. A-Sanity 完成及 20k checkpoint 的主要 measured result；
+1. A-Sanity 完成及 20k checkpoint 的主要离线诊断指标和正式闭环结果；
 2. step-0 B0 和完整训练 loss 未保留这一关键限制；
 3. 下一阶段固定 20 demonstrations；
 4. 三组实验设计和独立审查完成；
@@ -83,13 +83,11 @@ A-Sanity 使用公开 LIBERO Object task 8、5 条 demonstrations、859 帧，AC
 - A3：不重新训练，使用 source-matched Standard、Replan control 和
   Temporal Ensemble `0.01` 做闭环比较。
 
-指南链接：
+正式报告使用可点击的仓库相对链接：
 
-```text
-act_action_chunking.md
-act_delta_action_loss.md
-act_temporal_ensemble.md
-```
+- [ACT 单步预测与 Action Chunking 指南](../../../reports/act_action_chunking.md)；
+- [ACT 动作差分损失指南](../../../reports/act_delta_action_loss.md)；
+- [ACT Temporal Ensemble 指南](../../../reports/act_temporal_ensemble.md)。
 
 必须明确这些是实施指南，不得把尚未运行的 20-demo 训练或评测写成实验结果。
 
