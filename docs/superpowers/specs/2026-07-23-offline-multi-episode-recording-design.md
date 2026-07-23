@@ -1,7 +1,7 @@
 # Offline Multi-Episode Rerun Recording Design
 
 **Date:** 2026-07-23
-**Status:** Independently approved; awaiting user review of written specification
+**Status:** Approved for implementation
 
 ## Goal
 
