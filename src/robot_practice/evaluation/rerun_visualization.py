@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from numbers import Real
@@ -720,6 +722,98 @@ def initialize_recording(
         make_active=False,
         make_default=True,
     )
+
+
+def initialize_offline_recording_stream(
+    *,
+    output_path: Path,
+    recording_id: str,
+    recording_name: str,
+    camera_keys: Sequence[str],
+    fps: float,
+    agentview_calibration: FixedCameraCalibration | None = None,
+    agentview_image_convention: str | None = None,
+) -> rr.RecordingStream:
+    """Create one explicitly routed offline Recording with its own file sink."""
+
+    if (agentview_calibration is None) != (agentview_image_convention is None):
+        raise ValueError(
+            "Offline camera calibration and resolved agentview image convention "
+            "must be supplied together"
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    stream = rr.RecordingStream(
+        "robot_practice_act_offline",
+        recording_id=recording_id,
+    )
+    try:
+        stream.save(output_path)
+        stream.send_recording_name(recording_name)
+        log_offline_static_context(
+            stream,
+            agentview_calibration=agentview_calibration,
+            agentview_image_convention=agentview_image_convention,
+        )
+        rr.send_blueprint(
+            build_offline_blueprint(
+                camera_keys,
+                fps,
+                has_agentview_calibration=agentview_calibration is not None,
+            ),
+            make_active=False,
+            make_default=True,
+            recording=stream,
+        )
+    except BaseException:
+        stream.disconnect()
+        raise
+    return stream
+
+
+def stage_merged_recordings(
+    recording_paths: Sequence[Path],
+    output_path: Path,
+) -> Path:
+    """Merge and verify recordings beside the final path without publishing them."""
+
+    if not recording_paths:
+        raise ValueError("At least one temporary Rerun recording is required")
+    missing = [
+        path for path in recording_paths if not path.is_file() or path.stat().st_size == 0
+    ]
+    if missing:
+        raise RuntimeError(f"Temporary Rerun recording was not written: {missing[0]}")
+    rerun_cli = shutil.which("rerun")
+    if rerun_cli is None:
+        raise RuntimeError("The rerun CLI is required to merge offline recordings")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    staging_path = output_path.with_name(f".{output_path.stem}.merged.rrd")
+    staging_path.unlink(missing_ok=True)
+    merge = subprocess.run(
+        [
+            rerun_cli,
+            "rrd",
+            "merge",
+            "-o",
+            str(staging_path),
+            *(str(path) for path in recording_paths),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if merge.returncode != 0:
+        raise RuntimeError(f"Rerun recording merge failed: {merge.stderr.strip()}")
+    verify = subprocess.run(
+        [rerun_cli, "rrd", "verify", str(staging_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if verify.returncode != 0:
+        raise RuntimeError(f"Rerun recording verify failed: {verify.stderr.strip()}")
+    return staging_path
 
 
 def finish_recording() -> None:

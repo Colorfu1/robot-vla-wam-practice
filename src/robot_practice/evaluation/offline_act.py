@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
+import uuid
 from collections.abc import Mapping
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -62,10 +64,10 @@ from robot_practice.evaluation.metrics import compute_offline_metrics
 from robot_practice.evaluation.rerun_visualization import (
     OfflineCommandHistory,
     OfflineTrajectoryHistory,
-    finish_recording,
-    initialize_recording,
+    initialize_offline_recording_stream,
     log_metric_summary,
     log_offline_frame,
+    stage_merged_recordings,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -93,6 +95,64 @@ class OfflineEvaluationResult:
     output_dir: Path
     metrics: dict[str, Any]
     viewer_opened: bool
+
+
+@dataclass
+class OfflineEpisodeRecording:
+    episode_index: int | None
+    path: Path
+    stream: rr.RecordingStream
+    trajectory_history: OfflineTrajectoryHistory = field(
+        default_factory=OfflineTrajectoryHistory
+    )
+    command_history: OfflineCommandHistory = field(default_factory=OfflineCommandHistory)
+    previous_skeleton_pose: PandaSkeletonPose | None = None
+    previous_frame_index: int | None = None
+    flush_attempted: bool = False
+    disconnect_attempted: bool = False
+
+    def accept_frame_index(self, frame_index: int) -> None:
+        if self.previous_frame_index is None:
+            if frame_index != 0:
+                raise ValueError(
+                    f"Dataset episode {self.episode_index} must start at frame zero, "
+                    f"got {frame_index}"
+                )
+        elif frame_index <= self.previous_frame_index:
+            raise ValueError(
+                f"Dataset episode {self.episode_index} frame indices must be "
+                f"monotonically increasing, got {self.previous_frame_index} then "
+                f"{frame_index}"
+            )
+        self.previous_frame_index = frame_index
+
+
+def flush_and_disconnect_recordings(
+    recordings: Sequence[OfflineEpisodeRecording],
+) -> None:
+    """Attempt every flush before attempting every disconnect."""
+
+    errors: list[BaseException] = []
+    for recording in recordings:
+        if recording.flush_attempted:
+            continue
+        try:
+            recording.stream.flush()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            recording.flush_attempted = True
+    for recording in recordings:
+        if recording.disconnect_attempted:
+            continue
+        try:
+            recording.stream.disconnect()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            recording.disconnect_attempted = True
+    if errors:
+        raise errors[0]
 
 
 def validate_config(
@@ -371,17 +431,17 @@ def evaluate_offline(
         raise
 
     recording_path = output_dir / "prediction.rrd"
-    recording_initialized = False
+    temporary_recording_dir = output_dir / ".rerun_recordings"
+    episode_recordings: list[OfflineEpisodeRecording] = []
+    episode_recording_by_id: dict[int, OfflineEpisodeRecording] = {}
     rows: list[dict[str, Any]] = []
     predicted_chunks: list[np.ndarray] = []
     target_chunks: list[np.ndarray] = []
     valid_masks: list[np.ndarray] = []
     episode_indices: list[int] = []
     query_latencies: list[float] = []
-    trajectory_history = OfflineTrajectoryHistory()
-    command_history = OfflineCommandHistory()
     skeleton_episode_index: int | None = None
-    previous_skeleton_pose: PandaSkeletonPose | None = None
+    completed_skeleton_episodes: set[int] = set()
     skeleton_reconstructor: PandaSkeletonReconstructor | None = None
     agentview_calibration: FixedCameraCalibration | None = None
 
@@ -401,15 +461,39 @@ def evaluate_offline(
                 agentview_calibration.image_width,
                 agentview_calibration.image_height,
             )
-        initialize_recording(
-            output_path=recording_path,
-            mode="offline",
-            camera_keys=camera_keys,
-            fps=float(dataset.fps),
-            agentview_calibration=agentview_calibration,
-            agentview_image_convention=resolved_agentview_image_convention,
+        temporary_recording_dir.mkdir(parents=True, exist_ok=False)
+        recording_episode_ids: tuple[int | None, ...] = (
+            visualized_episode_ids if visualized_episode_ids else (None,)
         )
-        recording_initialized = True
+        for episode_index in recording_episode_ids:
+            filename = (
+                "summary.rrd"
+                if episode_index is None
+                else f"episode_{episode_index}.rrd"
+            )
+            recording_name = (
+                "Offline evaluation summary"
+                if episode_index is None
+                else f"Dataset episode {episode_index}"
+            )
+            temporary_path = temporary_recording_dir / filename
+            stream = initialize_offline_recording_stream(
+                output_path=temporary_path,
+                recording_id=str(uuid.uuid4()),
+                recording_name=recording_name,
+                camera_keys=camera_keys,
+                fps=float(dataset.fps),
+                agentview_calibration=agentview_calibration,
+                agentview_image_convention=resolved_agentview_image_convention,
+            )
+            episode_recording = OfflineEpisodeRecording(
+                episode_index=episode_index,
+                path=temporary_path,
+                stream=stream,
+            )
+            episode_recordings.append(episode_recording)
+            if episode_index is not None:
+                episode_recording_by_id[episode_index] = episode_recording
         selected = Subset(dataset, range(total_frames))
         dataloader = DataLoader(
             selected,
@@ -418,7 +502,6 @@ def evaluate_offline(
             num_workers=0,
         )
         input_keys = _observation_input_keys(loaded.config)
-        global_frame = 0
         for batch_id, batch in enumerate(
             tqdm(dataloader, desc="Offline ACT prediction", unit="batch")
         ):
@@ -461,25 +544,33 @@ def evaluate_offline(
                 target_action = target_numpy[batch_row, 0]
                 predicted_action = predicted_numpy[batch_row, 0]
                 if episode_index in visualized_episode_set:
+                    episode_recording = episode_recording_by_id[episode_index]
                     if skeleton_reconstructor is None:
                         raise RuntimeError(
                             "Offline skeleton reconstructor was not initialized"
                         )
                     episode_changed = skeleton_episode_index != episode_index
                     if episode_changed:
+                        if episode_index in completed_skeleton_episodes:
+                            raise RuntimeError(
+                                "Visualized dataset episodes are interleaved; "
+                                f"episode {episode_index} appeared more than once"
+                            )
+                        if skeleton_episode_index is not None:
+                            completed_skeleton_episodes.add(skeleton_episode_index)
                         skeleton_episode_index = episode_index
-                        previous_skeleton_pose = None
                         skeleton_reconstructor.reset_episode()
+                    episode_recording.accept_frame_index(frame_index)
                     raw_observation_state = batch["observation.state"][batch_row]
                     ik_result = skeleton_reconstructor.reconstruct(
                         raw_observation_state.detach().cpu().numpy()
                     )
                     if ik_result.pose is not None:
                         skeleton_pose = ik_result.pose
-                        previous_skeleton_pose = skeleton_pose
+                        episode_recording.previous_skeleton_pose = skeleton_pose
                         skeleton_stale = False
                     else:
-                        skeleton_pose = previous_skeleton_pose
+                        skeleton_pose = episode_recording.previous_skeleton_pose
                         skeleton_stale = skeleton_pose is not None
                         LOGGER.warning(
                             "[Visualization] Panda IK failed at episode=%d frame=%d: "
@@ -494,8 +585,8 @@ def evaluate_offline(
                         )
                     images = {key: batch[key][batch_row] for key in camera_keys}
                     log_offline_frame(
-                        rr,
-                        global_frame=global_frame,
+                        episode_recording.stream,
+                        global_frame=frame_index,
                         episode_index=episode_index,
                         frame_index=frame_index,
                         batch_id=batch_id,
@@ -505,8 +596,8 @@ def evaluate_offline(
                         target_chunk=target_numpy[batch_row],
                         predicted_chunk=predicted_numpy[batch_row],
                         valid_horizon=valid_numpy[batch_row],
-                        trajectory_history=trajectory_history,
-                        command_history=command_history,
+                        trajectory_history=episode_recording.trajectory_history,
+                        command_history=episode_recording.command_history,
                         display_frame=skeleton_reconstructor.display_frame,
                         skeleton_pose=skeleton_pose,
                         skeleton_stale=skeleton_stale,
@@ -538,7 +629,6 @@ def evaluate_offline(
                     }
                 )
                 episode_indices.append(episode_index)
-                global_frame += 1
 
         metrics = compute_offline_metrics(
             predicted_chunks=np.stack(predicted_chunks),
@@ -562,24 +652,32 @@ def evaluate_offline(
             "source_manifest": selection.source_manifest,
         }
         metrics["visualized_episodes"] = list(visualized_episode_ids)
-        log_metric_summary(rr, metrics)
+        for episode_recording in episode_recordings:
+            log_metric_summary(episode_recording.stream, metrics)
         write_json_atomic(output_dir / "metrics.json", metrics)
         table = pa.Table.from_pylist(rows, schema=_prediction_schema(loaded.config.chunk_size))
         write_parquet_atomic(output_dir / "predictions.parquet", table)
 
-        finish_recording()
-        recording_initialized = False
-        if not recording_path.is_file() or recording_path.stat().st_size == 0:
-            raise RuntimeError(f"Rerun recording was not written: {recording_path}")
+        flush_and_disconnect_recordings(episode_recordings)
+        staging_path = stage_merged_recordings(
+            [recording.path for recording in episode_recordings],
+            recording_path,
+        )
         run_config["status"] = status
         write_json_atomic(output_dir / "run_config.json", run_config)
+        staging_path.replace(recording_path)
+        shutil.rmtree(temporary_recording_dir)
         mark_run_complete(output_dir)
     finally:
-        if skeleton_reconstructor is not None:
-            skeleton_reconstructor.close()
-        if recording_initialized:
-            finish_recording()
-        release_output_directory_lock(output_dir)
+        try:
+            flush_and_disconnect_recordings(episode_recordings)
+        except BaseException:
+            LOGGER.exception("[Output] Failed to close every temporary Rerun recording")
+        try:
+            if skeleton_reconstructor is not None:
+                skeleton_reconstructor.close()
+        finally:
+            release_output_directory_lock(output_dir)
 
     viewer_opened = launch_rerun_viewer(recording_path, enabled=config.open_viewer)
     log_terminal_metrics(metrics, LOGGER)

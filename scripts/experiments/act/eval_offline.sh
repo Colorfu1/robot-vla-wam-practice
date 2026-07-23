@@ -15,6 +15,12 @@
 #     --policy-path="${policy}" --suite=libero_object --task-id=8 \
 #     --episodes 823 826 --max-frames=1 --output-dir=outputs/act/offline_debug \
 #     --agentview-image-convention=lerobot_180 --overwrite --no-open-viewer
+#   scripts/experiments/act/eval_offline.sh \
+#     --policy-path="${policy}" --suite=libero_object --task-id=8 \
+#     --dataset-root=datasets/lerobot/lerobot/libero \
+#     --episodes 823 826 834 840 841 --num-visualized-episodes=5 \
+#     --agentview-image-convention=lerobot_180 \
+#     --output-dir=outputs/act/a_sanity/offline_5 --overwrite
 #
 # Accepted arguments:
 #   --policy-path PATH              Required complete compatible 7D ACT
@@ -54,8 +60,10 @@
 # Outputs:
 #   metrics.json, predictions.parquet, prediction.rrd, and run_config.json.
 #   Every evaluated frame is kept in metrics/Parquet; only the requested episode
-#   prefix is written to Rerun. The original two recorded image panes remain
-#   unchanged and keep the model-facing LeRobot/OpenVLA orientation. The upper-right
+#   prefix is written to Rerun. Each visualized dataset episode is an independent
+#   Recording inside prediction.rrd; use Rerun's left Recording list to switch the
+#   complete synchronized view between episodes. The original two recorded image
+#   panes remain unchanged and keep the model-facing LeRobot/OpenVLA orientation. The upper-right
 #   pane defaults to a physically calibrated agentview overlay; for lerobot_180 it
 #   uses a visualization-only horizontal reflection so projected geometry aligns.
 #   its second tab is a free 3D orbit view with the real agentview camera shown as

@@ -14,6 +14,86 @@ import robot_practice.evaluation.offline_act as offline
 from robot_practice.evaluation.libero_tasks import resolve_libero_task
 
 
+class FakeLifecycleStream:
+    def __init__(
+        self,
+        name: str,
+        events: list[str],
+        *,
+        fail_flush: bool = False,
+    ) -> None:
+        self.name = name
+        self.events = events
+        self.fail_flush = fail_flush
+
+    def flush(self) -> None:
+        self.events.append(f"flush:{self.name}")
+        if self.fail_flush:
+            raise RuntimeError(f"flush failed: {self.name}")
+
+    def disconnect(self) -> None:
+        self.events.append(f"disconnect:{self.name}")
+
+
+def test_offline_episode_recording_state_is_independent_and_validates_timeline(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    first = offline.OfflineEpisodeRecording(
+        episode_index=823,
+        path=tmp_path / "823.rrd",
+        stream=FakeLifecycleStream("823", events),
+    )
+    second = offline.OfflineEpisodeRecording(
+        episode_index=826,
+        path=tmp_path / "826.rrd",
+        stream=FakeLifecycleStream("826", events),
+    )
+
+    assert first.trajectory_history is not second.trajectory_history
+    assert first.command_history is not second.command_history
+    first.accept_frame_index(0)
+    first.accept_frame_index(2)
+    second.accept_frame_index(0)
+
+    with pytest.raises(ValueError, match="monotonically"):
+        first.accept_frame_index(1)
+    with pytest.raises(ValueError, match="start at frame zero"):
+        offline.OfflineEpisodeRecording(
+            episode_index=834,
+            path=tmp_path / "834.rrd",
+            stream=FakeLifecycleStream("834", events),
+        ).accept_frame_index(3)
+
+
+def test_offline_recording_cleanup_flushes_all_before_disconnect(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    recordings = [
+        offline.OfflineEpisodeRecording(
+            episode_index=823,
+            path=tmp_path / "823.rrd",
+            stream=FakeLifecycleStream("823", events, fail_flush=True),
+        ),
+        offline.OfflineEpisodeRecording(
+            episode_index=826,
+            path=tmp_path / "826.rrd",
+            stream=FakeLifecycleStream("826", events),
+        ),
+    ]
+
+    with pytest.raises(RuntimeError, match="flush failed: 823"):
+        offline.flush_and_disconnect_recordings(recordings)
+
+    assert events == [
+        "flush:823",
+        "flush:826",
+        "disconnect:823",
+        "disconnect:826",
+    ]
+
+
 def test_offline_parser_defaults_to_all_task_episodes() -> None:
     args = offline.build_argument_parser().parse_args(
         [

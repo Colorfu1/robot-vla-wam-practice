@@ -132,7 +132,12 @@ def test_offline_visualization_does_not_change_policy_predictions(
     metrics_only, visualized = outputs
     for column in ("target_action", "predicted_action", "target_chunk", "predicted_chunk"):
         assert metrics_only[1][column].to_pylist() == visualized[1][column].to_pylist()
-    ignored = {"mean_model_query_latency_ms", "p95_model_query_latency_ms"}
+    ignored = {
+        "inference_latency_p50_ms",
+        "inference_latency_p95_ms",
+        "mean_model_query_latency_ms",
+        "p95_model_query_latency_ms",
+    }
     assert {
         key: value
         for key, value in metrics_only[0]["aggregate"].items()

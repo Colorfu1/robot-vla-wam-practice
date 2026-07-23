@@ -30,6 +30,29 @@ class FakeRecorder:
         self.logs.append((entity_path, entity, static))
 
 
+class FakeRecordingStream(FakeRecorder):
+    def __init__(
+        self,
+        application_id: str,
+        *,
+        recording_id: str,
+        events: list[tuple[str, object]],
+    ) -> None:
+        super().__init__()
+        self.application_id = application_id
+        self.recording_id = recording_id
+        self.events = events
+
+    def save(self, path: Path) -> None:
+        self.events.append(("save", (self, path)))
+
+    def send_recording_name(self, name: str) -> None:
+        self.events.append(("name", (self, name)))
+
+    def disconnect(self) -> None:
+        self.events.append(("disconnect", self))
+
+
 def _patch_entities(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(viz.rr, "Scalars", lambda value: value)
 
@@ -1140,6 +1163,144 @@ def test_recording_configures_file_sink_before_blueprint(
             ),
         ),
     ]
+
+
+def test_offline_episode_recording_binds_setup_to_its_stream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, object]] = []
+    blueprint = object()
+
+    def make_stream(
+        application_id: str,
+        *,
+        recording_id: str,
+    ) -> FakeRecordingStream:
+        stream = FakeRecordingStream(
+            application_id,
+            recording_id=recording_id,
+            events=events,
+        )
+        events.append(("create", stream))
+        return stream
+
+    monkeypatch.setattr(viz.rr, "RecordingStream", make_stream)
+    monkeypatch.setattr(viz, "build_offline_blueprint", lambda *args, **kwargs: blueprint)
+    monkeypatch.setattr(
+        viz,
+        "log_offline_static_context",
+        lambda recorder, **kwargs: events.append(("static", (recorder, kwargs))),
+    )
+    monkeypatch.setattr(
+        viz.rr,
+        "send_blueprint",
+        lambda value, **kwargs: events.append(("blueprint", (value, kwargs))),
+    )
+
+    output = tmp_path / "episode_823.rrd"
+    calibration = _camera_calibration()
+    stream = viz.initialize_offline_recording_stream(
+        output_path=output,
+        recording_id="recording-823",
+        recording_name="Dataset episode 823",
+        camera_keys=(viz.AGENTVIEW_CAMERA_KEY,),
+        fps=10.0,
+        agentview_calibration=calibration,
+        agentview_image_convention="lerobot_180",
+    )
+
+    assert stream.application_id == "robot_practice_act_offline"
+    assert stream.recording_id == "recording-823"
+    assert events == [
+        ("create", stream),
+        ("save", (stream, output)),
+        ("name", (stream, "Dataset episode 823")),
+        (
+            "static",
+            (
+                stream,
+                {
+                    "agentview_calibration": calibration,
+                    "agentview_image_convention": "lerobot_180",
+                },
+            ),
+        ),
+        (
+            "blueprint",
+            (
+                blueprint,
+                {
+                    "make_active": False,
+                    "make_default": True,
+                    "recording": stream,
+                },
+            ),
+        ),
+    ]
+
+
+def test_stage_merged_recordings_merges_and_verifies_without_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = [tmp_path / "episode_823.rrd", tmp_path / "episode_826.rrd"]
+    for path in inputs:
+        path.write_bytes(b"episode")
+    output = tmp_path / "prediction.rrd"
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(viz.shutil, "which", lambda executable: "/usr/bin/rerun")
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append(command)
+        if command[2] == "merge":
+            Path(command[4]).write_bytes(b"merged")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(viz.subprocess, "run", fake_run)
+
+    staging = viz.stage_merged_recordings(inputs, output)
+
+    assert staging == tmp_path / ".prediction.merged.rrd"
+    assert calls == [
+        [
+            "/usr/bin/rerun",
+            "rrd",
+            "merge",
+            "-o",
+            str(staging),
+            *(str(path) for path in inputs),
+        ],
+        ["/usr/bin/rerun", "rrd", "verify", str(staging)],
+    ]
+    assert staging.read_bytes() == b"merged"
+    assert not output.exists()
+    assert all(path.exists() for path in inputs)
+
+
+def test_stage_merged_recordings_keeps_sources_on_verify_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "episode_823.rrd"
+    source.write_bytes(b"episode")
+    output = tmp_path / "prediction.rrd"
+    monkeypatch.setattr(viz.shutil, "which", lambda executable: "/usr/bin/rerun")
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        if command[2] == "merge":
+            Path(command[4]).write_bytes(b"merged")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="invalid RRD")
+
+    monkeypatch.setattr(viz.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="verify"):
+        viz.stage_merged_recordings([source], output)
+
+    assert source.exists()
+    assert not output.exists()
 
 
 def test_small_rrd_is_valid(tmp_path: Path) -> None:

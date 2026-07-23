@@ -2,6 +2,7 @@
 
 **Date:** 2026-07-23
 **Design:** `docs/superpowers/specs/2026-07-23-offline-multi-episode-recording-design.md`
+**Status:** Completed
 **Protected file baseline:** `src/robot_practice/evaluation/libero_act.py`
 SHA-256 `8ee42b5bacece3141bd857afa81b0cdf1f61d1aafef93f99a23ada5430ca6f26`
 
