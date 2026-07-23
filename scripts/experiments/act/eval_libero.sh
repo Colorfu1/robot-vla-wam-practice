@@ -56,6 +56,10 @@
 #   executed controller command, measured t->t+1 response, executable ACT queue,
 #   discarded chunk tail (or Temporal Ensemble new chunk), post-action agentview,
 #   selectable 7D action/8D state curves, reward/success, latency, and metrics.
+#   In Free 3D, the expanded Blueprint Panel eye icons independently toggle the
+#   coordinate frame, calibrated camera, robot, measured trajectory, command,
+#   response, and plan groups. Thin orange is the controller command; the thicker
+#   cyan arrow and endpoint are the measured EEF response at t+1.
 #   A new result starts with .incomplete; successful completion removes it, while
 #   failure retains it for diagnosis. Rerun launch is attempted by default; a missing
 #   executable or launch failure only emits a warning.

@@ -145,6 +145,11 @@ Closed-loop 的 `rollout.rrd` 不加载 demonstration，也不伪造逐帧 GT。
 这里的未来 action 线是控制命令预览，不是模拟出的未来机器人状态。Temporal Ensemble
 模式显示的是当前新预测 chunk，不把它标成执行 queue。
 
+在 `Free 3D` 标签中，左侧默认展开的 Blueprint Panel 提供眼睛开关，可分别隐藏或显示
+坐标系、相机标定、机器人、实测 EEF 历史、当前命令、真实响应和各类 plan。细橙线是发送给
+控制器的当前命令；较粗青色箭头及其青色终点是模拟器实测的
+`EEF[t] -> EEF[t+1]` 响应。
+
 ### 3.5 从 B0 训练 20,000 updates
 
 ```bash

@@ -538,7 +538,46 @@ def test_libero_spatial_view_contains_measured_rollout_and_calibrated_camera(
     assert overlay[1]["contents"] == list(viz.LIBERO_AGENTVIEW_OVERLAY_CONTENTS)
     assert free_3d[1]["contents"] == list(viz.LIBERO_CALIBRATED_3D_CONTENTS)
     assert "rollout/robot/**" in free_3d[1]["contents"]
-    assert "rollout/plan/**" in free_3d[1]["contents"]
+    assert viz.LIBERO_3D_CONTENTS == (
+        "display_frame/**",
+        "rollout/robot/**",
+        "rollout/trajectory/**",
+        "rollout/command/**",
+        "rollout/response/**",
+        "rollout/plan/queued/**",
+        "rollout/plan/discarded/**",
+        "rollout/plan/new_prediction_chunk/**",
+    )
+    assert viz.LIBERO_CALIBRATED_3D_CONTENTS == (
+        *viz.LIBERO_3D_CONTENTS,
+        "rollout/calibration/**",
+    )
+
+
+def test_libero_blueprint_expands_native_blueprint_panel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    panel = object()
+    panel_calls: list[dict[str, object]] = []
+
+    def blueprint_panel(**kwargs: object) -> object:
+        panel_calls.append(kwargs)
+        return panel
+
+    monkeypatch.setattr(viz.rrb, "BlueprintPanel", blueprint_panel)
+    monkeypatch.setattr(
+        viz.rrb,
+        "Blueprint",
+        lambda *parts, **kwargs: (parts, kwargs),
+    )
+
+    blueprint = viz.build_libero_blueprint(
+        ("observation.images.image", "observation.images.image2"),
+        fps=10.0,
+    )
+
+    assert panel_calls == [{"expanded": True}]
+    assert panel in blueprint[0]
 
 
 def test_libero_action_and_state_series_are_independently_addressable() -> None:
@@ -719,6 +758,7 @@ def test_libero_queue_hit_omits_model_query_latency(monkeypatch: pytest.MonkeyPa
         "rollout/trajectory/eef_measured",
         "rollout/command/executed",
         "rollout/response/eef_measured",
+        "rollout/response/eef_endpoint",
         "rollout/plan",
         "rollout/reward",
         "rollout/success_so_far",
@@ -767,10 +807,25 @@ def test_libero_geometry_anchors_command_response_queue_and_discarded_tail(
         entities["rollout/command/executed"].positions[0],
         [[0.1, 0.2, 0.3], [0.15, 0.2, 0.3]],
     )
-    np.testing.assert_allclose(
-        entities["rollout/response/eef_measured"].positions[0],
-        [[0.1, 0.2, 0.3], [0.11, 0.22, 0.33]],
+    assert entities["rollout/command/executed"].kwargs["radii"] == (
+        viz.ROLLOUT_COMMAND_RADIUS
     )
+    response = entities["rollout/response/eef_measured"]
+    np.testing.assert_allclose(
+        response.kwargs["origins"],
+        [[0.1, 0.2, 0.3]],
+    )
+    np.testing.assert_allclose(
+        response.kwargs["vectors"],
+        [[0.01, 0.02, 0.03]],
+    )
+    assert response.kwargs["radii"] == viz.ROLLOUT_RESPONSE_RADIUS
+    assert response.kwargs["colors"] == [viz.ROLLOUT_RESPONSE_COLOR]
+    endpoint = entities["rollout/response/eef_endpoint"]
+    np.testing.assert_allclose(endpoint.positions, [[0.11, 0.22, 0.33]])
+    assert endpoint.kwargs["radii"] == viz.ROLLOUT_RESPONSE_ENDPOINT_RADIUS
+    assert endpoint.kwargs["colors"] == [viz.ROLLOUT_RESPONSE_COLOR]
+    assert viz.ROLLOUT_COMMAND_RADIUS < viz.ROLLOUT_RESPONSE_RADIUS
     queue = np.asarray(entities["rollout/plan/queued/preview"].positions[0])
     np.testing.assert_allclose(queue[0], [0.11, 0.22, 0.33])
     np.testing.assert_allclose(queue[-1], [0.11, 0.32, 0.33])

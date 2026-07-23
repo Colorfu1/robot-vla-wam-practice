@@ -56,6 +56,9 @@ ROLLOUT_RESPONSE_COLOR = (0, 190, 210)
 ROLLOUT_QUEUE_COLOR = (255, 190, 80, 160)
 ROLLOUT_DISCARDED_COLOR = (255, 190, 80, 72)
 ROLLOUT_TEMPORAL_CHUNK_COLOR = (180, 120, 220, 96)
+ROLLOUT_COMMAND_RADIUS = 0.003
+ROLLOUT_RESPONSE_RADIUS = 0.007
+ROLLOUT_RESPONSE_ENDPOINT_RADIUS = 0.010
 AXIS_COLORS = ((230, 50, 50), (50, 190, 80), (60, 110, 230))
 ACTION_COLOR_HEX = {
     "x": ("#4E79A7", "#A0CBE8"),
@@ -198,10 +201,12 @@ LIBERO_3D_CONTENTS = (
     "rollout/trajectory/**",
     "rollout/command/**",
     "rollout/response/**",
-    "rollout/plan/**",
+    "rollout/plan/queued/**",
+    "rollout/plan/discarded/**",
+    "rollout/plan/new_prediction_chunk/**",
 )
 LIBERO_CALIBRATED_3D_CONTENTS = LIBERO_3D_CONTENTS + (
-    LIBERO_CALIBRATED_AGENTVIEW_PATH,
+    "rollout/calibration/**",
 )
 LIBERO_AGENTVIEW_OVERLAY_CONTENTS = (
     LIBERO_CALIBRATED_AGENTVIEW_PATH,
@@ -209,7 +214,9 @@ LIBERO_AGENTVIEW_OVERLAY_CONTENTS = (
     "rollout/trajectory/**",
     "rollout/command/**",
     "rollout/response/**",
-    "rollout/plan/**",
+    "rollout/plan/queued/**",
+    "rollout/plan/discarded/**",
+    "rollout/plan/new_prediction_chunk/**",
 )
 LIBERO_SEMANTICS_MARKDOWN = """\
 # LIBERO closed-loop visualization semantics
@@ -219,8 +226,8 @@ sent to LIBERO, and the simulator result at `t+1`.
 
 - **Blue Panda:** forward kinematics from measured simulator arm and gripper joints.
 - **Deep-blue path:** measured end-effector history through observation `t`.
-- **Deep-orange segment:** the current controller command sent to `env.step`.
-- **Cyan segment:** measured end-effector displacement from `t` to `t+1`.
+- **Thin deep-orange segment:** the current controller command sent to `env.step`.
+- **Thick cyan arrow and endpoint:** measured end-effector displacement from `t` to `t+1`.
 - **Light-orange solid preview:** remaining standard ACT queue entries that can execute.
 - **Faint-orange dashed preview:** standard ACT chunk tail that will be discarded.
 - **Violet dashed preview:** Temporal Ensemble's new prediction chunk; it is not an
@@ -231,7 +238,9 @@ states. The post-action agentview is the observation returned by the same simula
 including terminal transitions. No demonstration or frame-aligned GT is shown.
 
 Only XYZ labels remain permanently visible. Select robot, trajectory, command, response, or
-plan entities to inspect their labels.
+plan entities to inspect their labels. Use the eye icons in the expanded Blueprint Panel to
+show or hide the coordinate frame, camera calibration, robot, measured trajectory, command,
+response, executable queue, discarded tail, or Temporal Ensemble chunk independently.
 """
 
 
@@ -609,6 +618,7 @@ def build_libero_blueprint(camera_keys: Sequence[str], fps: float) -> rrb.Bluepr
             charts,
             row_shares=[0.62, 0.38],
         ),
+        rrb.BlueprintPanel(expanded=True),
         rrb.TimePanel(timeline="global_step", fps=fps, expanded=True),
         collapse_panels=False,
     )
@@ -1324,18 +1334,29 @@ def log_libero_step(
         rr.LineStrips3D(
             [command_display],
             colors=[PREDICTION_COLOR],
-            radii=0.005,
+            radii=ROLLOUT_COMMAND_RADIUS,
             labels=["Executed controller command at t"],
             show_labels=False,
         ),
     )
     recorder.log(
         "rollout/response/eef_measured",
-        rr.LineStrips3D(
-            [response_display],
+        rr.Arrows3D(
+            origins=[response_display[0]],
+            vectors=[response_display[1] - response_display[0]],
             colors=[ROLLOUT_RESPONSE_COLOR],
-            radii=0.005,
+            radii=ROLLOUT_RESPONSE_RADIUS,
             labels=["Measured EEF response t to t+1"],
+            show_labels=False,
+        ),
+    )
+    recorder.log(
+        "rollout/response/eef_endpoint",
+        rr.Points3D(
+            [response_display[1]],
+            colors=[ROLLOUT_RESPONSE_COLOR],
+            radii=ROLLOUT_RESPONSE_ENDPOINT_RADIUS,
+            labels=["Measured EEF at t+1"],
             show_labels=False,
         ),
     )

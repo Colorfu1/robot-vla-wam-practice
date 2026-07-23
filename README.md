@@ -164,7 +164,11 @@ and response, the remaining executable ACT queue, the discarded chunk tail (or T
 Ensemble's new prediction chunk), selectable 7D action/8D state curves, and metrics. It does
 not present a demonstration as frame-aligned closed-loop GT. Only the simulator run reports
 task success; offline prediction cannot establish success because it never executes an
-action.
+action. In the Free 3D tab, use the eye icons in the expanded Blueprint Panel to show or
+hide the coordinate frame, camera calibration, robot, measured trajectory, current command,
+actual response, executable queue, discarded tail, and Temporal Ensemble chunk
+independently. The thin orange segment is the controller command; the thicker cyan arrow
+and cyan endpoint are the measured EEF response at `t+1`.
 
 Both commands require `--suite` and `--task-id`. Supported suites are `libero_spatial`,
 `libero_object`, `libero_goal`, `libero_10`, and `libero_90`; one invocation evaluates one
