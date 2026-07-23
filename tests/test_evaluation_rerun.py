@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,6 +12,10 @@ import pytest
 import torch
 
 import robot_practice.evaluation.rerun_visualization as viz
+from robot_practice.evaluation.metrics import (
+    CLOSED_LOOP_METRIC_DEFINITIONS,
+    OFFLINE_METRIC_DEFINITIONS,
+)
 
 
 class FakeRecorder:
@@ -906,7 +911,9 @@ def _offline_metrics_payload() -> dict[str, object]:
 
 
 def test_offline_metrics_markdown_uses_ordered_compact_tables() -> None:
-    markdown = viz.metrics_markdown(_offline_metrics_payload())
+    metrics = _offline_metrics_payload()
+    metrics["metric_definitions"] = dict(OFFLINE_METRIC_DEFINITIONS)
+    markdown = viz.metrics_markdown(metrics)
 
     assert markdown == "\n".join(
         (
@@ -914,16 +921,25 @@ def test_offline_metrics_markdown_uses_ordered_compact_tables() -> None:
             "",
             "| Metric | Value | Meaning |",
             "|---|---:|---|",
-            "| Episodes | 5 |  |",
-            "| Frames | 859 |  |",
-            "| Model queries | 430 |  |",
-            "| Batch size | 2 |  |",
-            "| First-action MAE | 0.0208 | current-action error |",
-            "| Delta-action MAE | 0.00972 |  |",
-            "| Action TV | 0.02011 |  |",
-            "| Action Jerk | 0.01146 |  |",
-            "| Inference latency p50 | 4.13 ms |  |",
-            "| Inference latency p95 | 7.89 ms |  |",
+            "| Episodes | 5 | Number of demonstration episodes evaluated offline |",
+            "| Frames | 859 | Number of dataset frames predicted offline |",
+            "| Model queries | 430 | Number of predict_action_chunk batch calls |",
+            "| Batch size | 2 | Configured samples per offline model call |",
+            (
+                "| First-action MAE | 0.0208 | MAE between predicted and "
+                "demonstration current actions |"
+            ),
+            (
+                "| Delta-action MAE | 0.00972 | MAE between predicted and "
+                "demonstration action deltas |"
+            ),
+            "| Action TV | 0.02011 | Mean adjacent arm-action change under teacher forcing |",
+            "| Action Jerk | 0.01146 | Second-difference action-jerk proxy under teacher forcing |",
+            "| Inference latency p50 | 4.13 ms | Median offline model-batch inference latency |",
+            (
+                "| Inference latency p95 | 7.89 ms | 95th-percentile offline "
+                "model-batch inference latency |"
+            ),
             "",
             "## Per-dimension first-action MAE",
             "",
@@ -939,6 +955,7 @@ def test_offline_metrics_markdown_uses_ordered_compact_tables() -> None:
         )
     )
     assert "chunk_mae_by_horizon" not in markdown
+    assert markdown.isascii()
 
 
 @pytest.mark.parametrize(
@@ -994,8 +1011,79 @@ def test_non_offline_metrics_markdown_keeps_generic_presentation() -> None:
     )
     assert markdown == (
         "# libero metrics\n\n"
-        "- **success_rate**: `0.5` — successful rollout ratio"
+        "- **success_rate**: `0.5` - Fraction of rollouts that completed the task"
     )
+
+
+def test_rerun_metric_descriptions_cover_every_canonical_metric() -> None:
+    assert set(viz.OFFLINE_RERUN_METRIC_DESCRIPTIONS) == set(
+        OFFLINE_METRIC_DEFINITIONS
+    )
+    assert set(viz.CLOSED_LOOP_RERUN_METRIC_DESCRIPTIONS) == set(
+        CLOSED_LOOP_METRIC_DEFINITIONS
+    )
+    for descriptions in (
+        viz.OFFLINE_RERUN_METRIC_DESCRIPTIONS,
+        viz.CLOSED_LOOP_RERUN_METRIC_DESCRIPTIONS,
+    ):
+        assert all(
+            isinstance(description, str)
+            and bool(description)
+            and description.isascii()
+            for description in descriptions.values()
+        )
+
+
+def test_closed_loop_metrics_markdown_uses_english_display_descriptions() -> None:
+    aggregate = {name: 1 for name in CLOSED_LOOP_METRIC_DEFINITIONS}
+    metrics = {
+        "mode": "libero",
+        "aggregate": aggregate,
+        "metric_definitions": dict(CLOSED_LOOP_METRIC_DEFINITIONS),
+    }
+
+    markdown = viz.metrics_markdown(metrics)
+
+    assert markdown.isascii()
+    for description in viz.CLOSED_LOOP_RERUN_METRIC_DESCRIPTIONS.values():
+        assert description in markdown
+
+
+def test_unknown_metric_description_fallback_is_font_safe() -> None:
+    markdown = viz.metrics_markdown(
+        {
+            "mode": "libero",
+            "aggregate": {
+                "custom_ascii": 1,
+                "custom_chinese": 2,
+            },
+            "metric_definitions": {
+                "custom_ascii": "custom ASCII description",
+                "custom_chinese": "中文说明",
+            },
+        }
+    )
+
+    assert (
+        "- **custom_ascii**: `1` - custom ASCII description"
+        in markdown
+    )
+    assert "- **custom_chinese**: `2`" in markdown
+    assert "中文说明" not in markdown
+    assert markdown.isascii()
+
+
+def test_metrics_markdown_does_not_mutate_source_payload() -> None:
+    metrics = {
+        "mode": "libero",
+        "aggregate": {"success_rate": 0.5},
+        "metric_definitions": dict(CLOSED_LOOP_METRIC_DEFINITIONS),
+    }
+    expected = json.loads(json.dumps(metrics, ensure_ascii=False))
+
+    viz.metrics_markdown(metrics)
+
+    assert metrics == expected
 
 
 def test_recording_configures_file_sink_before_blueprint(

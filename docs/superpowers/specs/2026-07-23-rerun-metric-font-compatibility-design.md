@@ -1,7 +1,7 @@
 # Rerun Metric Font Compatibility Design
 
 **Date:** 2026-07-23
-**Status:** Draft for specification review
+**Status:** Reviewed and implemented
 
 ## 1. Goal
 

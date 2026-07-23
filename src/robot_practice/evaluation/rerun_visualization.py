@@ -46,6 +46,50 @@ OFFLINE_METRIC_ROWS = (
     ("Inference latency p50", "inference_latency_p50_ms", "latency"),
     ("Inference latency p95", "inference_latency_p95_ms", "latency"),
 )
+OFFLINE_RERUN_METRIC_DESCRIPTIONS = {
+    "num_episodes": "Number of demonstration episodes evaluated offline",
+    "num_frames": "Number of dataset frames predicted offline",
+    "num_model_queries": "Number of predict_action_chunk batch calls",
+    "batch_size": "Configured samples per offline model call",
+    "first_action_mae": "MAE between predicted and demonstration current actions",
+    "per_dimension_mae": "Per-dimension MAE for predicted current actions",
+    "chunk_mae_by_horizon": "MAE at each future action horizon",
+    "delta_action_mae": "MAE between predicted and demonstration action deltas",
+    "teacher_forced_action_tv": (
+        "Mean adjacent arm-action change under teacher forcing"
+    ),
+    "teacher_forced_action_jerk": (
+        "Second-difference action-jerk proxy under teacher forcing"
+    ),
+    "inference_latency_p50_ms": "Median offline model-batch inference latency",
+    "inference_latency_p95_ms": (
+        "95th-percentile offline model-batch inference latency"
+    ),
+}
+CLOSED_LOOP_RERUN_METRIC_DESCRIPTIONS = {
+    "is_formal": "Whether evaluation used the full suite step limit",
+    "num_episodes": "Number of closed-loop rollouts evaluated",
+    "num_successes": "Number of rollouts marked successful by LIBERO final_info",
+    "success_rate": "Fraction of rollouts that completed the task",
+    "avg_sum_reward": "Mean cumulative reward per rollout",
+    "avg_max_reward": "Mean maximum single-step reward per rollout",
+    "action_tv": (
+        "Mean adjacent change in executed actions; lower is typically smoother"
+    ),
+    "action_jerk": (
+        "Mean second difference in executed actions; captures abrupt oscillation"
+    ),
+    "mean_gripper_toggles": "Mean number of gripper state transitions per rollout",
+    "gripper_toggles": "Number of gripper open-close state transitions",
+    "policy_step_latency_p50_ms": "Median policy-step latency",
+    "policy_step_latency_p95_ms": "95th-percentile policy-step latency",
+    "model_query_latency_p50_ms": "Median neural-network query latency",
+    "model_query_latency_p95_ms": (
+        "95th-percentile neural-network query latency"
+    ),
+    "num_policy_steps": "Number of controller commands sent to the simulator",
+    "num_model_queries": "Number of ACT predict_action_chunk calls",
+}
 LIBERO_OSC_TRANSLATION_SCALE_M = 0.05
 DEMONSTRATION_COLOR = (0, 114, 178)
 PREDICTION_COLOR = (230, 159, 0)
@@ -1433,13 +1477,26 @@ def _format_offline_metric(value: Any, kind: str) -> str:
     raise ValueError(f"Unknown offline metric format: {kind}")
 
 
+def _rerun_metric_description(metrics: Mapping[str, Any], name: str) -> str:
+    mode = metrics.get("mode")
+    if mode == "offline" and name in OFFLINE_RERUN_METRIC_DESCRIPTIONS:
+        return OFFLINE_RERUN_METRIC_DESCRIPTIONS[name]
+    if mode == "libero" and name in CLOSED_LOOP_RERUN_METRIC_DESCRIPTIONS:
+        return CLOSED_LOOP_RERUN_METRIC_DESCRIPTIONS[name]
+
+    definitions = metrics.get("metric_definitions", {})
+    if not isinstance(definitions, Mapping):
+        return ""
+    description = definitions.get(name, "")
+    if not isinstance(description, str) or not description.isascii():
+        return ""
+    return description
+
+
 def _offline_metrics_markdown(metrics: Mapping[str, Any]) -> str:
     aggregate = metrics.get("aggregate", {})
     if not isinstance(aggregate, Mapping):
         aggregate = {}
-    definitions = metrics.get("metric_definitions", {})
-    if not isinstance(definitions, Mapping):
-        definitions = {}
     lines = [
         "# Offline evaluation metrics",
         "",
@@ -1448,7 +1505,8 @@ def _offline_metrics_markdown(metrics: Mapping[str, Any]) -> str:
     ]
     for label, key, kind in OFFLINE_METRIC_ROWS:
         value = _format_offline_metric(aggregate.get(key), kind)
-        lines.append(f"| {label} | {value} | {definitions.get(key, '')} |")
+        description = _rerun_metric_description(metrics, key)
+        lines.append(f"| {label} | {value} | {description} |")
 
     lines.extend(("", "## Per-dimension first-action MAE", ""))
     per_dimension = aggregate.get("per_dimension_mae")
@@ -1476,12 +1534,13 @@ def metrics_markdown(metrics: Mapping[str, Any]) -> str:
     if metrics.get("mode") == "offline":
         return _offline_metrics_markdown(metrics)
     aggregate = metrics.get("aggregate", {})
-    definitions = metrics.get("metric_definitions", {})
+    if not isinstance(aggregate, Mapping):
+        aggregate = {}
     lines = [f"# {metrics.get('mode', 'evaluation')} metrics", ""]
     for name, value in aggregate.items():
         rendered = json.dumps(value, ensure_ascii=False)
-        description = definitions.get(name, "")
-        suffix = f" — {description}" if description else ""
+        description = _rerun_metric_description(metrics, name)
+        suffix = f" - {description}" if description else ""
         lines.append(f"- **{name}**: `{rendered}`{suffix}")
     return "\n".join(lines)
 
