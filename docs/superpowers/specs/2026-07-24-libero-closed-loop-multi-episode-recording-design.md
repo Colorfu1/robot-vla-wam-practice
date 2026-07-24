@@ -30,15 +30,19 @@ existing one-evaluation/one-primary-RRD workflow.
 
 ## Recording Identity and Timeline
 
-Each visualized rollout receives a unique recording ID and a readable final name:
+Each visualized rollout receives a unique recording ID and exactly one final name, sent
+after the episode terminates:
 
 ```text
 Episode 000 | seed=1000 | init=0 | success
-Episode 001 | seed=1001 | init=1 | failure
+Episode 001 | seed=1001 | init=1 | failure:time_limit
+Episode 002 | seed=1002 | init=2 | failure:environment_done
 ```
 
-The stream may start with the name before the outcome suffix is known, then update the
-recording name after the episode terminates.
+The suffix is `success` when success was observed. Otherwise it is
+`failure:<termination_reason>`, using the evaluator's final `time_limit` or
+`environment_done` reason. The evaluator does not emit an initial provisional name, so
+the merged archive contains only the selector-visible final name.
 
 Every Recording uses its episode-local control step as the `global_step` Rerun timeline,
 starting at zero. The aggregate `global_step` retained in `rollouts.parquet` remains
@@ -56,8 +60,9 @@ Existing arguments retain their meaning:
   metrics and `rollouts.parquet`;
 - `--num-visualized-episodes=M` creates per-step Rerun data, video, and an independent
   Recording for the leading M rollout episodes;
-- `M=0` creates one named summary Recording containing aggregate metrics but no per-step
-  visualization.
+- `M=0` creates one summary Recording named exactly
+  `LIBERO closed-loop evaluation summary`, containing aggregate metrics but no per-step
+  visualization. Its name is sent once before metric logging and stream cleanup.
 
 The evaluator continues to reject `M > N`.
 
@@ -76,19 +81,47 @@ The public output layout remains:
 ```
 
 Temporary episode recordings live under `<output_dir>/.rerun_recordings/` while the
-evaluation is incomplete. The final RRD is published only after:
+evaluation is incomplete. The lifecycle collection is updated immediately after each
+stream is created. Cleanup is idempotent: it attempts every unattempted flush before
+attempting every unattempted disconnect, even when an earlier stream fails.
 
-1. rollout, metrics, JSON, Parquet, and video generation succeed;
-2. aggregate metrics are logged to every Recording;
-3. every stream flushes and disconnects;
-4. `rerun rrd merge` succeeds;
-5. `rerun rrd verify` succeeds.
+If rollout, stream initialization, name logging, metric logging, flush, or disconnect
+raises, the original evaluation exception is preserved; cleanup errors are logged
+without replacing it. When no earlier exception exists, the first lifecycle error is
+raised only after all streams received both cleanup attempts. No merge or publication
+occurs after a lifecycle error.
 
-The verified staging file is atomically renamed to `rollout.rrd`. Temporary files are
-then removed and the incomplete marker is cleared.
+After all required work succeeds:
 
-If recording cleanup, merge, verification, or pre-publication finalization fails, the
-final `rollout.rrd` is not published and temporary RRDs remain available for diagnosis.
+1. finish rollout, metrics, JSON, Parquet, and video generation;
+2. send each visualized episode's one final Recording name;
+3. log aggregate metrics to every Recording;
+4. flush and disconnect every stream without error;
+5. merge the temporary RRD files into a staging file;
+6. verify the staging file;
+7. atomically rename the verified staging file to `rollout.rrd`;
+8. write the final successful `run_config.json`;
+9. remove the temporary recording directory;
+10. remove `.incomplete` last.
+
+The atomic RRD rename is the publication boundary. A failure before it leaves no final
+`rollout.rrd`, retains `.incomplete`, and retains temporary RRDs and any staging file for
+diagnosis. A failure after it leaves the valid published RRD in place and retains
+`.incomplete`; the temporary directory may be present or partially cleaned, and
+`run_config.json` may still carry its incomplete status if its final write failed. The
+incomplete marker is authoritative.
+
+The final archive is inspected with `rerun.dataframe.load_archive()`, not merely
+`rerun rrd verify`. Verification requires:
+
+- `num_recordings()` equals the requested visualization count, or one for summary-only
+  mode;
+- all Recording IDs are unique;
+- every Recording's static `RecordingInfo:name` property exactly matches its required
+  final name;
+- each episode Recording contains only its own episode index;
+- each episode Recording's `global_step` timeline begins at zero and contains no values
+  from another episode.
 
 ## Implementation Boundaries
 
@@ -107,16 +140,20 @@ timeline value becomes episode-local when called from closed-loop evaluation.
 
 Automated tests cover:
 
-1. LIBERO RecordingStream creation with explicit ID, name, static context, and blueprint;
+1. LIBERO RecordingStream creation with explicit ID, static context, and blueprint;
 2. one unique Recording per visualized episode;
-3. readable final names containing episode, seed, init state, and outcome;
+3. one exact final name containing episode, seed, init state, and outcome;
 4. episode-local timelines beginning at zero;
 5. independent trajectory history;
 6. aggregate metrics logged to every Recording;
-7. summary-only behavior for zero visualized episodes;
-8. merge, verify, atomic publication, and failure cleanup;
-9. unchanged metrics, Parquet rows, videos, seeds, and init-state sequencing.
+7. summary-only behavior for zero visualized episodes, including the exact
+   `LIBERO closed-loop evaluation summary` name;
+8. merge, archive inspection, atomic publication, and failure cleanup;
+9. partial stream initialization and multiple flush/disconnect failures without skipped
+   cleanup attempts or exception masking;
+10. unchanged metrics, Parquet rows, videos, seeds, and init-state sequencing.
 
 An integration smoke run uses two one-step episodes with both visualized, verifies the
-merged RRD, and confirms that it contains two Recording stores with the expected names.
-
+merged RRD, loads it with `rerun.dataframe.load_archive()`, and confirms that it contains
+two uniquely identified Recording stores with the exact expected names and isolated
+episode-local timelines.
