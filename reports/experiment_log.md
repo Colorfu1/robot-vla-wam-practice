@@ -120,3 +120,38 @@ Use one section per run. Record incomplete or failed runs too.
   - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_n5/rollouts.parquet`
   - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_n5/rollout.rrd`
 - Modes: Offline / Closed-loop / Formal
+
+## 2026-07-25 — ACT A2 + Temporal Ensemble Clean
+
+- Date: 2026-07-25
+- Task suite: `libero_object`, task ID 8
+- Dataset size: source policy trained on 20 demonstrations, 3233 frames; evaluation uses
+  20 simulator rollouts
+- Observation keys: `observation.images.image`, `observation.images.image2`,
+  `observation.state`
+- Action space: 7D LIBERO relative EEF action
+- Action horizon: `chunk_size=20`; effective `n_action_steps=1`
+- Control frequency: 10 Hz
+- Policy: existing A2 `act_delta` 20k checkpoint with inference-only
+  `temporal_ensemble_coeff=0.01`
+- Train loss: N/A for this inference-only configuration; source A2 training result is
+  recorded in the preceding entry
+- Open-loop action error: unchanged from the source A2 checkpoint; Temporal Ensemble is a
+  closed-loop history mechanism and does not create a new Offline MAE result
+- Closed-loop success rate: 18/20, 90% under clean Formal evaluation
+- Latency: model-query p50/p95 6.80/10.80 ms; policy-step p50/p95 7.46/11.63 ms
+- Failure cases: init states `16, 17` reached the 280-step time limit; failure stages remain
+  pending
+- Notes: Compared with A2 Standard `n_action_steps=5`, success increased from 70% to 90%,
+  Action TV decreased 35.3%, Action Jerk decreased 82.6%, and mean raw gripper command
+  sign toggles decreased from 14.65 to 2.30. Standard failures `0, 1, 4, 5, 8, 14`
+  recovered, while init states `16, 17` regressed. A strict A2
+  `n_action_steps=1, temporal_ensemble_coeff=None` Replan control has not been run, so this
+  comparison establishes the combined deployment configuration improvement but does not
+  isolate the causal contribution of Temporal Ensemble.
+- Result artifacts:
+  - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_ensemble_001/metrics.json`
+  - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_ensemble_001/eval_info.json`
+  - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_ensemble_001/rollouts.parquet`
+  - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_ensemble_001/rollout.rrd`
+- Modes: Closed-loop / Formal

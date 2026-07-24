@@ -478,3 +478,80 @@ bash scripts/experiments/act/eval_libero.sh \
   --seed=1000 \
   --output-dir=outputs/act/a3_temporal_ensemble/a1_ensemble_clean_repeat
 ```
+
+## 10. 已完成结果：A2 + Temporal Ensemble
+
+结果标签：`Formal`、`Closed-loop`、`Clean`。
+
+本次复用已经训练完成的 A2 `act_delta` checkpoint，不重新训练。两组都评测
+`libero_object/task_id=8`、20 个 rollout、seed 1000、init state 0～19，且未加入观测扰动：
+
+- A2 Standard：checkpoint 默认 `n_action_steps=5`，不启用 Ensemble；
+- A2 Ensemble：`n_action_steps=1, temporal_ensemble_coeff=0.01`。
+
+### 10.1 正式结果
+
+| 配置 | Clean SR ↑ | Action TV ↓ | Action Jerk ↓ | Mean gripper toggles | Model queries | Policy p95 latency |
+|---|---:|---:|---:|---:|---:|---:|
+| A2 Standard（`n=5`） | 14/20（70%） | 0.02344 | 0.02403 | 14.65 | 804 | 8.67 ms |
+| A2 + Temporal Ensemble 0.01（`n=1`） | 18/20（90%） | 0.01517 | 0.00418 | 2.30 | 3162 | 11.63 ms |
+
+A2 Ensemble 相比 A2 Standard：
+
+- 成功率从 70% 提高到 90%，增加 20 个百分点；
+- Action TV 降低 35.3%；
+- Action Jerk 降低 82.6%；
+- 原始 gripper command 过零次数从 14.65 降到 2.30，降低 84.3%；
+- policy p95 latency 从 8.67 ms 增至 11.63 ms；
+- Ensemble 每个控制步都调用模型；Standard 每 5 步调用一次，因此总 model queries
+  从 804 增至 3162。两组 episode 长度不同，不能用总调用数计算单次推理速度。
+
+Standard 失败的 init states `0, 1, 4, 5, 8, 14` 在 Ensemble 中全部成功；但 Standard
+成功的 init states `16, 17` 在 Ensemble 中退化为失败。Ensemble 的两次失败都运行到
+280 步 time limit，失败阶段尚未逐帧分类。因此它提高了总体成功率，但并非对每个初始化
+都单调改善。
+
+结果文件：
+
+- A2 Standard：`outputs/act/a2_delta_loss/run_20000_01/closed_clean_n5/metrics.json`
+- A2 Ensemble：
+  `outputs/act/a2_delta_loss/run_20000_01/closed_clean_ensemble_001/metrics.json`
+- A2 Ensemble 可视化：
+  `outputs/act/a2_delta_loss/run_20000_01/closed_clean_ensemble_001/rollout.rrd`
+
+### 10.2 当前结论与证据边界
+
+A2 + Temporal Ensemble 是当前已测配置中更好的 clean closed-loop 组合：成功率更高，
+机械臂动作 TV/Jerk 更低，夹爪命令符号也明显更稳定。就最终部署配置而言，这个提升不是
+“略微平滑”，而是 smoothness 指标上的显著变化；成功率则提高了 4/20。
+
+但是，当前缺少同一 A2 checkpoint 的严格 Replan control：
+
+```text
+n_action_steps=1
+temporal_ensemble_coeff=None
+```
+
+Standard 与 Ensemble 同时改变了 `n_action_steps` 和是否启用 Ensemble，所以现有结果只能
+证明“A2 Standard → A2 Ensemble 组合配置”改善，不能把全部差异严格归因于 Temporal
+Ensemble 本身。要回答纯粹的 Ensemble 因果效果，仍需按第 6.2 节补跑 A2 Replan control，
+再以 Replan → Ensemble 为主对照。
+
+此外，本结果只覆盖 clean observation、一个任务和固定 20 个 init states；Noisy
+Closed-loop 尚未执行。
+
+### 10.3 完整复现命令
+
+```bash
+bash scripts/experiments/act/eval_libero.sh \
+  --policy-path=outputs/act/a2_delta_loss/run_20000_01/checkpoints/020000/pretrained_model \
+  --suite=libero_object \
+  --task-id=8 \
+  --n-episodes=20 \
+  --num-visualized-episodes=20 \
+  --n-action-steps=1 \
+  --temporal-ensemble-coeff=0.01 \
+  --perturbation=none \
+  --seed=1000 \
+  --output-dir=outputs/act/a2_delta_loss/run_20000_01/closed_clean_ensemble_001_repeat
+```
