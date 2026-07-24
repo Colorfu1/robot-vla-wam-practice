@@ -22,6 +22,14 @@
 #     --agentview-image-convention=lerobot_180 \
 #     --output-dir=outputs/act/a_sanity/offline_5 --overwrite
 #
+# Open a saved result with persistent layout (one Viewer):
+#   result_dir="outputs/act/a_sanity/offline_5"
+#   conda run --no-capture-output -n robot-practice \
+#     robot-rerun --persist-state --detach-process --port=9876 \
+#     "${result_dir}/prediction.rrd"
+# For a second concurrent Viewer, use --port=9877. --detach-process does not
+# choose a new port; two RRD paths in one command load into one Viewer.
+#
 # Accepted arguments:
 #   --policy-path PATH              Required complete compatible 7D ACT
 #                                   pretrained_model directory, not one weight file.
@@ -58,7 +66,8 @@
 #   -h, --help                      Print Python evaluator help and exit.
 #
 # Outputs:
-#   metrics.json, predictions.parquet, prediction.rrd, and run_config.json.
+#   metrics.json, readable metrics.md, predictions.parquet, prediction.rrd,
+#   and run_config.json.
 #   Every evaluated frame is kept in metrics/Parquet; only the requested episode
 #   prefix is written to Rerun. Each visualized dataset episode is an independent
 #   Recording inside prediction.rrd; use Rerun's left Recording list to switch the

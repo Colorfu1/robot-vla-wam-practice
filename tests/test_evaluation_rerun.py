@@ -1255,6 +1255,123 @@ def test_offline_episode_recording_binds_setup_to_its_stream(
     ]
 
 
+def test_libero_episode_recording_binds_setup_to_its_stream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, object]] = []
+    blueprint = object()
+
+    def make_stream(
+        application_id: str,
+        *,
+        recording_id: str,
+    ) -> FakeRecordingStream:
+        stream = FakeRecordingStream(
+            application_id,
+            recording_id=recording_id,
+            events=events,
+        )
+        events.append(("create", stream))
+        return stream
+
+    monkeypatch.setattr(viz.rr, "RecordingStream", make_stream)
+    monkeypatch.setattr(viz, "build_libero_blueprint", lambda *args, **kwargs: blueprint)
+    monkeypatch.setattr(
+        viz,
+        "log_libero_static_context",
+        lambda recorder, **kwargs: events.append(("static", (recorder, kwargs))),
+    )
+    monkeypatch.setattr(
+        viz.rr,
+        "send_blueprint",
+        lambda value, **kwargs: events.append(("blueprint", (value, kwargs))),
+    )
+
+    output = tmp_path / "episode_000.rrd"
+    calibration = _camera_calibration()
+    stream = viz.initialize_libero_recording_stream(
+        output_path=output,
+        recording_id="rollout-000",
+        camera_keys=(viz.AGENTVIEW_CAMERA_KEY,),
+        fps=10.0,
+        agentview_calibration=calibration,
+        agentview_image_convention="lerobot_180",
+    )
+
+    assert stream.application_id == "robot_practice_act_libero"
+    assert stream.recording_id == "rollout-000"
+    assert events == [
+        ("create", stream),
+        ("save", (stream, output)),
+        (
+            "static",
+            (
+                stream,
+                {
+                    "agentview_calibration": calibration,
+                    "agentview_image_convention": "lerobot_180",
+                },
+            ),
+        ),
+        (
+            "blueprint",
+            (
+                blueprint,
+                {
+                    "make_active": False,
+                    "make_default": True,
+                    "recording": stream,
+                },
+            ),
+        ),
+    ]
+
+
+def test_libero_episode_recording_disconnects_partial_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, object]] = []
+
+    def make_stream(
+        application_id: str,
+        *,
+        recording_id: str,
+    ) -> FakeRecordingStream:
+        stream = FakeRecordingStream(
+            application_id,
+            recording_id=recording_id,
+            events=events,
+        )
+        events.append(("create", stream))
+        return stream
+
+    monkeypatch.setattr(viz.rr, "RecordingStream", make_stream)
+    monkeypatch.setattr(
+        viz,
+        "log_libero_static_context",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("static failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="static failed"):
+        viz.initialize_libero_recording_stream(
+            output_path=tmp_path / "episode_000.rrd",
+            recording_id="rollout-000",
+            camera_keys=(viz.AGENTVIEW_CAMERA_KEY,),
+            fps=10.0,
+            agentview_calibration=_camera_calibration(),
+            agentview_image_convention="lerobot_180",
+        )
+
+    stream = events[0][1]
+    assert events == [
+        ("create", stream),
+        ("save", (stream, tmp_path / "episode_000.rrd")),
+        ("disconnect", stream),
+    ]
+
+
 def test_stage_merged_recordings_merges_and_verifies_without_publishing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

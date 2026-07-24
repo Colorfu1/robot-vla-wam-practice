@@ -8,7 +8,8 @@
 #   policy="outputs/act/a_sanity/<run_timestamp>/checkpoints/<step>/pretrained_model"
 #   scripts/experiments/act/eval_libero.sh \
 #     --policy-path="${policy}" --suite=libero_object --task-id=8 \
-#     --n-episodes=20 --num-visualized-episodes=1
+#     --n-episodes=20 --num-visualized-episodes=1 --n-action-steps=1 \
+#     --temporal-ensemble-coeff=0.01
 #   scripts/experiments/act/eval_libero.sh \
 #     --policy-path="${policy}" --suite=libero_goal --task-id=3 \
 #     --n-episodes=1 --max-steps=1 --output-dir=outputs/act/libero_debug \
@@ -17,6 +18,14 @@
 #     --policy-path="${policy}" --suite=libero_object --task-id=8 \
 #     --n-episodes=20 --perturbation=proprio_gaussian \
 #     --proprio-noise-std=0.01 --output-dir=outputs/act/libero_noisy
+#
+# Open a saved result with persistent layout (one Viewer):
+#   result_dir="outputs/act/libero_noisy"
+#   conda run --no-capture-output -n robot-practice \
+#     robot-rerun --persist-state --detach-process --port=9876 \
+#     "${result_dir}/rollout.rrd"
+# For a second concurrent Viewer, use --port=9877. --detach-process does not
+# choose a new port; two RRD paths in one command load into one Viewer.
 #
 # Accepted arguments:
 #   --policy-path PATH              Required complete compatible 7D ACT
@@ -29,7 +38,15 @@
 #   --task-id ID                    Required zero-based task ID within --suite.
 #   --n-episodes N                  Number of rollouts (default: 20; must be positive).
 #   --num-visualized-episodes N     Number of leading episodes saved to Rerun and MP4
-#                                   (default: 1; range: 0..--n-episodes).
+#                                   (default: 1; range: 0..--n-episodes). Each becomes
+#                                   an independently selectable Recording in rollout.rrd.
+#   --n-action-steps N              Evaluation-only ACT execution horizon. Defaults to
+#                                   the checkpoint value; must be positive and no larger
+#                                   than checkpoint chunk_size. Use 1 for per-step replanning.
+#   --temporal-ensemble-coeff C      Evaluation-only ACT temporal ensemble coefficient.
+#                                   Requires explicitly setting --n-action-steps=1.
+#                                   Defaults to the checkpoint value; 0.01 is the original
+#                                   ACT setting. This does not modify the checkpoint.
 #   --perturbation NAME             Policy-input perturbation: none (default) or
 #                                   proprio_gaussian.
 #   --proprio-noise-std VALUE       Gaussian std in checkpoint-normalized proprioception
@@ -57,8 +74,11 @@
 #   joints. Episode length is selected from the suite's LeRobot contract.
 #
 # Outputs:
-#   metrics.json, eval_info.json, rollouts.parquet, rollout.rrd, run_config.json,
-#   and videos/episode_000.mp4-style files for visualized episodes.
+#   metrics.json, readable metrics.md, eval_info.json, rollouts.parquet,
+#   rollout.rrd, run_config.json, and videos/episode_000.mp4-style files for
+#   visualized episodes.
+#   rollout.rrd contains one named Recording per visualized episode; the Viewer
+#   Recording list switches the full synchronized episode and its local timeline.
 #   Rerun shows measured state plus clean/noisy normalized policy state at t,
 #   calibrated 3D measured robot/EEF geometry,
 #   executed controller command, measured t->t+1 response, executable ACT queue,

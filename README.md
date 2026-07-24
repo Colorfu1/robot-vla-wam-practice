@@ -116,7 +116,8 @@ scripts/experiments/act/eval_offline.sh \
   --agentview-image-convention=lerobot_180
 ```
 
-This saves `metrics.json`, `predictions.parquet`, and `prediction.rrd`, then opens Rerun.
+This saves machine-readable `metrics.json`, a compact `metrics.md` summary,
+`predictions.parquet`, and `prediction.rrd`, then opens Rerun.
 The original camera panes remain unchanged in the model-facing LeRobot/OpenVLA orientation.
 The upper-right pane defaults to a physically calibrated agentview overlay built from the
 selected task's fixed MuJoCo camera pose and intrinsics. For the `lerobot_180` convention,
@@ -178,9 +179,27 @@ while incompatible 8D-state/7D-action/two-camera checkpoint structure fails imme
 To reopen a saved recording later:
 
 ```bash
-rerun outputs/act/a_sanity/<train_timestamp>/eval/offline/libero_object/task_008/<eval_timestamp>/prediction.rrd
-rerun outputs/act/a_sanity/<train_timestamp>/eval/libero/libero_object/task_008/<eval_timestamp>/rollout.rrd
+conda run --no-capture-output -n robot-practice \
+  robot-rerun \
+  outputs/act/a_sanity/<train_timestamp>/eval/offline/libero_object/task_008/<eval_timestamp>/prediction.rrd
+conda run --no-capture-output -n robot-practice \
+  robot-rerun \
+  outputs/act/a_sanity/<train_timestamp>/eval/libero/libero_object/task_008/<eval_timestamp>/rollout.rrd
 ```
+
+If someone else checks out this repo, a one-shot visualizer setup is:
+
+```bash
+cd /path/to/robot-practice
+./scripts/install_rerun_desktop_package.sh 0.1.1
+```
+
+That installs:
+- `rr_of` (Offline icon, O)
+- `rr_li` (LIBERO icon, L)
+- `rerun` (fallback icon, R)
+
+`prediction.rrd` will prefer `rr_of`, `rollout.rrd` will prefer `rr_li`.
 
 ## Workspace Shape
 

@@ -61,6 +61,7 @@ from robot_practice.evaluation.libero_tasks import (
     resolve_libero_task,
 )
 from robot_practice.evaluation.metrics import compute_offline_metrics
+from robot_practice.evaluation.metrics_report import write_metrics_report
 from robot_practice.evaluation.rerun_visualization import (
     OfflineCommandHistory,
     OfflineTrajectoryHistory,
@@ -654,6 +655,7 @@ def evaluate_offline(
         metrics["visualized_episodes"] = list(visualized_episode_ids)
         for episode_recording in episode_recordings:
             log_metric_summary(episode_recording.stream, metrics)
+        write_metrics_report(output_dir, metrics)
         write_json_atomic(output_dir / "metrics.json", metrics)
         table = pa.Table.from_pylist(rows, schema=_prediction_schema(loaded.config.chunk_size))
         write_parquet_atomic(output_dir / "predictions.parquet", table)
@@ -682,6 +684,7 @@ def evaluate_offline(
     viewer_opened = launch_rerun_viewer(recording_path, enabled=config.open_viewer)
     log_terminal_metrics(metrics, LOGGER)
     LOGGER.info("[Output] metrics: %s", output_dir / "metrics.json")
+    LOGGER.info("[Output] metrics summary: %s", output_dir / "metrics.md")
     LOGGER.info("[Output] predictions: %s", output_dir / "predictions.parquet")
     LOGGER.info("[Output] Rerun recording: %s", recording_path)
     LOGGER.info("[Output] run config: %s", output_dir / "run_config.json")

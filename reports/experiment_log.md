@@ -1,6 +1,10 @@
-# Experiment Log
+# 实验日志（Experiment Log）
 
 Use one section per run. Record incomplete or failed runs too.
+每条记录必须至少包含：
+
+- 模式：`Offline` / `Closed-loop` / `Smoke` / `Formal`
+- 结果落点（`metrics.json` / `eval_info.json` / `rollouts.parquet` / `prediction.rrd`）
 
 ## Template
 
@@ -18,6 +22,8 @@ Use one section per run. Record incomplete or failed runs too.
 - Latency:
 - Failure cases:
 - Notes:
+- Result artifacts:
+- Modes:
 
 ## 2026-07-21 — ACT Evaluation Tooling Smoke
 
@@ -43,6 +49,12 @@ Use one section per run. Record incomplete or failed runs too.
   JSON, Parquet, Rerun, and (for LIBERO) MP4 outputs successfully. Repository verification:
   71 tests passed with 3 heavy tests skipped by default; the 3 heavy integration tests
   passed when explicitly enabled.
+- Result artifacts:
+  - `run_config.json`
+  - `metrics.json`
+  - `rollouts.parquet`
+  - `rollout.rrd`
+- Modes: Offline / Closed-loop / Smoke（`run_config` 标记为 smoke）
 
 ## 2026-07-23 — ACT A-Sanity 20k
 
@@ -63,3 +75,48 @@ Use one section per run. Record incomplete or failed runs too.
 - Notes: Compared with the available 100-step reference, first-action MAE decreased 87.8%
   and delta-action MAE decreased 58.9%. A zero-update B0 result was not retained, so this
   is not a strict B0-versus-20k comparison.
+- Result artifacts:
+  - `run_config.json`
+  - `metrics.json`
+  - `eval_info.json`（closed-loop）
+  - `rollouts.parquet`
+  - `rollout.rrd`
+- Modes: Offline / Closed-loop / Formal
+
+## 2026-07-25 — ACT A2 Delta-action Loss 20k
+
+- Date: 2026-07-25
+- Task suite: `libero_object`, task ID 8
+- Dataset size: 20 demonstrations, 3233 frames
+- Observation keys: `observation.images.image`, `observation.images.image2`,
+  `observation.state`
+- Action space: 7D LIBERO relative EEF action; gripper GT is `-1/+1`
+- Action horizon: `chunk_size=20`; Formal Clean Closed-loop uses `n_action_steps=5`
+- Control frequency: 10 Hz
+- Policy: `act_delta`, `use_vae=false`, `delta_loss_weight=0.1`, 20,000 updates,
+  seed 1000
+- Train loss: final 100-update window mean — L1 0.06815, delta-action 0.47619,
+  weighted delta-action 0.04762, total 0.11577
+- Open-loop action error: first-action MAE 0.02111; delta-action MAE 0.01250;
+  teacher-forced Action TV 0.01908; teacher-forced Action Jerk 0.01370
+- Closed-loop success rate: 14/20, 70% under clean Formal evaluation
+- Latency: model-query p50/p95 7.07/14.16 ms; policy-step p50/p95 0.46/8.67 ms
+- Failure cases: init states `0, 1, 4, 5, 8, 14` reached the 280-step time limit;
+  failure stage classification remains pending
+- Notes: Under the same `n_action_steps=5`, seed and init states, A1 reached 3/20 success
+  with Action Jerk 0.03017; A2 reached 14/20 with Action Jerk 0.02403. A2 therefore
+  improved success by 55 percentage points and reduced jerk by 20.3%. This run did not
+  retain a tensor-verified A1/A2 shared step-0 checkpoint, and only one training seed has
+  been evaluated. Mean gripper command sign toggles remained high at 14.65; this raw
+  zero-crossing metric has no deadband and must not be read as physical full open-close
+  cycles.
+- Result artifacts:
+  - `outputs/act/a2_delta_loss/run_20000_01/train_loss_components.jsonl`
+  - `outputs/act/a2_delta_loss/run_20000_01/offline_20/metrics.json`
+  - `outputs/act/a2_delta_loss/run_20000_01/offline_20/predictions.parquet`
+  - `outputs/act/a2_delta_loss/run_20000_01/offline_20/prediction.rrd`
+  - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_n5/metrics.json`
+  - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_n5/eval_info.json`
+  - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_n5/rollouts.parquet`
+  - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_n5/rollout.rrd`
+- Modes: Offline / Closed-loop / Formal

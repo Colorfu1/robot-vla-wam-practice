@@ -1,5 +1,56 @@
 # ACT 实验二：动作差分损失
 
+## 实验目标
+
+- 评估在 `A1` 已有实现基础上加入 `delta_action_loss`（`delta_loss_weight=0.1`）是否能
+  在不明显降掉离线精度或成功率的前提下，降低闭环动作抖动并减少夹爪控制不稳。
+
+## 实验思路
+
+- 实现 `act_delta` policy 与 checkpoint 转换器（仅配置变更、权重复用）；
+- 用同一 `A1` step-0 初始化得到 `A2 step-0`；
+- 使用同样数据、同步数训练；
+- 对比 `A1`/`A2` 的 offline 和 closed-loop 指标，重点看 `delta_action_mae` 与 `action_jerk`。
+
+## 可直接执行命令
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+conda activate robot-practice
+export PYTHONNOUSERSITE=1
+
+python -m robot_practice.experiments.act_delta_checkpoint create \
+  --source-policy=outputs/act/a1_chunking/<timestamp>/checkpoints/000000/pretrained_model \
+  --output-dir=outputs/act/a2_delta_loss/initialization \
+  --delta-loss-weight=0.1
+
+bash scripts/experiments/act/a2_delta_loss.sh --steps=0
+bash scripts/experiments/act/a2_delta_loss.sh --steps=20000
+
+bash scripts/experiments/act/eval_libero.sh --policy-path=outputs/act/a2_delta_loss/.../pretrained_model \
+  --suite=libero_object --task-id=8 --n-episodes=20 --output-dir=outputs/act/a2_delta_loss_eval
+```
+
+## 结果落点
+
+- `src/robot_practice/policies/act_delta/` 下新 policy 实现；
+- `outputs/act/a2_delta_loss/`：训练与转换产物；
+- `<A2 run>/train_loss_components.jsonl`：每100步记录一次分项训练 loss；
+- `.../metrics.json`（offline/closed-loop）和 `.../run_config.json`；
+- 成果比对仅以 `A1` 与 `A2` 对应目录下的 `metrics.json` 为准。
+
+## 判断标准
+
+- A1 与 A2 的 `delta_action_loss`、`delta_action_mae` 下降方向一致；
+- 训练到 20k 步时 `open-loop` 的关键误差不回升；
+- `closed-loop action_tv/action_jerk` 不应显著变差；
+- 成功率与 `gripper_toggles` 在同等对照下不出现异常回退。
+
+## 模式
+
+- Offline
+- Closed-loop
+
 ## 1. 实验要回答什么
 
 在 A1 的 `chunk_size=20, n_action_steps=5` 基础上增加动作差分损失：
@@ -16,8 +67,8 @@ L=L_{ACT}+\beta L_{\Delta a},\qquad \beta=0.1
 A1 与 A2 使用相同数据、网络结构、step-0 权重、训练步数和评测场景。唯一训练变量是
 `delta_action_loss`。
 
-> 当前状态：本文件是实施指南。`act_delta` policy、checkpoint 转换器和 A2 启动脚本需要按
-> 本指南实现后才能使用。
+> 当前状态：核心实现和首轮 20k development 训练、Offline、Clean Closed-loop
+> 评测均已完成；结果与限制见文末“已完成结果”。
 
 ## 2. 固定配置
 
@@ -39,6 +90,9 @@ A1 与 A2 使用相同数据、网络结构、step-0 权重、训练步数和评
 | Batch size | 8 | 8 |
 | Updates | 20,000 | 20,000 |
 | Seed | 1000 | 1000 |
+
+`chunk_size=20` 决定两者都对 20 步 GT action 计算训练 loss；`n_action_steps=5` 只是写入
+checkpoint 的默认推理执行长度，不会把 A1 或 A2 的训练监督截断为 5 步。
 
 ## 3. 需要实现的文件
 
@@ -222,7 +276,7 @@ legacy checkpoint 时应明确报错，不要生成来源语义不完整的 A2 �
 
 使用：
 
-```bash
+```
 a1_b0="outputs/act/a1_chunking/<timestamp>/checkpoints/000000/pretrained_model"
 
 python -m robot_practice.experiments.act_delta_checkpoint create \
@@ -265,7 +319,7 @@ concrete type: act 或 act_delta
 
 ## 8. 最小测试
 
-```bash
+```
 pytest -q \
   tests/test_act_delta_policy.py \
   tests/test_act_delta_checkpoint.py \
@@ -285,6 +339,9 @@ pytest -q \
 - `--overwrite` 仍只允许覆盖合法 evaluator 输出。
 
 ## 9. 训练 A2
+
+传入显式 `--output-dir` 时，该最终目录必须尚不存在。launcher 会把并发锁保存在最终目录的
+同级位置，让 `lerobot-train` 自己创建输出目录；已有目录不会被覆盖。
 
 `a2_delta_loss.sh` 应固定：
 
@@ -318,37 +375,47 @@ n_action_steps=5
 
 启动：
 
-```bash
-scripts/experiments/act/a2_delta_loss.sh \
+```
+bash scripts/experiments/act/a2_delta_loss.sh \
   --steps=20000 \
   --policy-path="${a2_b0}"
 ```
 
 保存：
 
-```bash
+```
 a2_policy="outputs/act/a2_delta_loss/<timestamp>/checkpoints/020000/pretrained_model"
 ```
 
 训练日志中应同时出现：
 
 ```text
-l1_loss
-delta_action_loss
-loss
+[A2 loss components] step=100 window=100 \
+  l1_loss=... delta_action_loss=... \
+  weighted_delta_action_loss=... total_loss=...
 ```
+
+相同窗口平均值会追加到：
+
+```text
+<A2 run>/train_loss_components.jsonl
+```
+
+每条 JSONL 记录包含 `step`、`window_size`、`l1_loss`、`delta_action_loss`、
+`weighted_delta_action_loss` 和 `total_loss`。该 recorder 由 launcher 在 policy 创建前配置，
+只影响新启动的 A2 训练；已经运行中的 Python 进程不会热加载这项修改。
 
 ## 10. Offline 评测
 
-```bash
+```
 episodes=(
   823 826 834 840 841 845 847 869 875 878
   910 918 920 929 944 948 949 953 966 972
 )
 ```
 
-```bash
-scripts/experiments/act/eval_offline.sh \
+```
+bash scripts/experiments/act/eval_offline.sh \
   --policy-path="${a2_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -362,10 +429,14 @@ scripts/experiments/act/eval_offline.sh \
 
 ## 11. Closed-loop 评测
 
+`--num-visualized-episodes=M` 会把前 M 个 rollout 分别保存为可点击切换的独立 Rerun
+Recording；它不改变 `--n-episodes` 控制的正式评测数量。要查看全部 20 个 rollout，
+把下面的值从 `1` 改为 `20`。
+
 Clean：
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${a2_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -378,8 +449,8 @@ scripts/experiments/act/eval_libero.sh \
 
 Noisy：
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${a2_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -407,3 +478,98 @@ scripts/experiments/act/eval_libero.sh \
 如果只看到训练 `delta_action_loss` 下降，但闭环 jerk 没有改善，不能声称实验成功。记录失败
 的 init state、抓取阶段、放置阶段、夹爪切换和明显抖动，并更新
 `reports/experiment_log.md`。
+
+## 13. 已完成结果（2026-07-25）
+
+### 13.1 实际运行条件
+
+| 项目 | A1 | A2 |
+|---|---:|---:|
+| Demonstrations | 20（3233 frames） | 20（3233 frames） |
+| `chunk_size` | 20 | 20 |
+| `n_action_steps` | 5 | 5 |
+| `use_vae` | false | false |
+| Updates | 20,000 | 20,000 |
+| Seed | 1000 | 1000 |
+| `delta_loss_weight` | 0 | 0.1 |
+
+A2 最后 100 个训练 update 的分项 loss 为：
+
+| 分项 | 数值 |
+|---|---:|
+| `l1_loss` | 0.06815 |
+| `delta_action_loss` | 0.47619 |
+| `weighted_delta_action_loss` | 0.04762 |
+| `total_loss` | 0.11577 |
+
+这些训练 loss 在 normalization processor 处理后的 action 空间计算，不能和反归一化后的
+Offline MAE 直接比较绝对数值。
+
+### 13.2 Offline：20 条 demonstration 的 teacher-forced 结果
+
+| 指标 | A1 | A2 | A2 相对变化 |
+|---|---:|---:|---:|
+| First-action MAE | 0.02564 | 0.02111 | -17.7% |
+| Delta-action MAE | 0.01374 | 0.01250 | -9.0% |
+| Teacher-forced Action TV | 0.01945 | 0.01908 | -1.9% |
+| Teacher-forced Action Jerk | 0.01349 | 0.01370 | +1.6% |
+
+A2 的 gripper first-action MAE 从 0.04787 降至 0.03063，下降 36.0%；`y` 维 MAE
+下降 23.3%。这说明新增 loss 改善了相邻动作变化和夹爪切换的拟合，但没有直接降低
+teacher-forced 二阶差分。
+
+结果落点：
+
+- A1：`outputs/act/a1_chunking/offline_20/`
+- A2：`outputs/act/a2_delta_loss/run_20000_01/offline_20/`
+
+### 13.3 Formal Clean Closed-loop：相同 `n_action_steps=5`
+
+两组都使用 `libero_object` task 8、20 个 rollout、seed 1000、相同
+`init_state_id=0..19`，未启用扰动和 Temporal Ensemble。
+
+| 指标 | A1 | A2 | A2 相对变化 |
+|---|---:|---:|---:|
+| Success rate | 3/20（15%） | 14/20（70%） | +55 个百分点 |
+| Action TV | 0.02615 | 0.02344 | -10.3% |
+| Action Jerk | 0.03017 | 0.02403 | -20.3% |
+| Mean gripper toggles | 14.80 | 14.65 | -1.0% |
+| Model-query latency p50 | 8.90 ms | 7.07 ms | 仅作本机运行记录 |
+| Model-query latency p95 | 20.53 ms | 14.16 ms | 仅作本机运行记录 |
+
+A2 的 6 次失败均在 280 步达到 time limit，对应 `init_state_id`：
+
+```text
+0, 1, 4, 5, 8, 14
+```
+
+这些失败尚未逐帧分类，不能进一步声称全部属于抓取失败或放置失败。
+
+结果落点：
+
+- A1：`outputs/act/a1_chunking/closed_clean_n5/`
+- A2：`outputs/act/a2_delta_loss/run_20000_01/closed_clean_n5/`
+
+### 13.4 结论
+
+首轮 development 结果支持动作差分损失假设：
+
+- A2 Offline `delta_action_mae` 比 A1 低 9.0%；
+- A2 Formal Clean Closed-loop jerk 比 A1 低 20.3%，超过预设的 15% 门槛；
+- A2 clean success rate 没有下降，而是从 15% 提升至 70%；
+- A2 的 Offline first-action MAE 和 gripper MAE 也明显降低。
+
+但本轮只能写成“强支持”，还不能写成最终因果结论：
+
+- A2 本次由 `act_delta` 随机初始化直接训练，没有从已保存的 A1 step-0 checkpoint
+  转换；两者虽然使用相同 seed 和结构，但没有保留逐张量一致的 step-0 证据；
+- 当前只有一个训练 seed，尚未验证提升是否能跨 seed 重复；
+- Offline jerk 小幅升高，而 Closed-loop jerk 下降；闭环差异还受到成功 episode
+  更早结束、失败 episode 长时间振荡等轨迹分布差异影响；
+- `gripper_toggles` 按原始命令过零计数且没有 deadband。A2 的 293 次总切换中，
+  32.4% 至少一侧命令绝对值小于 0.1，因此该值会放大零点附近抖动，不能解释成机械夹爪
+  实际完整开合了约 15 次；
+- Noisy Closed-loop 尚未执行。
+
+下一步若要形成正式结论，应从同一份可验证 step-0 权重分别训练 A1/A2，并至少增加两个
+训练 seed；同时保留当前 `n_action_steps=5`、相同 init states 的评测协议。

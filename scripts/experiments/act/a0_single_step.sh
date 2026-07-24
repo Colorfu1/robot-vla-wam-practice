@@ -17,6 +17,8 @@
 # Fixed experiment contract:
 #   LIBERO object task 8; 20 episodes / 3233 frames; seed 1000; batch 8;
 #   ACT chunk_size=1, n_action_steps=1, use_vae=false.
+#   chunk_size=1 is the supervised training horizon. n_action_steps=1 is saved
+#   as the checkpoint inference default and does not change the training loss.
 
 set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

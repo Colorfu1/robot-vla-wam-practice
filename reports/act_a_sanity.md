@@ -2,6 +2,57 @@
 
 这个实验用五条 LIBERO demonstration 检查 ACT 是否能完成最基本的小数据过拟合。
 
+## 实验目标
+
+- 验证 `lerobot/libero` 上 5 条 demonstration 训练后，ACT 在该任务上能否显著下降离线误差并提升 closed-loop 成功率。
+
+## 实验思路
+
+使用同一个 zero-update B0 作为起点，固定数据与超参训练得到 Trained 对照；先后对比 B0 与
+trained 的 Offline 与 Closed-loop 结果（不把离线误差直接当作成功率）。
+
+## 可直接执行命令
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+conda activate robot-practice
+export PYTHONNOUSERSITE=1
+set -euo pipefail
+
+experiment_id="$(date +%Y%m%d_%H%M%S)"
+dataset_root="$PWD/datasets/lerobot/lerobot/libero"
+log_dir="$PWD/outputs/act/a_sanity/logs/${experiment_id}"
+eval_root="$PWD/outputs/act/a_sanity/eval/${experiment_id}"
+
+mkdir -p "${log_dir}" "${eval_root}"
+
+bash scripts/experiments/act/a_sanity.sh --steps=0
+bash scripts/experiments/act/a_sanity.sh --steps=20000
+bash scripts/experiments/act/eval_offline.sh \
+  --policy-path="${eval_root}/trained_offline/.../checkpoints/020000/pretrained_model" \
+  --suite=libero_object --task-id=8 --dataset-root="${dataset_root}" \
+  --episodes 823 826 834 840 841 --batch-size=1 --num-visualized-episodes=1 \
+  --output-dir="${eval_root}/trained_offline"
+```
+
+## 结果落点
+
+- `outputs/act/a_sanity/<timestamp>/.../checkpoints/020000/pretrained_model`
+- `outputs/act/a_sanity/eval/<timestamp>/b0_offline/`：`run_config.json`, `eval_info.json`, `metrics.json`
+- `outputs/act/a_sanity/eval/<timestamp>/b0_closed/`：`rollouts.parquet`, `rollout.rrd`, `videos/`
+- 同上 `trained_offline`, `trained_closed`
+
+## 判断标准
+
+- `offline`：`first_action_mae`、`delta_action_mae` 与 B0 对比有显著下降（按计划阈值）；
+- `closed-loop`：20 episodes 成功率高于 B0，且 `termination_reason` 失败分布需可追溯；
+- 所有指标以 `.../metrics.json` 为机器源，报告正文只记录阈值级结论，不贴完整原始序列。
+
+## 模式
+
+- Offline（离线 teacher-forced）
+- Closed-loop（任务成功率）
+
 ## 1. 实验描述
 
 实验问题：
@@ -64,18 +115,17 @@ Offline action error 下降不代表任务一定成功；任务成功率必须�
 
 ### 3.1 准备环境和输出目录
 
-先激活环境并进入 Bash：
+先激活环境：
 
-```bash
+```
 cd "$(git rev-parse --show-toplevel)"
 conda activate robot-practice
 export PYTHONNOUSERSITE=1
-bash
 ```
 
-在新的 Bash prompt 中执行：
+继续在当前终端中执行：
 
-```bash
+```
 set -euo pipefail
 
 experiment_id="$(date +%Y%m%d_%H%M%S)"
@@ -92,9 +142,9 @@ mkdir -p -- "${log_dir}"
 
 ### 3.2 创建 B0 checkpoint
 
-```bash
+```
 b0_log="${log_dir}/b0_create.log"
-scripts/experiments/act/a_sanity.sh --steps=0 2>&1 | tee "${b0_log}"
+bash scripts/experiments/act/a_sanity.sh --steps=0 2>&1 | tee "${b0_log}"
 b0_run="$(sed -n 's/^Output directory: //p' "${b0_log}" | tail -n 1)"
 b0_policy="${b0_run}/checkpoints/000000/pretrained_model"
 test -d "${b0_policy}"
@@ -103,8 +153,8 @@ echo "B0 policy: ${b0_policy}"
 
 ### 3.3 评测 B0：offline
 
-```bash
-scripts/experiments/act/eval_offline.sh \
+```
+bash scripts/experiments/act/eval_offline.sh \
   --policy-path="${b0_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -118,8 +168,18 @@ scripts/experiments/act/eval_offline.sh \
 
 ### 3.4 评测 B0：LIBERO closed-loop
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+`--n-episodes` 控制实际 rollout 数量，`--num-visualized-episodes` 控制其中前多少个
+episode 写入 `rollout.rrd`。每个被可视化的 episode 是一个独立 Rerun Recording，
+可在左侧按 `Episode 000 | seed=... | init=... | success/failure:...` 点击切换。若希望
+20 个 rollout 全部可切换，把下面的 `--num-visualized-episodes=1` 改为 `20`。
+
+`eval_libero.sh` 默认使用 checkpoint 保存的 `n_action_steps`。若要用同一 checkpoint
+测试每步重规划，可在任一 closed-loop 命令中加入 `--n-action-steps=1`，并使用新的
+`--output-dir` 保存对照结果。该参数只影响本次评测，不会改写 checkpoint；
+`run_config.json` 的 `input.policy_execution` 会记录原始值和实际生效值。
+
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${b0_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -132,8 +192,8 @@ scripts/experiments/act/eval_libero.sh \
 
 不要添加 `--max-steps`，否则只会得到 smoke evaluation，不能计算正式成功率。
 
-Closed-loop 的 `rollout.rrd` 不加载 demonstration，也不伪造逐帧 GT。每个
-`global_step` 同时展示：
+Closed-loop 的 `rollout.rrd` 不加载 demonstration，也不伪造逐帧 GT。每个 Recording
+有独立且从 0 开始的 `global_step`，每一步同时展示：
 
 - 模型在 `t` 时刻接收的 agentview 与 eye-in-hand；
 - 基于模拟器真实 7D arm joints 绘制的 Panda 和真实 EEF 历史；
@@ -152,9 +212,9 @@ Closed-loop 的 `rollout.rrd` 不加载 demonstration，也不伪造逐帧 GT。
 
 ### 3.5 从 B0 训练 20,000 updates
 
-```bash
+```
 train_log="${log_dir}/train_20000.log"
-scripts/experiments/act/a_sanity.sh \
+bash scripts/experiments/act/a_sanity.sh \
   --steps=20000 \
   --policy-path="${b0_policy}" \
   2>&1 | tee "${train_log}"
@@ -166,8 +226,8 @@ echo "Trained policy: ${trained_policy}"
 
 ### 3.6 评测 trained checkpoint：offline
 
-```bash
-scripts/experiments/act/eval_offline.sh \
+```
+bash scripts/experiments/act/eval_offline.sh \
   --policy-path="${trained_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -181,8 +241,8 @@ scripts/experiments/act/eval_offline.sh \
 
 ### 3.7 评测 trained checkpoint：LIBERO closed-loop
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${trained_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -197,13 +257,13 @@ scripts/experiments/act/eval_libero.sh \
 
 训练 loss：
 
-```bash
+```
 rg 'step:(100|20K).*loss:' "${train_log}"
 ```
 
 四份评测指标：
 
-```bash
+```
 for result in b0_offline b0_closed trained_offline trained_closed; do
   echo "=== ${result} ==="
   python -c \
@@ -220,12 +280,24 @@ done
 
 按需打开可视化：
 
-```bash
-rerun "${eval_root}/b0_offline/prediction.rrd"
-rerun "${eval_root}/trained_offline/prediction.rrd"
-rerun "${eval_root}/b0_closed/rollout.rrd"
-rerun "${eval_root}/trained_closed/rollout.rrd"
 ```
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9876 \
+  "${eval_root}/b0_offline/prediction.rrd"
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9877 \
+  "${eval_root}/trained_offline/prediction.rrd"
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9878 \
+  "${eval_root}/b0_closed/rollout.rrd"
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9879 \
+  "${eval_root}/trained_closed/rollout.rrd"
+```
+
+每个并行 Viewer 必须使用不同端口；`--detach-process` 不会自动更换端口。单窗口可以只使用
+`9876`。把多个 RRD 路径传给同一条命令只会在同一个 Viewer 中加载。`--persist-state`
+保存布局；同一 application ID 的并行窗口共享持久化布局，最后关闭者可能覆盖布局状态。
 
 Offline Rerun 的 3D 坐标以机器人 base 为原点，标出 `X`、`Y Forward`、`Z Up`。
 LIBERO 的 LeRobot/OpenVLA 数据约定会把渲染图像旋转 180 度，但 state 和 action 仍保持

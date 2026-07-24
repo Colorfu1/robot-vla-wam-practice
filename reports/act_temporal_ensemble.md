@@ -1,5 +1,63 @@
 # ACT 实验三：Temporal Ensemble
 
+## 实验目标
+
+- 在固定训练好的 source checkpoint 上，验证 Temporal Ensemble（`--temporal-ensemble-coeff`）是否比
+  `--n-action-steps=1` 的重规划基线更能降低动作抖动并提升 noisy 条件下稳定性。
+
+## 实验思路
+
+三组对照必须共用同一 source checkpoint：
+
+1. Source Standard（默认 `n_action_steps=5`）；
+2. Source Replan（`n_action_steps=1`）；
+3. A3 Ensemble（`n_action_steps=1` + `temporal_ensemble_coeff=0.01`）。
+
+若目标是 isolation，对比优先 `Source Replan` 与 `A3 Ensemble`。
+
+## 可直接执行命令
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+conda activate robot-practice
+export PYTHONNOUSERSITE=1
+
+bash scripts/experiments/act/eval_libero.sh \
+  --policy-path=outputs/act/a1_chunking/20260724_121730/checkpoints/020000/pretrained_model \
+  --suite=libero_object --task-id=8 --n-episodes=20 --num-visualized-episodes=1 \
+  --perturbation=none --seed=1000 --output-dir=outputs/act/a3_temporal_ensemble/a1_standard_clean
+
+bash scripts/experiments/act/eval_libero.sh \
+  --policy-path=outputs/act/a1_chunking/20260724_121730/checkpoints/020000/pretrained_model \
+  --suite=libero_object --task-id=8 --n-episodes=20 --num-visualized-episodes=1 \
+  --n-action-steps=1 --perturbation=none --seed=1000 \
+  --output-dir=outputs/act/a3_temporal_ensemble/a1_replan_clean
+
+bash scripts/experiments/act/eval_libero.sh \
+  --policy-path=outputs/act/a1_chunking/20260724_121730/checkpoints/020000/pretrained_model \
+  --suite=libero_object --task-id=8 --n-episodes=20 --num-visualized-episodes=1 \
+  --n-action-steps=1 --temporal-ensemble-coeff=0.01 --perturbation=none --seed=1000 \
+  --output-dir=outputs/act/a3_temporal_ensemble/a1_ensemble_clean
+```
+
+## 结果落点
+
+- `outputs/act/a3_temporal_ensemble/<a1|a2>_standard_clean/metrics.json`
+- `outputs/act/a3_temporal_ensemble/<a1|a2>_replan_clean/metrics.json`
+- `outputs/act/a3_temporal_ensemble/<a1|a2>_ensemble_clean/metrics.json`
+- 每组额外保留 `rollouts.parquet` 与 `rollout.rrd`（若开启可视化）。
+
+## 判断标准
+
+- 在同一 source checkpoint 下对比 `A3 Ensemble` 与 `Source Replan` 的 `success_rate`；
+- 优先关注 `action_jerk`、`action_tv` 与 `gripper_toggles` 的方向性改善；
+- 所有正式对比为 full `n-episodes=20`；`max-steps` 只用于 smoke。
+
+## 模式
+
+- Closed-loop（基础）
+- Smoke（单步/快速可运行性）
+
 ## 1. 实验要回答什么
 
 Temporal Ensemble 在每个控制步骤重新预测一个 action chunk，并把多个历史 chunk 对当前时刻
@@ -12,8 +70,8 @@ Temporal Ensemble 在每个控制步骤重新预测一个 action chunk，并把�
 
 A3 不重新训练。它只改变 checkpoint 的运行时推理配置。
 
-> 当前状态：LeRobot 0.4.4 已经实现 ACT Temporal Ensemble，但当前本地
-> `eval_libero.sh` 还不能覆盖 checkpoint 的推理参数。下面的命令需要先完成本指南第 3 节。
+> 当前状态：`eval_libero.sh` 已支持评测专用的 `--n-action-steps` 和
+> `--temporal-ensemble-coeff` override，Source Replan 与 A3 Ensemble 均可直接运行。
 
 ## 2. 必须使用 source-matched 对照
 
@@ -42,39 +100,45 @@ A2 checkpoint
 如果 A3 使用 A2 checkpoint，对照必须是同一个 A2 checkpoint 的 Replan control，不能拿
 A1 Replan 与 A2 Ensemble 比较。
 
-## 3. 需要实现的文件
+## 3. Temporal Ensemble 运行时接口
 
 ```text
 src/robot_practice/evaluation/common.py
 src/robot_practice/evaluation/libero_act.py
 scripts/experiments/act/eval_libero.sh
 tests/test_evaluation_common.py
-tests/test_libero_evaluation.py
+tests/test_evaluation_interfaces.py
 ```
 
 不修改 LeRobot 的 `ACTTemporalEnsembler`。
 
-### 3.1 增加运行时参数
+### 3.1 运行时参数状态
 
-在 `LiberoEvaluationConfig` 和 argparse 中增加：
+当前支持：
 
 ```text
 --n-action-steps=N
+```
+
+它只覆盖本次评测，不修改 checkpoint，并在 `run_config.json` 的
+`input.policy_execution` 中记录 checkpoint 原值和实际生效值。
+
+```text
 --temporal-ensemble-coeff=C
 ```
 
-Python 字段使用可选值：
+最终两个 Python 字段都使用可选值：
 
 ```python
 n_action_steps: int | None = None
 temporal_ensemble_coeff: float | None = None
 ```
 
-两者都不传时，保持 checkpoint 原始行为。
+不传对应 override 时，保持 checkpoint 原始行为。
 
-### 3.2 在 policy 构造前覆盖 config
+### 3.2 Temporal Ensemble 必须在 policy 构造前覆盖 config
 
-修改 `load_act_checkpoint()`，让它接收 inference overrides。处理顺序必须是：
+实现会在 policy 构造前应用 `temporal_ensemble_coeff` override。处理顺序是：
 
 1. 从 checkpoint 读取原始 config；
 2. 保存原始 `n_action_steps` 和 `temporal_ensemble_coeff`；
@@ -117,14 +181,14 @@ effective temporal_ensemble_coeff
 
 ```json
 {
-  "policy": {
-    "checkpoint_inference": {
-      "n_action_steps": 5,
-      "temporal_ensemble_coeff": null
-    },
-    "effective_inference": {
-      "n_action_steps": 1,
-      "temporal_ensemble_coeff": 0.01
+  "input": {
+    "policy_execution": {
+      "checkpoint_n_action_steps": 5,
+      "effective_n_action_steps": 1,
+      "n_action_steps_overridden": true,
+      "checkpoint_temporal_ensemble_coeff": null,
+      "effective_temporal_ensemble_coeff": 0.01,
+      "temporal_ensemble_coeff_overridden": true
     }
   }
 }
@@ -138,12 +202,12 @@ effective temporal_ensemble_coeff
 
 因此不需要伪造“未来执行轨迹”。
 
-## 4. 最小测试
+## 4. 实现验证
 
-```bash
+```
 pytest -q \
   tests/test_evaluation_common.py \
-  tests/test_libero_evaluation.py
+  tests/test_evaluation_interfaces.py
 ```
 
 必须覆盖：
@@ -160,9 +224,9 @@ pytest -q \
 
 先做一帧 smoke test：
 
-```bash
-scripts/experiments/act/eval_libero.sh \
-  --policy-path="<source_policy>" \
+```
+bash scripts/experiments/act/eval_libero.sh \
+  --policy-path="outputs/act/a1_chunking/20260724_121730/checkpoints/020000/pretrained_model" \
   --suite=libero_object \
   --task-id=8 \
   --n-episodes=1 \
@@ -178,28 +242,28 @@ smoke test 只能验证代码可运行，不能计算正式成功率。
 
 默认先使用 A1：
 
-```bash
-source_policy="outputs/act/a1_chunking/<timestamp>/checkpoints/020000/pretrained_model"
+```
+source_policy="outputs/act/a1_chunking/20260724_121730/checkpoints/020000/pretrained_model"
 source_name="a1"
 ```
 
-如果 A2 已经明显优于 A1，也可以改成：
-
-```bash
-source_policy="outputs/act/a2_delta_loss/<timestamp>/checkpoints/020000/pretrained_model"
-source_name="a2"
-```
+如果后续完成 A2，可以把这两个变量替换为 A2 的真实 checkpoint 相对路径和名称；A2 的
+Replan/Ensemble 对照仍必须共用同一个 checkpoint。
 
 下面所有命令必须复用同一个 `source_policy`。
 
 ## 6. Clean closed-loop 对比
 
+`--num-visualized-episodes=M` 会把前 M 个 rollout 分别保存为可点击切换的独立 Rerun
+Recording；每个 Recording 使用自己的从 0 开始的时间轴。要查看全部 20 个 rollout，
+把下面命令中的值从 `1` 改为 `20`。
+
 ### 6.1 Source Standard
 
 不传 override：
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${source_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -212,8 +276,8 @@ scripts/experiments/act/eval_libero.sh \
 
 ### 6.2 Source Replan control
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${source_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -227,8 +291,8 @@ scripts/experiments/act/eval_libero.sh \
 
 ### 6.3 A3 Ensemble
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${source_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -254,8 +318,8 @@ scripts/experiments/act/eval_libero.sh \
 
 Replan control：
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${source_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -270,8 +334,8 @@ scripts/experiments/act/eval_libero.sh \
 
 A3 Ensemble：
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${source_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -290,10 +354,21 @@ Ensemble。
 
 ## 8. 查看结果
 
-```bash
-rerun "outputs/act/a3_temporal_ensemble/${source_name}_replan_clean/rollout.rrd"
-rerun "outputs/act/a3_temporal_ensemble/${source_name}_ensemble_clean/rollout.rrd"
+同时打开 Replan/Ensemble 两个独立 Viewer 时使用不同端口：
+
 ```
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9876 \
+  "outputs/act/a3_temporal_ensemble/${source_name}_replan_clean/rollout.rrd"
+
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9877 \
+  "outputs/act/a3_temporal_ensemble/${source_name}_ensemble_clean/rollout.rrd"
+```
+
+`--detach-process` 不会自动更换端口；若两个 Viewer 都使用 `9876`，第二份数据会进入第一个
+Viewer。把两个路径放进同一条命令也只会打开一个 Viewer。`--persist-state` 保存布局；
+同一 application ID 的并行窗口共享持久化布局，最后关闭者可能覆盖布局状态。
 
 重点比较：
 
@@ -320,3 +395,86 @@ A3 每一步都调用模型，`num_model_queries` 明显增加是预期成本，
 
 最后把 source checkpoint、有效推理配置、clean/noisy 指标、latency 和失败案例写入
 `reports/experiment_log.md`。
+
+## 9. 已完成结果：A1 Temporal Ensemble
+
+结果标签：`Formal`、`Closed-loop`、`Clean`。
+
+评测任务为 `libero_object/task_id=8`：
+`pick_up_the_chocolate_pudding_and_place_it_in_the_basket`。三组结果均使用 seed
+1000～1019 和 init state 0～19。A1 Replan 与 A1 Ensemble 使用同一个 A1 checkpoint，
+因此二者是判断 Temporal Ensemble 效果的主对照；A0 来自另一个训练配置，只作为辅助基线。
+
+### 9.1 正式结果
+
+| 配置 | Clean SR ↑ | Action TV ↓ | Action Jerk ↓ | Mean gripper toggles | Model queries | Policy p95 latency |
+|---|---:|---:|---:|---:|---:|---:|
+| A0 single-step（辅助基线） | 9/20（45%） | 0.01495 | 0.01786 | 3.45 | 4590 | 11.11 ms |
+| A1 Replan（主对照） | 4/20（20%） | 0.01879 | 0.02264 | 1.80 | 5149 | 10.09 ms |
+| A1 + Temporal Ensemble 0.01 | 18/20（90%） | 0.01519 | 0.00413 | 2.80 | 3475 | 10.66 ms |
+
+A1 Ensemble 相比 source-matched A1 Replan：
+
+- 成功率从 20% 提高到 90%，增加 70 个百分点；
+- Action Jerk 降低约 81.8%；
+- Action TV 降低约 19.1%；
+- policy p95 latency 增加约 0.57 ms；
+- A1 Replan 成功的 4 个初始化在 Ensemble 中仍然全部成功，另外有 14 个初始化由失败变为成功。
+
+三组都在每个实际控制步查询一次模型。总 `Model queries` 会受到成功 episode 提前结束的
+影响，不能直接解释为单步推理成本；单步成本应比较 p95 latency。
+
+相对 A0 辅助基线，A1 Ensemble 的成功率提高 45 个百分点，Action Jerk 降低约 76.9%；
+但 A0 与 A1 使用不同训练配置，这部分差异不能单独归因于 Temporal Ensemble。
+
+结果文件：
+
+- A0：`outputs/act/a0_single_step/closed_clean/metrics.json`
+- A1 Replan：`outputs/act/a1_chunking/closed_clean/metrics.json`
+- A1 Ensemble：`outputs/act/a3_temporal_ensemble/a1_ensemble_clean/metrics.json`
+- A1 Ensemble 可视化：
+  `outputs/act/a3_temporal_ensemble/a1_ensemble_clean/rollout.rrd`
+
+### 9.2 问题与现象
+
+失败 episode 为 2 和 16，二者均运行到 280 步 time limit：
+
+- Episode 2：从可视化看，机械臂已经接近抓起巧克力布丁，但没有完成稳定抓取。这是抓取阶段
+  的精度失败现象；仅凭视频不能确定根因是接触位置、闭合时机还是其他控制误差。
+- Episode 16：机械臂完成搬运和释放，但巧克力布丁落在篮筐边缘，没有满足模拟器成功条件。
+  这是放置阶段的精度失败现象；仅凭视频不能确定是目标位置、释放时机还是接触动力学导致。
+
+这两次失败分别发生在抓取和放置阶段，不是同一种失败，也没有观察到明显的全程轨迹崩溃。
+当前剩余问题更接近空间精度与操作裕量不足，而不是已经被 Action Jerk 指标反映出的高频动作
+抖动。该判断来自可视化现象，不等同于已证明的根因。
+
+`Mean gripper toggles` 从 Replan 的 1.80 增加到 2.80 不能直接视为退化。成功完成
+“抓取—搬运—释放”本身需要夹爪状态切换，而 Replan 的低切换次数同时伴随较低成功率。
+
+### 9.3 当前结论与限制
+
+在这个 A-Sanity 单任务上，`chunk_size=20`、每步重规划和
+`temporal_ensemble_coeff=0.01` 的组合通过了预先设定的 development 门槛：clean success
+没有下降，Action Jerk 的降幅远大于 15%，并且成功率显著提高。结果支持 Temporal Ensemble
+能够缓解当前 A1 policy 的重规划不稳定问题。
+
+该结论只覆盖一个 LIBERO task、20 个固定初始状态和 clean observation。它不能证明跨任务
+泛化，也不能证明 noisy observation 下同样稳定；Noisy closed-loop 仍需按第 7 节单独评测。
+
+### 9.4 完整复现命令
+
+下面命令使用本次 A1 checkpoint，并写入新的复现目录，避免覆盖上述正式结果：
+
+```bash
+bash scripts/experiments/act/eval_libero.sh \
+  --policy-path=outputs/act/a1_chunking/20260724_121730/checkpoints/020000/pretrained_model \
+  --suite=libero_object \
+  --task-id=8 \
+  --n-episodes=20 \
+  --num-visualized-episodes=20 \
+  --n-action-steps=1 \
+  --temporal-ensemble-coeff=0.01 \
+  --perturbation=none \
+  --seed=1000 \
+  --output-dir=outputs/act/a3_temporal_ensemble/a1_ensemble_clean_repeat
+```

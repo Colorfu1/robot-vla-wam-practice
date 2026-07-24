@@ -187,6 +187,16 @@ def test_public_entry_requires_exactly_one_variant() -> None:
     assert unknown.returncode == 64
 
 
+def test_public_help_distinguishes_training_and_inference_horizons() -> None:
+    result = _run_public("--help")
+    assert result.returncode == 0
+    assert "training chunk_size=20" in result.stdout
+    assert "inference default n_action_steps=5" in result.stdout
+    script = PUBLIC_SCRIPT.read_text(encoding="utf-8")
+    assert "Training supervision horizon:" in script
+    assert "not used by training loss" in script
+
+
 @pytest.mark.parametrize("variant", ["a0", "a1"])
 def test_alias_rejects_user_variant_override(variant: str) -> None:
     result = _run(variant, "--variant=a1", "--print-command")

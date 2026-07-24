@@ -1,5 +1,50 @@
 # 2026-07-24 ACT A-Sanity 收尾与后续实验指南
 
+## 实验目标
+
+固定已完成的 A-Sanity 结果，明确下一轮 A0/A1/A2/A3 的实验边界、可复现入口和同源对照关系，避免后续实验把训练差异误归因为推理策略变化。
+
+## 实验思路
+
+- 把 A-Sanity 的离线与闭环结论与下一轮计划分离：先冻结已得事实，再把三组后续实验作为执行计划。
+- 统一基线条件：任务、演示条数、帧数、batch size、更新步数、seed、VAE 设置保持一致。
+- A1/A2/A3 的推理差异采用 source-matched 对照，避免跨 checkpoint 的混淆。
+- A0/A1 采用单步/chunking 对照，A2 对比是否加入 delta-loss，A3 对比是否开启 temporal ensemble。
+- 同一实验的离线与闭环都要回到同一份 `init_state_id` 选择策略，以保证公平性。
+
+## 可直接执行命令
+
+- 后续三组实验启动和评测的基础命令见对应指南：
+  - [ACT 单步预测与 Action Chunking 指南](act_action_chunking.md)
+  - [ACT 动作差分损失指南](act_delta_action_loss.md)
+  - [ACT Temporal Ensemble 指南](act_temporal_ensemble.md)
+- 对应脚本入口通常是：
+  - `bash scripts/experiments/act/train_step0_xxx.sh ...`
+  - `bash scripts/experiments/act/train_act.sh ...`
+  - `bash scripts/experiments/act/eval_offline.sh ...`
+  - `bash scripts/experiments/act/eval_libero.sh ...`
+
+具体参数与路径请以对应指南中的“可直接执行命令”块为准，避免复用旧参数导致结果不可比。
+
+## 结果落点
+
+- 实验输出目录：`outputs/act/...`
+- 离线指标：`outputs/.../offline_eval/metrics.json` 与 `outputs/.../offline_eval/run_config.json`
+- 闭环指标：`outputs/.../closed_loop_eval/*/metrics.json` 与 `outputs/.../closed_loop_eval/*/eval_info.json`
+- 全局索引与结果归并：`reports/experiment_log.md`
+- 指标名解释：`reports/metrics.md`
+
+## 判断标准
+
+- 三类实验（A0/A1、A2、A3）均有对应的 Offline 与 Closed-loop 对照，并在 `reports/experiment_log.md` 更新。
+- A0/A1、A2、A3 的比较采用 source-matched 对照，不允许把不同 source checkpoint 的结果混写为同一结论。
+- 指标可复现：核心离线指标与闭环成功率、稳定性均能在 `metrics.json` 中定位且与指南中定义一致。
+- 异常闭环 case 有明确归因，写入失败案例并给出可执行修复方向。
+
+## 模式
+
+- 本文件当前主要记录 `Offline` + `Closed-loop` 的收敛与交付状态，后续实验结果按实际评测类型在 `reports/experiment_log.md` 做分类登记。
+
 ## 重要进展
 
 - A-Sanity 已完成五条 demonstration、859 帧的 teacher-forced offline 诊断，并完成

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Purpose:
 #   Launch the fixed ACT action-chunking comparison through one readable entry.
+#   chunk_size controls the supervised training horizon. n_action_steps is stored
+#   as the checkpoint's default inference execution horizon and is not used by
+#   ACTPolicy.forward() to compute the training loss.
 #
 # Examples (run from the repository root):
 #   scripts/experiments/act/action_chunking.sh --variant=a0 --steps=20000
@@ -25,8 +28,8 @@ usage() {
 Usage: action_chunking.sh --variant=a0|a1 [--steps=N] [--policy-path=PATH] [--print-command]
 
 Variants:
-  a0  ACT single-step baseline: chunk_size=1, n_action_steps=1
-  a1  ACT action chunking:      chunk_size=20, n_action_steps=5
+  a0  ACT single-step baseline: training chunk_size=1, inference default n_action_steps=1
+  a1  ACT action chunking:      training chunk_size=20, inference default n_action_steps=5
 
 Options:
   --steps=0          Save a verified zero-update initialization checkpoint.
@@ -231,6 +234,8 @@ fi
 echo "Starting fixed ${variant_label} experiment"
 echo "Dataset episodes: ${episodes}"
 echo "ACT config: chunk_size=${chunk_size}, n_action_steps=${n_action_steps}, use_vae=false"
+echo "Training supervision horizon: chunk_size=${chunk_size} GT actions per sample"
+echo "Checkpoint inference default: n_action_steps=${n_action_steps} (not used by training loss)"
 if [[ "${policy_path_seen}" == true ]]; then
   echo "Initialization checkpoint: ${policy_path}"
 fi

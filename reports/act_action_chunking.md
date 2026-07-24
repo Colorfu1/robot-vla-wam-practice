@@ -1,13 +1,73 @@
 # ACT 实验一：单步预测与 Action Chunking
 
+## 实验目标
+
+- 比较 A0 (`chunk_size=1,n_action_steps=1`) 与 A1 (`chunk_size=20,n_action_steps=5`) 在同数据、
+  同步数、同 optimizer 配置下的 Offline 和 Closed-loop 性能差异，并验证实现不改变核心网络配置。
+
+## 实验思路
+
+1. 用固定 seed 和同一 20 条 demonstration 分别初始化 A0/A1 step-0 checkpoint；
+2. 分别训练到同样步数；
+3. 同一 evaluator 对照 offline 与 closed-loop 指标；
+4. 通过 `action_chunking` 对照组分离“chunk 训练”与“closed-loop 执行频率”两个影响。
+
+## 可直接执行命令
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+conda activate robot-practice
+export PYTHONNOUSERSITE=1
+
+bash scripts/experiments/act/action_chunking.sh --variant=a0 --steps=0
+bash scripts/experiments/act/action_chunking.sh --variant=a1 --steps=0
+bash scripts/experiments/act/action_chunking.sh --variant=a0 --steps=20000
+bash scripts/experiments/act/action_chunking.sh --variant=a1 --steps=20000
+
+bash scripts/experiments/act/eval_offline.sh --policy-path=outputs/act/a0_single_step/.../checkpoints/020000/pretrained_model \
+  --suite=libero_object --task-id=8 --dataset-root=datasets/lerobot/lerobot/libero \
+  --episodes 823 826 834 840 841 845 847 869 875 878 910 918 920 929 944 948 949 953 966 972 \
+  --output-dir=outputs/act/a_action_chunking/a0_offline
+```
+
+## 结果落点
+
+- `outputs/act/a0_single_step/<timestamp>/checkpoints/020000/pretrained_model`
+- `outputs/act/a1_chunking/<timestamp>/checkpoints/020000/pretrained_model`
+- `outputs/act/a0_single_step/<timestamp>/eval.../` 与 `outputs/act/a1_chunking/.../eval.../` 下的：
+  `run_config.json`, `eval_info.json`, `metrics.json`, `rollout.rrd`, `rollouts.parquet`, `videos/`
+
+## 判断标准
+
+- Offline 指标（`first_action_mae`, `delta_action_mae`）与 A0/A1 对比满足预设优先序；
+- Closed-loop `success_rate` 仅按 formal run（20 episodes）评估，smoke 仅验证可运行；
+- 动作平滑性通过 `action_tv`、`action_jerk` 对比，减少越好；指标读取自 `metrics.json`。
+
+## 模式
+
+- Offline
+- Closed-loop
+- Smoke（用于可运行性 sanity check）
+
 ## 1. 实验要回答什么
 
 比较以下两种 ACT：
 
-| 配置 | `chunk_size` | `n_action_steps` | 含义 |
+| 配置 | 训练监督 `chunk_size` | checkpoint 默认执行 `n_action_steps` | 含义 |
 |---|---:|---:|---|
 | A0 | 1 | 1 | 每次只预测并执行一个动作 |
 | A1 | 20 | 5 | 每次预测 20 个动作，执行前 5 个后重新规划 |
+
+参数语义必须分开理解：
+
+- `chunk_size` 决定训练样本包含多少步 GT action、模型预测多少步，以及 loss 覆盖多少步；
+- `n_action_steps` 不参与 `ACTPolicy.forward()` 的训练 loss，只会写入 checkpoint，作为不传
+  eval override 时的默认执行长度；
+- 因此 A1 训练时仍然对 20 步预测和 20 步 GT 计算 loss，不是只计算前 5 步。
+
+> 闭环评测提示：`eval_libero.sh` 默认使用 checkpoint 中的 `n_action_steps`。需要隔离
+> “chunk 训练”和“连续执行多步”的影响时，给同一个 A1 checkpoint 传
+> `--n-action-steps=1`；这只覆盖本次评测，不修改 checkpoint。完整命令见 7.2 节。
 
 实验问题：
 
@@ -47,8 +107,9 @@
 948, 949, 953, 966, 972
 ```
 
-A0 和 A1 只改变 `chunk_size` 与 `n_action_steps`。视觉骨干、Transformer、optimizer 和数据
-处理保持一致。
+A0 和 A1 的 checkpoint 配置只改变 `chunk_size` 与 `n_action_steps`。训练目标实际由
+`chunk_size` 改变；`n_action_steps` 只改变 checkpoint 的默认闭环执行协议。视觉骨干、
+Transformer、optimizer 和数据处理保持一致。
 
 `chunk_size` 会改变 ACT query embedding 数量，所以 A0 和 A1 的参数量不会完全相同，也不能
 共享完整的 step-0 state dict。应使用相同 seed，并记录两者参数量。
@@ -110,13 +171,18 @@ A0: chunk_size=1,  n_action_steps=1
 A1: chunk_size=20, n_action_steps=5
 ```
 
+这里显式传入 `n_action_steps` 是为了得到合法、可复现的 checkpoint 推理默认值，不表示训练
+loss 只监督这么多步。当前 LeRobot ACT 默认 `n_action_steps=100`；当 `chunk_size` 改为 1
+或 20 时，如果不同时提供合法的 `n_action_steps`，会违反
+`n_action_steps <= chunk_size` 的配置约束。
+
 ### 3.2 一个公开入口和两个便捷别名
 
 公开入口直接包含完整的 `conda run ... lerobot-train` 命令：
 
-```bash
-scripts/experiments/act/action_chunking.sh --variant=a0 --steps=20000
-scripts/experiments/act/action_chunking.sh --variant=a1 --steps=20000
+```
+bash scripts/experiments/act/action_chunking.sh --variant=a0 --steps=20000
+bash scripts/experiments/act/action_chunking.sh --variant=a1 --steps=20000
 ```
 
 接口为：
@@ -160,12 +226,17 @@ outputs/act/a1_chunking/<timestamp>
 --policy.n_action_steps=1
 ```
 
+训练 loss horizon 为 1；checkpoint 默认每执行 1 步重新规划。
+
 `--variant=a1` 固定：
 
 ```text
 --policy.chunk_size=20
 --policy.n_action_steps=5
 ```
+
+训练 loss horizon 为 20；checkpoint 默认每执行 5 步重新规划。`n_action_steps=5` 不会把
+训练监督截断为 5 步。
 
 不要允许调用者通过额外参数悄悄改变固定数据或核心配置。
 
@@ -208,14 +279,14 @@ Parquet 应明确区分：
 
 先运行：
 
-```bash
+```
 bash -n scripts/experiments/act/a0_single_step.sh
 bash -n scripts/experiments/act/a1_chunking.sh
 bash -n scripts/experiments/act/action_chunking.sh
 
-scripts/experiments/act/action_chunking.sh \
+bash scripts/experiments/act/action_chunking.sh \
   --variant=a0 --steps=20000 --print-command
-scripts/experiments/act/action_chunking.sh \
+bash scripts/experiments/act/action_chunking.sh \
   --variant=a1 --steps=20000 --print-command
 ```
 
@@ -232,7 +303,7 @@ scripts/experiments/act/action_chunking.sh \
 
 运行相关测试：
 
-```bash
+```
 pytest -q \
   tests/test_act_experiment_launchers.py \
   tests/test_evaluation_interfaces.py \
@@ -245,21 +316,21 @@ pytest -q \
 
 ### 5.1 创建 A0 和 A1 的 step-0 checkpoint
 
-```bash
-scripts/experiments/act/action_chunking.sh --variant=a0 --steps=0
-scripts/experiments/act/action_chunking.sh --variant=a1 --steps=0
+```
+bash scripts/experiments/act/action_chunking.sh --variant=a0 --steps=0
+bash scripts/experiments/act/action_chunking.sh --variant=a1 --steps=0
 ```
 
 把两个命令打印出的路径保存下来：
 
-```bash
+```
 a0_b0="outputs/act/a0_single_step/<timestamp>/checkpoints/000000/pretrained_model"
 a1_b0="outputs/act/a1_chunking/<timestamp>/checkpoints/000000/pretrained_model"
 ```
 
 确认配置：
 
-```bash
+```
 jq '{type, chunk_size, n_action_steps, use_vae}' "${a0_b0}/config.json"
 jq '{type, chunk_size, n_action_steps, use_vae}' "${a1_b0}/config.json"
 ```
@@ -269,15 +340,22 @@ jq '{type, chunk_size, n_action_steps, use_vae}' "${a1_b0}/config.json"
 
 ### 5.2 分别训练 20,000 updates
 
-```bash
-scripts/experiments/act/action_chunking.sh \
+launcher 启动时会分别打印：
+
+```text
+Training supervision horizon: chunk_size=<N> GT actions per sample
+Checkpoint inference default: n_action_steps=<N> (not used by training loss)
+```
+
+```
+bash scripts/experiments/act/action_chunking.sh \
   --variant=a0 \
   --steps=20000 \
   --policy-path="${a0_b0}"
 ```
 
-```bash
-scripts/experiments/act/action_chunking.sh \
+```
+bash scripts/experiments/act/action_chunking.sh \
   --variant=a1 \
   --steps=20000 \
   --policy-path="${a1_b0}"
@@ -285,22 +363,22 @@ scripts/experiments/act/action_chunking.sh \
 
 记录两个训练命令打印出的 run 目录：
 
-```bash
+```
 a0_policy="outputs/act/a0_single_step/<timestamp>/checkpoints/020000/pretrained_model"
 a1_policy="outputs/act/a1_chunking/<timestamp>/checkpoints/020000/pretrained_model"
 ```
 
 ## 6. Offline 评测
 
-```bash
+```
 episodes=(
   823 826 834 840 841 845 847 869 875 878
   910 918 920 929 944 948 949 953 966 972
 )
 ```
 
-```bash
-scripts/experiments/act/eval_offline.sh \
+```
+bash scripts/experiments/act/eval_offline.sh \
   --policy-path="${a0_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -312,8 +390,8 @@ scripts/experiments/act/eval_offline.sh \
   --output-dir=outputs/act/a0_single_step/offline_20
 ```
 
-```bash
-scripts/experiments/act/eval_offline.sh \
+```
+bash scripts/experiments/act/eval_offline.sh \
   --policy-path="${a1_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -329,10 +407,15 @@ A0 的 `chunk_size=1`，所以 `delta_action_mae` 应为 `null`，这是正常�
 
 ## 7. Closed-loop 评测
 
+`--n-episodes=20` 运行 20 个独立 rollout；`--num-visualized-episodes=M` 将前 M 个
+rollout 分别写成独立 Rerun Recording，再合并进同一个 `rollout.rrd`。Viewer 左侧按
+episode、seed、init state 和 success/failure 名称点击切换。若要查看全部 20 个，
+把命令中的 `--num-visualized-episodes=1` 改为 `20`。
+
 ### 7.1 Clean
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${a0_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -343,8 +426,8 @@ scripts/experiments/act/eval_libero.sh \
   --output-dir=outputs/act/a0_single_step/closed_clean
 ```
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${a1_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -355,10 +438,30 @@ scripts/experiments/act/eval_libero.sh \
   --output-dir=outputs/act/a1_chunking/closed_clean
 ```
 
-### 7.2 Normalized proprioception noise 0.01
+### 7.2 用同一 A1 权重测试每步重规划
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+`--n-action-steps` 只覆盖本次评测的执行 horizon，不修改 checkpoint。下面的命令仍由
+A1 一次预测 20 步，但每次只执行第一步，然后根据新的 simulator observation 重新规划：
+
+```
+bash scripts/experiments/act/eval_libero.sh \
+  --policy-path="${a1_policy}" \
+  --suite=libero_object \
+  --task-id=8 \
+  --n-action-steps=1 \
+  --n-episodes=20 \
+  --num-visualized-episodes=1 \
+  --perturbation=none \
+  --seed=1000 \
+  --output-dir=outputs/act/a1_chunking/closed_replan_1
+```
+
+`run_config.json` 同时记录 checkpoint 原始值和本次实际生效值。
+
+### 7.3 Normalized proprioception noise 0.01
+
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${a0_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -370,8 +473,8 @@ scripts/experiments/act/eval_libero.sh \
   --output-dir=outputs/act/a0_single_step/closed_noisy
 ```
 
-```bash
-scripts/experiments/act/eval_libero.sh \
+```
+bash scripts/experiments/act/eval_libero.sh \
   --policy-path="${a1_policy}" \
   --suite=libero_object \
   --task-id=8 \
@@ -387,14 +490,39 @@ scripts/experiments/act/eval_libero.sh \
 
 ## 8. 查看结果
 
-```bash
-rerun outputs/act/a0_single_step/closed_clean/rollout.rrd
-rerun outputs/act/a1_chunking/closed_clean/rollout.rrd
+同时打开 A0/A1 两个独立 Viewer 时必须使用不同端口。Offline 对比：
+
 ```
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9876 \
+  outputs/act/a0_single_step/offline_20/prediction.rrd
+
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9877 \
+  outputs/act/a1_chunking/offline_20/prediction.rrd
+```
+
+如果保留两个 Offline Viewer，再同时打开两个 closed-loop Viewer，继续使用空闲端口：
+
+```
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9878 \
+  outputs/act/a0_single_step/closed_clean/rollout.rrd
+
+conda run --no-capture-output -n robot-practice \
+  robot-rerun --persist-state --detach-process --port=9879 \
+  outputs/act/a1_chunking/closed_clean/rollout.rrd
+```
+
+`--detach-process` 只分离 Viewer 进程，不会自动更换端口。若两个进程都使用默认 `9876`，
+第二份数据会进入第一个 Viewer。把两个 RRD 路径放在同一条命令中也只会打开一个 Viewer。
+`--persist-state` 用于保存调整后的布局；同一 application ID 的并行窗口共享持久化布局，
+最后关闭的窗口可能覆盖布局状态。
 
 指标文件：
 
 ```text
+<output-dir>/metrics.md
 <output-dir>/metrics.json
 ```
 

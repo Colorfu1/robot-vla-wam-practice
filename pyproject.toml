@@ -9,8 +9,15 @@ description = "Local simulation-first LeRobot practice workspace."
 requires-python = ">=3.10"
 dependencies = []
 
+[project.scripts]
+robot-rerun = "robot_practice.rerun_launcher:main"
+robot-rerun-install-desktop = "robot_practice.rerun_launcher:install_desktop_main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"robot_practice.assets" = ["*.png"]
 
 [tool.ruff]
 line-length = 100

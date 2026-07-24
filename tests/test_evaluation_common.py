@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 
+import robot_practice.evaluation.common as common
 from robot_practice.evaluation.common import (
     ActionPlanTracker,
     INCOMPLETE_MARKER_TEXT,
     ModelQueryTimer,
+    CheckpointManifest,
+    LoadedACT,
+    build_run_config,
     create_output_directory,
     mark_run_complete,
     release_output_directory_lock,
@@ -19,10 +24,15 @@ from robot_practice.evaluation.common import (
 )
 
 
-def _checkpoint(tmp_path: Path, *, include_state: bool = True) -> Path:
+def _checkpoint(
+    tmp_path: Path,
+    *,
+    include_state: bool = True,
+    checkpoint_type: str = "act",
+) -> Path:
     checkpoint = tmp_path / "pretrained_model"
     checkpoint.mkdir()
-    (checkpoint / "config.json").write_text(json.dumps({"type": "act"}))
+    (checkpoint / "config.json").write_text(json.dumps({"type": checkpoint_type}))
     (checkpoint / "model.safetensors").write_bytes(b"weights")
     processor = {
         "name": "test",
@@ -35,6 +45,55 @@ def _checkpoint(tmp_path: Path, *, include_state: bool = True) -> Path:
     if include_state:
         (checkpoint / "stats.safetensors").write_bytes(b"stats")
     return checkpoint
+
+
+def test_launch_rerun_viewer_prefers_project_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recording = tmp_path / "rollout.rrd"
+    recording.write_bytes(b"rrd")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    monkeypatch.setattr(
+        common.shutil,
+        "which",
+        lambda name: {
+            "robot-rerun": "/env/bin/robot-rerun",
+            "rerun": "/env/bin/rerun",
+        }.get(name),
+    )
+    monkeypatch.setattr(
+        common.subprocess,
+        "Popen",
+        lambda argv, **kwargs: calls.append((argv, kwargs)),
+    )
+
+    assert common.launch_rerun_viewer(recording, enabled=True) is True
+    assert calls[0][0] == ["/env/bin/robot-rerun", str(recording)]
+
+
+def test_launch_rerun_viewer_falls_back_to_official_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recording = tmp_path / "prediction.rrd"
+    recording.write_bytes(b"rrd")
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        common.shutil,
+        "which",
+        lambda name: "/env/bin/rerun" if name == "rerun" else None,
+    )
+    monkeypatch.setattr(
+        common.subprocess,
+        "Popen",
+        lambda argv, **kwargs: calls.append(argv),
+    )
+
+    assert common.launch_rerun_viewer(recording, enabled=True) is True
+    assert calls == [["/env/bin/rerun", str(recording)]]
 
 
 def test_complete_checkpoint_requires_referenced_processor_state(tmp_path: Path) -> None:
@@ -85,13 +144,13 @@ def test_output_override_must_not_exist(tmp_path: Path) -> None:
         )
 
 
-def _run_config(*, mode: str = "offline") -> dict[str, object]:
+def _run_config(*, mode: str = "offline", policy_type: str = "act") -> dict[str, object]:
     return {
         "schema_version": 1,
         "status": "complete",
         "mode": mode,
         "created_at": "2026-07-22T12:00:00+08:00",
-        "policy": {"type": "act"},
+        "policy": {"type": policy_type},
         "runtime": {},
         "input": {},
         "arguments": {},
@@ -265,6 +324,38 @@ def test_output_overwrite_rejects_invalid_run_config_even_with_marker(
         )
 
 
+def test_complete_checkpoint_accepts_act_delta_checkpoint(tmp_path: Path) -> None:
+    checkpoint = _checkpoint(tmp_path, checkpoint_type="act_delta")
+    manifest = validate_complete_checkpoint(checkpoint)
+    assert manifest.policy_config == {"type": "act_delta"}
+
+
+def test_build_run_config_preserves_act_delta_type(tmp_path: Path) -> None:
+    manifest = CheckpointManifest(
+        path=_checkpoint(tmp_path, checkpoint_type="act_delta"),
+        policy_config={"type": "act_delta"},
+        train_config=None,
+        processor_state_files=(),
+    )
+    loaded = LoadedACT(
+        manifest=manifest,
+        config=SimpleNamespace(device="cpu"),
+        policy=object(),
+        preprocessor=None,
+        postprocessor=None,
+        checkpoint_n_action_steps=5,
+        checkpoint_temporal_ensemble_coeff=None,
+    )
+    run_config = build_run_config(
+        status="complete",
+        mode="offline",
+        loaded=loaded,
+        input_config={},
+        arguments={},
+    )
+    assert run_config["policy"]["type"] == "act_delta"
+
+
 def test_output_lock_blocks_active_overwrite_and_releases_on_completion(
     tmp_path: Path,
 ) -> None:
@@ -341,6 +432,45 @@ def test_libero_contract_requires_exact_input_features() -> None:
     config.input_features["observation.state"] = PolicyFeature(FeatureType.STATE, (7,))
     with pytest.raises(ValueError, match="observation.state.*shape"):
         validate_act_libero_contract(config)
+
+
+def test_act_execution_config_accepts_single_step_temporal_ensemble() -> None:
+    from lerobot.policies.act.configuration_act import ACTConfig
+
+    config = ACTConfig(
+        chunk_size=20,
+        n_action_steps=1,
+        temporal_ensemble_coeff=0.01,
+        pretrained_backbone_weights=None,
+    )
+    common.validate_act_execution_config(config)
+
+
+@pytest.mark.parametrize(
+    ("n_action_steps", "coefficient", "message"),
+    [
+        (5, 0.01, "must equal 1"),
+        (1, float("nan"), "finite"),
+        (1, -100.0, "non-finite float32"),
+    ],
+)
+def test_act_execution_config_rejects_invalid_temporal_ensemble(
+    n_action_steps: int,
+    coefficient: float,
+    message: str,
+) -> None:
+    from lerobot.policies.act.configuration_act import ACTConfig
+
+    config = ACTConfig(
+        chunk_size=20,
+        n_action_steps=1,
+        temporal_ensemble_coeff=None,
+        pretrained_backbone_weights=None,
+    )
+    config.n_action_steps = n_action_steps
+    config.temporal_ensemble_coeff = coefficient
+    with pytest.raises(ValueError, match=message):
+        common.validate_act_execution_config(config)
 
 
 

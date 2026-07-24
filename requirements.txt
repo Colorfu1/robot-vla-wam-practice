@@ -6,6 +6,7 @@ huggingface_hub
 ipykernel
 jupyterlab
 matplotlib
+Pillow
 python-dotenv
 python-xlib
 rich

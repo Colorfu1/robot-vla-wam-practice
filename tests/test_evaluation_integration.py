@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
 import pytest
+import rerun.dataframe as rdf
 import torch
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
@@ -100,6 +102,9 @@ def test_one_frame_offline_prediction_writes_all_schemas(
     assert result.metrics["aggregate"]["num_frames"] == 1
     assert (output / "prediction.rrd").stat().st_size > 0
     assert (output / "metrics.json").is_file()
+    assert "# Offline evaluation metrics" in (output / "metrics.md").read_text(
+        encoding="utf-8"
+    )
     assert not (output / ".incomplete").exists()
     table = pq.read_table(output / "predictions.parquet")
     assert table.num_rows == 1
@@ -160,7 +165,7 @@ def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
             suite="libero_object",
             task_id=8,
             n_episodes=2,
-            num_visualized_episodes=1,
+            num_visualized_episodes=2,
             output_dir=output,
             max_steps=1,
             open_viewer=False,
@@ -171,8 +176,49 @@ def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
     assert result.metrics["aggregate"]["num_policy_steps"] == 2
     assert result.metrics["aggregate"]["num_model_queries"] == 2
     assert (output / "rollout.rrd").stat().st_size > 0
+    assert "# LIBERO closed-loop evaluation metrics" in (
+        output / "metrics.md"
+    ).read_text(encoding="utf-8")
     assert (output / "videos" / "episode_000.mp4").stat().st_size > 0
+    assert (output / "videos" / "episode_001.mp4").stat().st_size > 0
     assert not (output / ".incomplete").exists()
+    archive = rdf.load_archive(output / "rollout.rrd")
+    recordings = archive.all_recordings()
+    assert archive.num_recordings() == 2
+    assert len({recording.recording_id() for recording in recordings}) == 2
+    expected_names = {
+        "Episode 000 | seed=1000 | init=0 | failure:time_limit",
+        "Episode 001 | seed=1001 | init=1 | failure:time_limit",
+    }
+    observed_names: set[str] = set()
+    for recording in recordings:
+        properties = (
+            recording.view(index=None, contents="/__properties/**")
+            .select_static()
+            .read_all()
+            .to_pydict()
+        )
+        name = properties["property:RecordingInfo:name"][0][0]
+        observed_names.add(name)
+        episode_table = (
+            recording.view(
+                index="global_step",
+                contents="/rollout/context/episode_index",
+            )
+            .select()
+            .read_all()
+            .to_pydict()
+        )
+        assert episode_table["global_step"] == [0]
+        assert len(
+            {
+                int(value[0])
+                for value in episode_table[
+                    "/rollout/context/episode_index:Scalars:scalars"
+                ]
+            }
+        ) == 1
+    assert observed_names == expected_names
     table = pq.read_table(output / "rollouts.parquet")
     assert table.num_rows == 2
     assert table.column("init_state_id").to_pylist() == [0, 1]
@@ -186,6 +232,88 @@ def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
         for value in table["next_observation_joint_positions"].to_pylist()
     )
     assert all(len(value) == 20 for value in table["predicted_chunk"].to_pylist())
+
+
+def test_temporal_ensemble_override_is_runtime_only_and_queries_every_step(
+    tmp_path: Path,
+    random_act_checkpoint: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "libero-temporal-ensemble"
+    checkpoint_config = random_act_checkpoint / "config.json"
+    config_bytes_before = checkpoint_config.read_bytes()
+    reset_calls = 0
+    original_reset = ACTPolicy.reset
+
+    def tracking_reset(policy: ACTPolicy) -> None:
+        nonlocal reset_calls
+        reset_calls += 1
+        original_reset(policy)
+
+    monkeypatch.setattr(ACTPolicy, "reset", tracking_reset)
+    result = evaluate_libero(
+        LiberoEvaluationConfig(
+            policy_path=random_act_checkpoint,
+            suite="libero_object",
+            task_id=8,
+            n_episodes=2,
+            num_visualized_episodes=0,
+            n_action_steps=1,
+            temporal_ensemble_coeff=0.01,
+            output_dir=output,
+            max_steps=2,
+            open_viewer=False,
+        )
+    )
+
+    assert checkpoint_config.read_bytes() == config_bytes_before
+    assert reset_calls >= 3
+    assert result.metrics["aggregate"]["num_policy_steps"] == 4
+    assert result.metrics["aggregate"]["num_model_queries"] == 4
+    run_config = json.loads((output / "run_config.json").read_text(encoding="utf-8"))
+    execution = run_config["input"]["policy_execution"]
+    assert execution == {
+        "checkpoint_n_action_steps": 5,
+        "effective_n_action_steps": 1,
+        "n_action_steps_overridden": True,
+        "checkpoint_temporal_ensemble_coeff": None,
+        "effective_temporal_ensemble_coeff": 0.01,
+        "temporal_ensemble_coeff_overridden": True,
+    }
+
+
+def test_one_step_real_libero_rollout_writes_named_summary_recording(
+    tmp_path: Path,
+    random_act_checkpoint: Path,
+) -> None:
+    output = tmp_path / "libero-summary"
+    evaluate_libero(
+        LiberoEvaluationConfig(
+            policy_path=random_act_checkpoint,
+            suite="libero_object",
+            task_id=8,
+            n_episodes=1,
+            num_visualized_episodes=0,
+            output_dir=output,
+            max_steps=1,
+            open_viewer=False,
+        )
+    )
+
+    archive = rdf.load_archive(output / "rollout.rrd")
+    assert archive.num_recordings() == 1
+    recording = archive.all_recordings()[0]
+    properties = (
+        recording.view(index=None, contents="/__properties/**")
+        .select_static()
+        .read_all()
+        .to_pydict()
+    )
+    assert properties["property:RecordingInfo:name"] == [
+        ["LIBERO closed-loop evaluation summary"]
+    ]
+    assert not (output / "videos").exists()
+    assert not (output / ".incomplete").exists()
 
 
 def test_real_vector_final_info_and_controlled_init_state_sequence(

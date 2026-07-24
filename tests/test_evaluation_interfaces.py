@@ -21,10 +21,12 @@ class FakeLifecycleStream:
         events: list[str],
         *,
         fail_flush: bool = False,
+        fail_disconnect: bool = False,
     ) -> None:
         self.name = name
         self.events = events
         self.fail_flush = fail_flush
+        self.fail_disconnect = fail_disconnect
 
     def flush(self) -> None:
         self.events.append(f"flush:{self.name}")
@@ -33,6 +35,8 @@ class FakeLifecycleStream:
 
     def disconnect(self) -> None:
         self.events.append(f"disconnect:{self.name}")
+        if self.fail_disconnect:
+            raise RuntimeError(f"disconnect failed: {self.name}")
 
 
 def test_offline_episode_recording_state_is_independent_and_validates_timeline(
@@ -92,6 +96,113 @@ def test_offline_recording_cleanup_flushes_all_before_disconnect(
         "disconnect:823",
         "disconnect:826",
     ]
+
+
+def test_libero_episode_recording_state_is_independent_and_validates_timeline(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    first = libero.LiberoEpisodeRecording(
+        episode_index=0,
+        seed=1000,
+        init_state_id=0,
+        path=tmp_path / "000.rrd",
+        stream=FakeLifecycleStream("000", events),
+    )
+    second = libero.LiberoEpisodeRecording(
+        episode_index=1,
+        seed=1001,
+        init_state_id=1,
+        path=tmp_path / "001.rrd",
+        stream=FakeLifecycleStream("001", events),
+    )
+
+    assert first.trajectory_history is not second.trajectory_history
+    first.accept_step_index(0)
+    first.accept_step_index(2)
+    second.accept_step_index(0)
+
+    with pytest.raises(ValueError, match="monotonically"):
+        first.accept_step_index(1)
+    with pytest.raises(ValueError, match="start at step zero"):
+        libero.LiberoEpisodeRecording(
+            episode_index=2,
+            seed=1002,
+            init_state_id=2,
+            path=tmp_path / "002.rrd",
+            stream=FakeLifecycleStream("002", events),
+        ).accept_step_index(3)
+
+
+def test_libero_recording_cleanup_flushes_all_before_disconnect(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    recordings = [
+        libero.LiberoEpisodeRecording(
+            episode_index=0,
+            seed=1000,
+            init_state_id=0,
+            path=tmp_path / "000.rrd",
+            stream=FakeLifecycleStream("000", events, fail_flush=True),
+        ),
+        libero.LiberoEpisodeRecording(
+            episode_index=1,
+            seed=1001,
+            init_state_id=1,
+            path=tmp_path / "001.rrd",
+            stream=FakeLifecycleStream("001", events, fail_disconnect=True),
+        ),
+    ]
+
+    with pytest.raises(RuntimeError, match="flush failed: 000"):
+        libero.flush_and_disconnect_recordings(recordings)
+
+    assert events == [
+        "flush:000",
+        "flush:001",
+        "disconnect:000",
+        "disconnect:001",
+    ]
+    libero.flush_and_disconnect_recordings(recordings)
+    assert len(events) == 4
+
+
+@pytest.mark.parametrize(
+    ("success", "termination_reason", "expected"),
+    [
+        (
+            True,
+            "success",
+            "Episode 003 | seed=1003 | init=3 | success",
+        ),
+        (
+            False,
+            "time_limit",
+            "Episode 003 | seed=1003 | init=3 | failure:time_limit",
+        ),
+        (
+            False,
+            "environment_done",
+            "Episode 003 | seed=1003 | init=3 | failure:environment_done",
+        ),
+    ],
+)
+def test_libero_recording_name_is_exact(
+    success: bool,
+    termination_reason: str,
+    expected: str,
+) -> None:
+    assert (
+        libero.libero_episode_recording_name(
+            episode_index=3,
+            seed=1003,
+            init_state_id=3,
+            success=success,
+            termination_reason=termination_reason,
+        )
+        == expected
+    )
 
 
 def test_offline_parser_defaults_to_all_task_episodes() -> None:
@@ -233,6 +344,8 @@ def test_offline_camera_metadata_rejects_ambiguous_layout(feature: object) -> No
     [
         ("n_episodes", 0, "positive"),
         ("num_visualized_episodes", 2, "between"),
+        ("n_action_steps", 0, "positive"),
+        ("temporal_ensemble_coeff", float("nan"), "finite"),
         ("perturbation", "image_shift", "none"),
         ("max_steps", 281, "between"),
     ],
@@ -264,12 +377,104 @@ def test_libero_parser_defaults_match_approved_contract() -> None:
     assert args.task_id == 3
     assert args.n_episodes == 20
     assert args.num_visualized_episodes == 1
+    assert args.n_action_steps is None
+    assert args.temporal_ensemble_coeff is None
     assert args.perturbation == "none"
     assert args.proprio_noise_std == 0.01
     assert args.seed == 1000
     assert args.max_steps is None
     assert args.overwrite is False
     assert args.open_viewer is True
+
+
+def test_libero_parser_accepts_n_action_steps_override() -> None:
+    args = libero.build_argument_parser().parse_args(
+        [
+            "--policy-path=/tmp/checkpoint",
+            "--suite=libero_object",
+            "--task-id=8",
+            "--n-action-steps=1",
+        ]
+    )
+    assert args.n_action_steps == 1
+
+
+def test_libero_parser_accepts_temporal_ensemble_override() -> None:
+    args = libero.build_argument_parser().parse_args(
+        [
+            "--policy-path=/tmp/checkpoint",
+            "--suite=libero_object",
+            "--task-id=8",
+            "--n-action-steps=1",
+            "--temporal-ensemble-coeff=0.01",
+        ]
+    )
+    assert args.n_action_steps == 1
+    assert args.temporal_ensemble_coeff == 0.01
+
+
+@pytest.mark.parametrize("n_action_steps", [None, 2])
+def test_temporal_ensemble_override_requires_explicit_single_step(
+    n_action_steps: int | None,
+) -> None:
+    config = libero.LiberoEvaluationConfig(
+        policy_path=Path("checkpoint"),
+        suite="libero_object",
+        task_id=8,
+        n_episodes=1,
+        n_action_steps=n_action_steps,
+        temporal_ensemble_coeff=0.01,
+    )
+    with pytest.raises(ValueError, match="explicit --n-action-steps=1"):
+        libero.validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("override", "chunk_size", "temporal_ensemble_coeff", "expected"),
+    [
+        (None, 20, None, 5),
+        (1, 20, None, 1),
+        (2, 20, None, 2),
+        (1, 20, 0.01, 1),
+    ],
+)
+def test_resolve_n_action_steps(
+    override: int | None,
+    chunk_size: int,
+    temporal_ensemble_coeff: float | None,
+    expected: int,
+) -> None:
+    assert (
+        libero.resolve_n_action_steps(
+            checkpoint_n_action_steps=5,
+            override=override,
+            chunk_size=chunk_size,
+            temporal_ensemble_coeff=temporal_ensemble_coeff,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("override", "chunk_size", "temporal_ensemble_coeff", "message"),
+    [
+        (21, 20, None, "cannot exceed"),
+        (2, 20, 0.01, "must equal 1"),
+    ],
+)
+def test_resolve_n_action_steps_rejects_incompatible_override(
+    override: int,
+    chunk_size: int,
+    temporal_ensemble_coeff: float | None,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        libero.resolve_n_action_steps(
+            checkpoint_n_action_steps=5,
+            override=override,
+            chunk_size=chunk_size,
+            temporal_ensemble_coeff=temporal_ensemble_coeff,
+        )
 
 
 def test_evaluator_parsers_accept_explicit_overwrite() -> None:

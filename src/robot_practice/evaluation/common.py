@@ -28,6 +28,13 @@ import torch
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.envs.configs import EnvConfig
 from lerobot.policies.act.configuration_act import ACTConfig
+
+try:
+    from robot_practice.policies.act_delta.configuration_act_delta import (
+        ACTDeltaConfig,  # noqa: F401
+    )
+except Exception:  # pragma: no cover - defensive import if package is temporarily unavailable
+    ACTDeltaConfig = None
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 
 LOGGER = logging.getLogger(__name__)
@@ -62,6 +69,8 @@ class LoadedACT:
     policy: torch.nn.Module
     preprocessor: Any
     postprocessor: Any
+    checkpoint_n_action_steps: int
+    checkpoint_temporal_ensemble_coeff: float | None
 
 
 @dataclass(frozen=True)
@@ -282,9 +291,11 @@ def validate_complete_checkpoint(policy_path: Path) -> CheckpointManifest:
         )
 
     policy_config = read_json(path / "config.json")
-    if policy_config.get("type") != "act":
+    checkpoint_type = policy_config.get("type")
+    if checkpoint_type not in {"act", "act_delta"}:
         raise ValueError(
-            f"Expected an ACT checkpoint (config type 'act'), got {policy_config.get('type')!r}"
+            "Expected an ACT checkpoint (config type 'act' or 'act_delta'), got "
+            f"{checkpoint_type!r}"
         )
 
     state_files: list[Path] = []
@@ -306,8 +317,10 @@ def load_act_checkpoint(
     *,
     dataset_metadata: Any | None = None,
     env_config: EnvConfig | None = None,
+    n_action_steps_override: int | None = None,
+    temporal_ensemble_coeff_override: float | None = None,
 ) -> LoadedACT:
-    """Load policy weights and saved processors without modifying site-packages."""
+    """Load policy weights with optional in-memory evaluation execution overrides."""
 
     if (dataset_metadata is None) == (env_config is None):
         raise ValueError("Provide exactly one of dataset_metadata or env_config")
@@ -319,6 +332,13 @@ def load_act_checkpoint(
     if not isinstance(config, ACTConfig):
         raise TypeError(f"Expected ACTConfig, got {type(config).__name__}")
     config.pretrained_path = manifest.path
+    checkpoint_n_action_steps = config.n_action_steps
+    checkpoint_temporal_ensemble_coeff = config.temporal_ensemble_coeff
+    if n_action_steps_override is not None:
+        config.n_action_steps = n_action_steps_override
+    if temporal_ensemble_coeff_override is not None:
+        config.temporal_ensemble_coeff = temporal_ensemble_coeff_override
+    validate_act_execution_config(config)
     validate_act_libero_contract(config)
 
     policy = make_policy(
@@ -338,7 +358,38 @@ def load_act_checkpoint(
         policy=policy,
         preprocessor=preprocessor,
         postprocessor=postprocessor,
+        checkpoint_n_action_steps=checkpoint_n_action_steps,
+        checkpoint_temporal_ensemble_coeff=checkpoint_temporal_ensemble_coeff,
     )
+
+
+def validate_act_execution_config(config: ACTConfig) -> None:
+    """Validate effective ACT execution settings before policy construction."""
+
+    if config.n_action_steps <= 0:
+        raise ValueError("Effective n_action_steps must be positive")
+    if config.n_action_steps > config.chunk_size:
+        raise ValueError(
+            "--n-action-steps cannot exceed checkpoint chunk_size: "
+            f"{config.n_action_steps} > {config.chunk_size}"
+        )
+    coeff = config.temporal_ensemble_coeff
+    if coeff is None:
+        return
+    if not math.isfinite(coeff):
+        raise ValueError("--temporal-ensemble-coeff must be finite")
+    weights = torch.exp(
+        -torch.tensor(coeff, dtype=torch.float32)
+        * torch.arange(config.chunk_size, dtype=torch.float32)
+    )
+    if not bool(torch.isfinite(weights).all()):
+        raise ValueError(
+            "--temporal-ensemble-coeff produces non-finite float32 ensemble weights"
+        )
+    if config.n_action_steps != 1:
+        raise ValueError(
+            "--n-action-steps must equal 1 when temporal ensembling is enabled"
+        )
 
 
 def validate_act_libero_contract(config: ACTConfig) -> None:
@@ -514,7 +565,7 @@ def _valid_run_config_sentinel(path: Path, *, mode: str) -> bool:
         and payload.get("status") in {"incomplete", "smoke", "complete"}
         and isinstance(payload.get("created_at"), str)
         and isinstance(payload.get("policy"), dict)
-        and payload["policy"].get("type") == "act"
+        and payload["policy"].get("type") in {"act", "act_delta"}
         and isinstance(payload.get("runtime"), dict)
         and isinstance(payload.get("input"), dict)
         and isinstance(payload.get("arguments"), dict)
@@ -653,7 +704,7 @@ def build_run_config(
         "created_at": iso_timestamp(),
         "policy": {
             "path": loaded.manifest.path,
-            "type": "act",
+            "type": loaded.manifest.policy_config.get("type", "act"),
             "config": loaded.manifest.policy_config,
             "train_config": loaded.manifest.train_config,
         },
@@ -755,7 +806,9 @@ def launch_rerun_viewer(recording_path: Path, *, enabled: bool) -> bool:
 
     if not enabled:
         return False
-    rerun_binary = shutil.which("rerun")
+    rerun_binary = shutil.which("robot-rerun")
+    if rerun_binary is None:
+        rerun_binary = shutil.which("rerun")
     if rerun_binary is None:
         LOGGER.warning(
             "Rerun viewer executable is unavailable; recording saved at %s",

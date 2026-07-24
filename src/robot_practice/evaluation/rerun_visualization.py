@@ -794,6 +794,41 @@ def initialize_offline_recording_stream(
     return stream
 
 
+def initialize_libero_recording_stream(
+    *,
+    output_path: Path,
+    recording_id: str,
+    camera_keys: Sequence[str],
+    fps: float,
+    agentview_calibration: FixedCameraCalibration,
+    agentview_image_convention: str,
+) -> rr.RecordingStream:
+    """Create one explicitly routed LIBERO Recording with its own file sink."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    stream = rr.RecordingStream(
+        "robot_practice_act_libero",
+        recording_id=recording_id,
+    )
+    try:
+        stream.save(output_path)
+        log_libero_static_context(
+            stream,
+            agentview_calibration=agentview_calibration,
+            agentview_image_convention=agentview_image_convention,
+        )
+        rr.send_blueprint(
+            build_libero_blueprint(camera_keys, fps),
+            make_active=False,
+            make_default=True,
+            recording=stream,
+        )
+    except BaseException:
+        stream.disconnect()
+        raise
+    return stream
+
+
 def stage_merged_recordings(
     recording_paths: Sequence[Path],
     output_path: Path,

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
+import sys
 import time
+import uuid
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -14,6 +17,7 @@ import gymnasium as gym
 import numpy as np
 import pyarrow as pa
 import rerun as rr
+import rerun.dataframe as rdf
 import torch
 from tqdm import trange
 
@@ -51,13 +55,14 @@ from robot_practice.evaluation.libero_tasks import (
     resolve_libero_task,
 )
 from robot_practice.evaluation.metrics import compute_closed_loop_metrics
+from robot_practice.evaluation.metrics_report import write_metrics_report
 from robot_practice.evaluation.rerun_visualization import (
     LiberoTrajectoryHistory,
-    finish_recording,
     image_to_hwc_uint8,
-    initialize_recording,
+    initialize_libero_recording_stream,
     log_libero_step,
     log_metric_summary,
+    stage_merged_recordings,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -78,6 +83,8 @@ class LiberoEvaluationConfig:
     task_id: int
     n_episodes: int = 20
     num_visualized_episodes: int = 1
+    n_action_steps: int | None = None
+    temporal_ensemble_coeff: float | None = None
     perturbation: str = "none"
     proprio_noise_std: float = 0.01
     seed: int = 1000
@@ -92,6 +99,165 @@ class LiberoEvaluationResult:
     output_dir: Path
     metrics: dict[str, Any]
     viewer_opened: bool
+
+
+@dataclass
+class LiberoEpisodeRecording:
+    episode_index: int | None
+    seed: int | None
+    init_state_id: int | None
+    path: Path
+    stream: rr.RecordingStream
+    trajectory_history: LiberoTrajectoryHistory = field(
+        default_factory=LiberoTrajectoryHistory
+    )
+    previous_step_index: int | None = None
+    final_name: str | None = None
+    final_name_sent: bool = False
+    flush_attempted: bool = False
+    disconnect_attempted: bool = False
+
+    def accept_step_index(self, step_index: int) -> None:
+        if self.previous_step_index is None:
+            if step_index != 0:
+                raise ValueError(
+                    f"LIBERO episode {self.episode_index} must start at step zero, "
+                    f"got {step_index}"
+                )
+        elif step_index <= self.previous_step_index:
+            raise ValueError(
+                f"LIBERO episode {self.episode_index} step indices must be "
+                f"monotonically increasing, got {self.previous_step_index} then "
+                f"{step_index}"
+            )
+        self.previous_step_index = step_index
+
+    def send_final_name(self, name: str) -> None:
+        if self.final_name_sent:
+            raise RuntimeError(
+                f"LIBERO episode {self.episode_index} Recording name was already sent"
+            )
+        self.stream.send_recording_name(name)
+        self.final_name = name
+        self.final_name_sent = True
+
+
+def flush_and_disconnect_recordings(
+    recordings: Sequence[LiberoEpisodeRecording],
+) -> None:
+    """Attempt every unattempted flush before every unattempted disconnect."""
+
+    errors: list[BaseException] = []
+    for recording in recordings:
+        if recording.flush_attempted:
+            continue
+        try:
+            recording.stream.flush()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            recording.flush_attempted = True
+    for recording in recordings:
+        if recording.disconnect_attempted:
+            continue
+        try:
+            recording.stream.disconnect()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            recording.disconnect_attempted = True
+    if errors:
+        raise errors[0]
+
+
+def libero_episode_recording_name(
+    *,
+    episode_index: int,
+    seed: int,
+    init_state_id: int,
+    success: bool,
+    termination_reason: str,
+) -> str:
+    outcome = "success" if success else f"failure:{termination_reason}"
+    return (
+        f"Episode {episode_index:03d} | seed={seed} | init={init_state_id} | {outcome}"
+    )
+
+
+LIBERO_SUMMARY_RECORDING_NAME = "LIBERO closed-loop evaluation summary"
+
+
+def verify_libero_recording_archive(
+    archive_path: Path,
+    recordings: Sequence[LiberoEpisodeRecording],
+) -> None:
+    """Verify selector-visible names and episode isolation in a merged RRD."""
+
+    archive = rdf.load_archive(archive_path)
+    if archive.num_recordings() != len(recordings):
+        raise RuntimeError(
+            "Merged LIBERO RRD contains an unexpected number of Recordings: "
+            f"expected {len(recordings)}, got {archive.num_recordings()}"
+        )
+    recording_ids = [recording.recording_id() for recording in archive.all_recordings()]
+    if len(set(recording_ids)) != len(recording_ids):
+        raise RuntimeError("Merged LIBERO RRD contains duplicate Recording IDs")
+    expected_by_name = {
+        recording.final_name: recording
+        for recording in recordings
+        if recording.final_name is not None
+    }
+    if len(expected_by_name) != len(recordings):
+        raise RuntimeError("Every LIBERO Recording must have one unique final name")
+
+    observed_names: set[str] = set()
+    for recording in archive.all_recordings():
+        properties = (
+            recording.view(index=None, contents="/__properties/**")
+            .select_static()
+            .read_all()
+            .to_pydict()
+        )
+        name_values = properties.get("property:RecordingInfo:name")
+        if name_values is None or len(name_values) != 1 or len(name_values[0]) != 1:
+            raise RuntimeError(
+                f"LIBERO Recording {recording.recording_id()} has no exact final name"
+            )
+        name = str(name_values[0][0])
+        expected = expected_by_name.get(name)
+        if expected is None:
+            raise RuntimeError(f"Unexpected LIBERO Recording name: {name}")
+        observed_names.add(name)
+        if expected.episode_index is None:
+            continue
+        episode_table = (
+            recording.view(
+                index="global_step",
+                contents="/rollout/context/episode_index",
+            )
+            .select()
+            .read_all()
+            .to_pydict()
+        )
+        timeline = episode_table.get("global_step", [])
+        episode_values = episode_table.get(
+            "/rollout/context/episode_index:Scalars:scalars",
+            [],
+        )
+        if not timeline or timeline[0] != 0:
+            raise RuntimeError(
+                f"LIBERO Recording {name} timeline does not start at zero"
+            )
+        observed_episode_indices = {
+            int(value[0]) for value in episode_values if value is not None and len(value)
+        }
+        if observed_episode_indices != {expected.episode_index}:
+            raise RuntimeError(
+                f"LIBERO Recording {name} contains episode indices "
+                f"{sorted(observed_episode_indices)}"
+            )
+    if observed_names != set(expected_by_name):
+        raise RuntimeError("Merged LIBERO RRD is missing expected Recording names")
 
 
 @dataclass(frozen=True)
@@ -113,6 +279,15 @@ def validate_config(
         raise ValueError(
             "--num-visualized-episodes must be between zero and --n-episodes"
         )
+    if config.n_action_steps is not None and config.n_action_steps <= 0:
+        raise ValueError("--n-action-steps must be positive")
+    if config.temporal_ensemble_coeff is not None:
+        if not np.isfinite(config.temporal_ensemble_coeff):
+            raise ValueError("--temporal-ensemble-coeff must be finite")
+        if config.n_action_steps != 1:
+            raise ValueError(
+                "--temporal-ensemble-coeff requires explicit --n-action-steps=1"
+            )
     if config.perturbation not in PERTURBATION_MODES:
         raise ValueError(
             f"--perturbation must be one of {', '.join(PERTURBATION_MODES)}"
@@ -128,6 +303,30 @@ def validate_config(
             f"--max-steps must be between 1 and {task.episode_length} for {task.suite}"
         )
     return task
+
+
+def resolve_n_action_steps(
+    *,
+    checkpoint_n_action_steps: int,
+    override: int | None,
+    chunk_size: int,
+    temporal_ensemble_coeff: float | None,
+) -> int:
+    """Resolve and validate an evaluation-only ACT execution horizon override."""
+
+    effective = checkpoint_n_action_steps if override is None else override
+    if effective <= 0:
+        raise ValueError("Effective n_action_steps must be positive")
+    if effective > chunk_size:
+        raise ValueError(
+            "--n-action-steps cannot exceed checkpoint chunk_size: "
+            f"{effective} > {chunk_size}"
+        )
+    if temporal_ensemble_coeff is not None and effective != 1:
+        raise ValueError(
+            "--n-action-steps must equal 1 when checkpoint temporal ensembling is enabled"
+        )
+    return effective
 
 
 def make_libero_config(task: LiberoTaskIdentity) -> LiberoEnv:
@@ -496,7 +695,19 @@ def evaluate_libero(
     checkpoint_assessment = assess_checkpoint_task(manifest, task)
     log_checkpoint_task_assessment(checkpoint_assessment, LOGGER)
     env_config = make_libero_config(task)
-    loaded = load_act_checkpoint(manifest, env_config=env_config)
+    loaded = load_act_checkpoint(
+        manifest,
+        env_config=env_config,
+        n_action_steps_override=config.n_action_steps,
+        temporal_ensemble_coeff_override=config.temporal_ensemble_coeff,
+    )
+    checkpoint_n_action_steps = loaded.checkpoint_n_action_steps
+    checkpoint_temporal_ensemble_coeff = (
+        loaded.checkpoint_temporal_ensemble_coeff
+    )
+    effective_n_action_steps = loaded.config.n_action_steps
+    effective_temporal_ensemble_coeff = loaded.config.temporal_ensemble_coeff
+    loaded.policy.reset()
 
     step_limit = config.max_steps or task.episode_length
     formal = step_limit == task.episode_length
@@ -516,7 +727,18 @@ def evaluate_libero(
     )
     LOGGER.info("[Evaluation] episode step limit: %d", step_limit)
     LOGGER.info("[Evaluation] chunk_size: %d", loaded.config.chunk_size)
-    LOGGER.info("[Evaluation] n_action_steps: %d", loaded.config.n_action_steps)
+    LOGGER.info(
+        "[Evaluation] n_action_steps: checkpoint=%d effective=%d override=%s",
+        checkpoint_n_action_steps,
+        effective_n_action_steps,
+        config.n_action_steps is not None,
+    )
+    LOGGER.info(
+        "[Evaluation] temporal_ensemble_coeff: checkpoint=%s effective=%s override=%s",
+        checkpoint_temporal_ensemble_coeff,
+        effective_temporal_ensemble_coeff,
+        config.temporal_ensemble_coeff is not None,
+    )
     LOGGER.info("[Evaluation] perturbation: %s", config.perturbation)
     if config.perturbation == "proprio_gaussian":
         LOGGER.info(
@@ -535,6 +757,20 @@ def evaluate_libero(
         "observation_size": [256, 256],
         "episode_length": task.episode_length,
         "control_frequency_hz": CONTROL_FREQUENCY_HZ,
+        "policy_execution": {
+            "checkpoint_n_action_steps": checkpoint_n_action_steps,
+            "effective_n_action_steps": effective_n_action_steps,
+            "n_action_steps_overridden": config.n_action_steps is not None,
+            "checkpoint_temporal_ensemble_coeff": (
+                checkpoint_temporal_ensemble_coeff
+            ),
+            "effective_temporal_ensemble_coeff": (
+                effective_temporal_ensemble_coeff
+            ),
+            "temporal_ensemble_coeff_overridden": (
+                config.temporal_ensemble_coeff is not None
+            ),
+        },
         "seeds": [config.seed + episode for episode in range(config.n_episodes)],
         "init_state_ids": list(range(config.n_episodes)),
         "perturbation": {
@@ -592,7 +828,9 @@ def evaluate_libero(
         raise
 
     recording_path = output_dir / "rollout.rrd"
-    recording_initialized = False
+    temporary_recording_dir = output_dir / ".rerun_recordings"
+    episode_recordings: list[LiberoEpisodeRecording] = []
+    episode_recording_by_index: dict[int, LiberoEpisodeRecording] = {}
     rollout_rows: list[dict[str, Any]] = []
     episode_results: list[dict[str, Any]] = []
     global_step = 0
@@ -601,18 +839,42 @@ def evaluate_libero(
         n_action_steps=loaded.config.n_action_steps,
         temporal_ensemble_coeff=loaded.config.temporal_ensemble_coeff,
     )
-    trajectory_history = LiberoTrajectoryHistory()
+    publication_ready = False
 
     try:
-        initialize_recording(
-            output_path=recording_path,
-            mode="libero",
-            camera_keys=CAMERA_KEYS,
-            fps=CONTROL_FREQUENCY_HZ,
-            agentview_calibration=agentview_calibration,
-            agentview_image_convention="lerobot_180",
+        temporary_recording_dir.mkdir(parents=True, exist_ok=False)
+        recording_episode_indices: tuple[int | None, ...] = (
+            tuple(range(config.num_visualized_episodes))
+            if config.num_visualized_episodes
+            else (None,)
         )
-        recording_initialized = True
+        for episode_index in recording_episode_indices:
+            filename = (
+                "summary.rrd"
+                if episode_index is None
+                else f"episode_{episode_index:03d}.rrd"
+            )
+            temporary_path = temporary_recording_dir / filename
+            stream = initialize_libero_recording_stream(
+                output_path=temporary_path,
+                recording_id=str(uuid.uuid4()),
+                camera_keys=CAMERA_KEYS,
+                fps=CONTROL_FREQUENCY_HZ,
+                agentview_calibration=agentview_calibration,
+                agentview_image_convention="lerobot_180",
+            )
+            episode_recording = LiberoEpisodeRecording(
+                episode_index=episode_index,
+                seed=(
+                    None if episode_index is None else config.seed + episode_index
+                ),
+                init_state_id=episode_index,
+                path=temporary_path,
+                stream=stream,
+            )
+            episode_recordings.append(episode_recording)
+            if episode_index is not None:
+                episode_recording_by_index[episode_index] = episode_recording
         with ModelQueryTimer(loaded.policy, loaded.config.device) as model_timer:
             for episode_index in trange(
                 config.n_episodes,
@@ -637,7 +899,8 @@ def evaluate_libero(
                 model_latencies: list[float] = []
                 success_seen = False
                 termination_reason: str | None = None
-                visualized = episode_index < config.num_visualized_episodes
+                episode_recording = episode_recording_by_index.get(episode_index)
+                visualized = episode_recording is not None
                 video_frames: list[np.ndarray] = []
 
                 for step_index in range(step_limit):
@@ -748,9 +1011,14 @@ def evaluate_libero(
                         prepared.state[6:8],
                     )
                     if visualized:
+                        if episode_recording is None:
+                            raise RuntimeError(
+                                "Visualized LIBERO episode has no RecordingStream"
+                            )
+                        episode_recording.accept_step_index(step_index)
                         log_libero_step(
-                            rr,
-                            global_step=global_step,
+                            episode_recording.stream,
+                            global_step=step_index,
                             episode_index=episode_index,
                             step_index=step_index,
                             observation_state=prepared.state,
@@ -763,7 +1031,7 @@ def evaluate_libero(
                             ),
                             measured_pose=measured_pose,
                             display_frame=kinematics.display_frame,
-                            trajectory_history=trajectory_history,
+                            trajectory_history=episode_recording.trajectory_history,
                             action=executed_action,
                             queued_actions=queued_actions,
                             discarded_actions=discarded_actions,
@@ -859,6 +1127,19 @@ def evaluate_libero(
                     }
                 )
                 if visualized:
+                    if episode_recording is None:
+                        raise RuntimeError(
+                            "Visualized LIBERO episode has no RecordingStream"
+                        )
+                    episode_recording.send_final_name(
+                        libero_episode_recording_name(
+                            episode_index=episode_index,
+                            seed=episode_seed,
+                            init_state_id=init_state_id,
+                            success=success_seen,
+                            termination_reason=termination_reason,
+                        )
+                    )
                     videos_dir = output_dir / "videos"
                     videos_dir.mkdir(parents=True, exist_ok=True)
                     write_video(
@@ -887,29 +1168,68 @@ def evaluate_libero(
             formal=formal,
             elapsed_s=elapsed_s,
         )
-        log_metric_summary(rr, metrics)
+        if config.num_visualized_episodes == 0:
+            if len(episode_recordings) != 1:
+                raise RuntimeError("Summary-only LIBERO evaluation requires one Recording")
+            episode_recordings[0].send_final_name(LIBERO_SUMMARY_RECORDING_NAME)
+        for episode_recording in episode_recordings:
+            log_metric_summary(episode_recording.stream, metrics)
+        write_metrics_report(output_dir, metrics)
         write_json_atomic(output_dir / "metrics.json", metrics)
         write_json_atomic(output_dir / "eval_info.json", eval_info)
         table = pa.Table.from_pylist(rollout_rows, schema=_rollout_schema())
         write_parquet_atomic(output_dir / "rollouts.parquet", table)
 
-        finish_recording()
-        recording_initialized = False
+        flush_and_disconnect_recordings(episode_recordings)
+        staging_path = stage_merged_recordings(
+            [recording.path for recording in episode_recordings],
+            recording_path,
+        )
+        verify_libero_recording_archive(staging_path, episode_recordings)
+        staging_path.replace(recording_path)
         if not recording_path.is_file() or recording_path.stat().st_size == 0:
             raise RuntimeError(f"Rerun recording was not written: {recording_path}")
         run_config["status"] = status
         write_json_atomic(output_dir / "run_config.json", run_config)
-        mark_run_complete(output_dir)
+        shutil.rmtree(temporary_recording_dir)
+        publication_ready = True
     finally:
-        if recording_initialized:
-            finish_recording()
-        kinematics.close()
-        close_envs(envs)
-        release_output_directory_lock(output_dir)
+        active_exception = sys.exc_info()[0] is not None
+        cleanup_errors: list[BaseException] = []
+        try:
+            flush_and_disconnect_recordings(episode_recordings)
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+            LOGGER.exception("[Output] Failed to close every temporary Rerun recording")
+        try:
+            kinematics.close()
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+            LOGGER.exception("[Environment] Failed to close Panda kinematics")
+        try:
+            close_envs(envs)
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+            LOGGER.exception("[Environment] Failed to close LIBERO environments")
+        if not cleanup_errors and publication_ready and not active_exception:
+            try:
+                mark_run_complete(output_dir)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+                LOGGER.exception("[Output] Failed to mark LIBERO evaluation complete")
+        else:
+            try:
+                release_output_directory_lock(output_dir)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+                LOGGER.exception("[Output] Failed to release output directory lock")
+        if cleanup_errors and not active_exception:
+            raise cleanup_errors[0]
 
     viewer_opened = launch_rerun_viewer(recording_path, enabled=config.open_viewer)
     log_terminal_metrics(metrics, LOGGER)
     LOGGER.info("[Output] metrics: %s", output_dir / "metrics.json")
+    LOGGER.info("[Output] metrics summary: %s", output_dir / "metrics.md")
     LOGGER.info("[Output] eval info: %s", output_dir / "eval_info.json")
     LOGGER.info("[Output] rollouts: %s", output_dir / "rollouts.parquet")
     LOGGER.info("[Output] Rerun recording: %s", recording_path)
@@ -945,6 +1265,22 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--n-episodes", type=int, default=20)
     parser.add_argument("--num-visualized-episodes", type=int, default=1)
+    parser.add_argument(
+        "--n-action-steps",
+        type=int,
+        help=(
+            "Evaluation-only ACT execution horizon; defaults to the checkpoint value "
+            "and must not exceed chunk_size"
+        ),
+    )
+    parser.add_argument(
+        "--temporal-ensemble-coeff",
+        type=float,
+        help=(
+            "Evaluation-only ACT temporal ensemble coefficient; requires explicit "
+            "--n-action-steps=1 and defaults to the checkpoint value"
+        ),
+    )
     parser.add_argument(
         "--perturbation",
         choices=PERTURBATION_MODES,
