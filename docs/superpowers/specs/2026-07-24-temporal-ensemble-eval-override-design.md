@@ -36,13 +36,15 @@ Resolve both runtime overrides before calling LeRobot's policy constructor:
 4. Validate:
    - `1 <= n_action_steps <= chunk_size`;
    - temporal-ensemble coefficient is finite when present;
+   - the resulting LeRobot float32 exponential weights are finite;
    - temporal ensembling requires `n_action_steps == 1`;
    - a command-line coefficient override requires an explicit
      `--n-action-steps=1`.
 5. Construct the policy and processors from the effective in-memory config.
 
-Do not rewrite any checkpoint file. Reset the policy at every episode boundary so
-temporal-ensemble history cannot leak between rollouts.
+The new loader overrides default to absent, preserving the existing offline evaluator
+and every other caller. Do not rewrite any checkpoint file. Reset the policy at every
+episode boundary so temporal-ensemble history cannot leak between rollouts.
 
 ## Result provenance
 
@@ -81,9 +83,14 @@ Cover:
 - explicit coefficient without explicit `--n-action-steps=1`;
 - ensemble with an effective horizon other than 1;
 - horizon larger than `chunk_size`;
-- construction of a real policy with an ensembler;
+- coefficient values whose float32 exponential weights overflow;
+- construction of a real policy with an ensembler, including a fresh chunk query on
+  consecutive `select_action()` calls and cleared history after `reset()`;
+- unchanged checkpoint bytes and reset ensemble history across episode boundaries;
+- unchanged offline loading when no override is provided;
 - checkpoint/effective provenance in `run_config.json`;
 - a bounded real LIBERO smoke evaluation.
 
 Update the temporal-ensemble experiment guide after implementation so its command is
-directly runnable and no longer marked as unavailable.
+directly runnable, its unavailable statement is removed, and its implementation-status
+section does not contradict the completed behavior.
