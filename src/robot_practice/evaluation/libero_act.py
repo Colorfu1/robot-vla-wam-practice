@@ -66,6 +66,9 @@ CONTROL_FREQUENCY_HZ = 10.0
 RAW_CAMERAS = ("agentview_image", "robot0_eye_in_hand_image")
 CAMERA_KEYS = ("observation.images.image", "observation.images.image2")
 STATE_KEY = "observation.state"
+PERTURBATION_MODES = ("none", "proprio_gaussian")
+PROPRIO_NOISE_SPACE = "checkpoint_normalized_observation.state"
+_PROPRIO_NOISE_DOMAIN = 0xA17C0DE
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,7 @@ class LiberoEvaluationConfig:
     n_episodes: int = 20
     num_visualized_episodes: int = 1
     perturbation: str = "none"
+    proprio_noise_std: float = 0.01
     seed: int = 1000
     output_dir: Path | None = None
     overwrite: bool = False
@@ -109,8 +113,12 @@ def validate_config(
         raise ValueError(
             "--num-visualized-episodes must be between zero and --n-episodes"
         )
-    if config.perturbation != "none":
-        raise ValueError("Only --perturbation=none is implemented in the first version")
+    if config.perturbation not in PERTURBATION_MODES:
+        raise ValueError(
+            f"--perturbation must be one of {', '.join(PERTURBATION_MODES)}"
+        )
+    if not np.isfinite(config.proprio_noise_std) or config.proprio_noise_std <= 0:
+        raise ValueError("--proprio-noise-std must be finite and positive")
     if config.seed < 0:
         raise ValueError("--seed must be non-negative")
     if config.overwrite and config.output_dir is None:
@@ -175,6 +183,16 @@ def _rollout_schema() -> pa.Schema:
             pa.field("timestamp_s", pa.float64(), nullable=False),
             pa.field("observation_state", pa.list_(pa.float32(), 8), nullable=False),
             pa.field(
+                "policy_state_normalized_clean",
+                pa.list_(pa.float32(), 8),
+                nullable=False,
+            ),
+            pa.field(
+                "policy_state_normalized_input",
+                pa.list_(pa.float32(), 8),
+                nullable=False,
+            ),
+            pa.field(
                 "next_observation_state",
                 pa.list_(pa.float32(), 8),
                 nullable=False,
@@ -209,13 +227,55 @@ def _rollout_schema() -> pa.Schema:
             pa.field("visualized", pa.bool_(), nullable=False),
         ],
         metadata={
-            b"schema_version": b"3",
+            b"schema_version": b"4",
             b"action_dimension": b"7",
             b"state_dimension": b"8",
             b"arm_joint_dimension": b"7",
             b"control_frequency_hz": b"10.0",
         },
     )
+
+
+def prepare_policy_input(
+    processed_observation: dict[str, Any],
+    *,
+    perturbation: str,
+    proprio_noise_std: float,
+    seed: int,
+    episode_index: int,
+    step_index: int,
+) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
+    """Apply deterministic noise only to the checkpoint-normalized policy state."""
+
+    if perturbation not in PERTURBATION_MODES:
+        raise ValueError(f"Unknown perturbation mode: {perturbation}")
+    state = processed_observation.get(STATE_KEY)
+    if not isinstance(state, torch.Tensor) or tuple(state.shape) != (1, 8):
+        actual = type(state).__name__ if not isinstance(state, torch.Tensor) else state.shape
+        raise ValueError(
+            f"Processed {STATE_KEY} must be a tensor with shape (1, 8), got {actual}"
+        )
+    if not bool(torch.isfinite(state).all()):
+        raise ValueError(f"Processed {STATE_KEY} contains non-finite values")
+
+    clean = state.detach().cpu().float().numpy()[0].copy()
+    if perturbation == "none":
+        return processed_observation, clean, clean.copy()
+
+    seed_sequence = np.random.SeedSequence(
+        [seed, episode_index, step_index, _PROPRIO_NOISE_DOMAIN]
+    )
+    noise = np.random.default_rng(seed_sequence).normal(
+        loc=0.0,
+        scale=proprio_noise_std,
+        size=tuple(state.shape),
+    )
+    noisy_state = state.clone()
+    noisy_state.add_(torch.as_tensor(noise, dtype=state.dtype, device=state.device))
+    policy_input = dict(processed_observation)
+    policy_input[STATE_KEY] = noisy_state
+    noisy = noisy_state.detach().cpu().float().numpy()[0].copy()
+    return policy_input, clean, noisy
 
 
 def _autocast_context(device: str, use_amp: bool) -> Any:
@@ -458,6 +518,12 @@ def evaluate_libero(
     LOGGER.info("[Evaluation] chunk_size: %d", loaded.config.chunk_size)
     LOGGER.info("[Evaluation] n_action_steps: %d", loaded.config.n_action_steps)
     LOGGER.info("[Evaluation] perturbation: %s", config.perturbation)
+    if config.perturbation == "proprio_gaussian":
+        LOGGER.info(
+            "[Evaluation] proprioception noise: std=%g in %s",
+            config.proprio_noise_std,
+            PROPRIO_NOISE_SPACE,
+        )
     LOGGER.info("[Evaluation] status: %s", status)
     LOGGER.info("[Output] directory: %s", output_dir)
     input_config = {
@@ -471,6 +537,20 @@ def evaluate_libero(
         "control_frequency_hz": CONTROL_FREQUENCY_HZ,
         "seeds": [config.seed + episode for episode in range(config.n_episodes)],
         "init_state_ids": list(range(config.n_episodes)),
+        "perturbation": {
+            "name": config.perturbation,
+            "proprio_noise_std": (
+                config.proprio_noise_std
+                if config.perturbation == "proprio_gaussian"
+                else None
+            ),
+            "noise_seed": config.seed,
+            "space": (
+                PROPRIO_NOISE_SPACE
+                if config.perturbation == "proprio_gaussian"
+                else None
+            ),
+        },
     }
     run_config = build_run_config(
         status="incomplete",
@@ -564,6 +644,18 @@ def evaluate_libero(
                     processed_observation = loaded.preprocessor(
                         prepared.policy_observation
                     )
+                    (
+                        policy_input,
+                        policy_state_normalized_clean,
+                        policy_state_normalized_input,
+                    ) = prepare_policy_input(
+                        processed_observation,
+                        perturbation=config.perturbation,
+                        proprio_noise_std=config.proprio_noise_std,
+                        seed=config.seed,
+                        episode_index=episode_index,
+                        step_index=step_index,
+                    )
 
                     model_timer.begin_step()
                     with torch.inference_mode(), _autocast_context(
@@ -571,7 +663,7 @@ def evaluate_libero(
                     ):
                         action_policy, policy_latency_ms = timed_call(
                             loaded.policy.select_action,
-                            processed_observation,
+                            policy_input,
                             device=loaded.config.device,
                         )
                     model_latency_ms = model_timer.current_latency_ms
@@ -663,6 +755,12 @@ def evaluate_libero(
                             step_index=step_index,
                             observation_state=prepared.state,
                             next_observation_state=next_prepared.state,
+                            policy_state_normalized_clean=(
+                                policy_state_normalized_clean
+                            ),
+                            policy_state_normalized_input=(
+                                policy_state_normalized_input
+                            ),
                             measured_pose=measured_pose,
                             display_frame=kinematics.display_frame,
                             trajectory_history=trajectory_history,
@@ -707,6 +805,12 @@ def evaluate_libero(
                             "global_step": global_step,
                             "timestamp_s": step_index / CONTROL_FREQUENCY_HZ,
                             "observation_state": prepared.state.tolist(),
+                            "policy_state_normalized_clean": (
+                                policy_state_normalized_clean.tolist()
+                            ),
+                            "policy_state_normalized_input": (
+                                policy_state_normalized_input.tolist()
+                            ),
                             "next_observation_state": next_prepared.state.tolist(),
                             "observation_joint_positions": (
                                 prepared.joint_positions.tolist()
@@ -773,6 +877,7 @@ def evaluate_libero(
         metrics["task"] = task.to_dict()
         metrics["checkpoint_task_assessment"] = checkpoint_assessment.to_dict()
         metrics["perturbation"] = config.perturbation
+        metrics["perturbation_config"] = input_config["perturbation"]
         metrics["visualized_episodes"] = list(
             range(config.num_visualized_episodes)
         )
@@ -840,7 +945,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--n-episodes", type=int, default=20)
     parser.add_argument("--num-visualized-episodes", type=int, default=1)
-    parser.add_argument("--perturbation", default="none")
+    parser.add_argument(
+        "--perturbation",
+        choices=PERTURBATION_MODES,
+        default="none",
+        help="Policy-input perturbation; proprio_gaussian affects normalized state only",
+    )
+    parser.add_argument(
+        "--proprio-noise-std",
+        type=float,
+        default=0.01,
+        help="Gaussian std in checkpoint-normalized state space (default: 0.01)",
+    )
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument(

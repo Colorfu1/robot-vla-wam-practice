@@ -164,6 +164,8 @@ def _libero_step_kwargs() -> dict[str, object]:
         "step_index": 8,
         "observation_state": np.zeros(8),
         "next_observation_state": np.asarray([0.01, 0.02, 0.03, 0, 0, 0, 0, 0]),
+        "policy_state_normalized_clean": np.arange(8, dtype=np.float32),
+        "policy_state_normalized_input": np.arange(8, dtype=np.float32) + 0.01,
         "measured_pose": _measured_pose(),
         "display_frame": viz.DisplayFrame.libero_y_forward([0, 0, 0]),
         "trajectory_history": viz.LiberoTrajectoryHistory(),
@@ -617,6 +619,13 @@ def test_libero_action_and_state_series_are_independently_addressable() -> None:
     )
     assert len(set(viz.LIBERO_ACTION_SERIES_PATHS)) == 7
     assert len(set(viz.LIBERO_STATE_SERIES_PATHS)) == 8
+    assert viz.LIBERO_POLICY_STATE_CLEAN_PATHS == tuple(
+        f"state/policy_normalized_clean/{name}" for name in viz.LIBERO_STATE_NAMES
+    )
+    assert viz.LIBERO_POLICY_STATE_INPUT_PATHS == tuple(
+        f"state/policy_normalized_input/{name}" for name in viz.LIBERO_STATE_NAMES
+    )
+    assert len(set(viz.LIBERO_POLICY_STATE_SERIES_PATHS)) == 16
 
 
 def test_offline_frame_applies_display_transform_to_all_3d_geometry(
@@ -796,6 +805,12 @@ def test_libero_queue_hit_omits_model_query_latency(monkeypatch: pytest.MonkeyPa
     expected.update(f"actions/executed/{name}" for name in viz.ACTION_NAMES)
     expected.update(
         f"state/observation/{name}" for name in viz.LIBERO_STATE_NAMES
+    )
+    expected.update(
+        f"state/policy_normalized_clean/{name}" for name in viz.LIBERO_STATE_NAMES
+    )
+    expected.update(
+        f"state/policy_normalized_input/{name}" for name in viz.LIBERO_STATE_NAMES
     )
     assert expected <= paths
     assert "latency/model_query_ms" not in paths

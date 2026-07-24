@@ -265,6 +265,7 @@ def test_libero_parser_defaults_match_approved_contract() -> None:
     assert args.n_episodes == 20
     assert args.num_visualized_episodes == 1
     assert args.perturbation == "none"
+    assert args.proprio_noise_std == 0.01
     assert args.seed == 1000
     assert args.max_steps is None
     assert args.overwrite is False
@@ -359,6 +360,8 @@ def test_rollout_schema_distinguishes_instant_and_cumulative_success() -> None:
         "global_step",
         "timestamp_s",
         "observation_state",
+        "policy_state_normalized_clean",
+        "policy_state_normalized_input",
         "next_observation_state",
         "observation_joint_positions",
         "next_observation_joint_positions",
@@ -384,7 +387,87 @@ def test_rollout_schema_distinguishes_instant_and_cumulative_success() -> None:
     assert not schema.field("observation_state").nullable
     assert not schema.field("next_observation_joint_positions").nullable
     assert not schema.field("policy_step_latency_ms").nullable
-    assert schema.metadata[b"schema_version"] == b"3"
+    assert not schema.field("policy_state_normalized_clean").nullable
+    assert not schema.field("policy_state_normalized_input").nullable
+    assert schema.metadata[b"schema_version"] == b"4"
+
+
+def test_proprio_noise_is_deterministic_and_does_not_mutate_clean_input() -> None:
+    state = torch.arange(8, dtype=torch.float32).reshape(1, 8)
+    image = torch.zeros(1, 3, 4, 5)
+    processed = {"observation.state": state, "observation.images.image": image}
+
+    first, clean, noisy = libero.prepare_policy_input(
+        processed,
+        perturbation="proprio_gaussian",
+        proprio_noise_std=0.01,
+        seed=1000,
+        episode_index=2,
+        step_index=3,
+    )
+    second, _, noisy_again = libero.prepare_policy_input(
+        processed,
+        perturbation="proprio_gaussian",
+        proprio_noise_std=0.01,
+        seed=1000,
+        episode_index=2,
+        step_index=3,
+    )
+
+    assert first is not processed
+    assert first["observation.images.image"] is image
+    assert first["observation.state"] is not state
+    assert second["observation.state"] is not state
+    np.testing.assert_array_equal(clean, np.arange(8, dtype=np.float32))
+    np.testing.assert_array_equal(state.numpy()[0], clean)
+    np.testing.assert_array_equal(noisy, noisy_again)
+    assert not np.array_equal(clean, noisy)
+
+
+def test_proprio_noise_changes_with_episode_or_step_and_none_is_identity() -> None:
+    processed = {"observation.state": torch.zeros(1, 8)}
+
+    unchanged, clean, policy_input = libero.prepare_policy_input(
+        processed,
+        perturbation="none",
+        proprio_noise_std=0.01,
+        seed=1000,
+        episode_index=0,
+        step_index=0,
+    )
+    _, _, next_step = libero.prepare_policy_input(
+        processed,
+        perturbation="proprio_gaussian",
+        proprio_noise_std=0.01,
+        seed=1000,
+        episode_index=0,
+        step_index=1,
+    )
+    _, _, next_episode = libero.prepare_policy_input(
+        processed,
+        perturbation="proprio_gaussian",
+        proprio_noise_std=0.01,
+        seed=1000,
+        episode_index=1,
+        step_index=0,
+    )
+
+    assert unchanged is processed
+    np.testing.assert_array_equal(clean, policy_input)
+    assert not np.array_equal(next_step, next_episode)
+
+
+@pytest.mark.parametrize("value", [0.0, -0.01, float("nan"), float("inf")])
+def test_libero_config_rejects_invalid_proprio_noise_std(value: float) -> None:
+    config = libero.LiberoEvaluationConfig(
+        policy_path=Path("checkpoint"),
+        suite="libero_object",
+        task_id=8,
+        n_episodes=1,
+        proprio_noise_std=value,
+    )
+    with pytest.raises(ValueError, match="finite and positive"):
+        libero.validate_config(config)
 
 
 def test_libero_extracts_policy_state_and_measured_raw_joints() -> None:

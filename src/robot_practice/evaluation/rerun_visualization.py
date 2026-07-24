@@ -201,6 +201,21 @@ LIBERO_ACTION_SERIES_PATHS = tuple(
 LIBERO_STATE_SERIES_PATHS = tuple(
     f"state/observation/{name}" for name in LIBERO_STATE_NAMES
 )
+LIBERO_POLICY_STATE_CLEAN_PATHS = tuple(
+    f"state/policy_normalized_clean/{name}" for name in LIBERO_STATE_NAMES
+)
+LIBERO_POLICY_STATE_INPUT_PATHS = tuple(
+    f"state/policy_normalized_input/{name}" for name in LIBERO_STATE_NAMES
+)
+LIBERO_POLICY_STATE_SERIES_PATHS = tuple(
+    path
+    for pair in zip(
+        LIBERO_POLICY_STATE_CLEAN_PATHS,
+        LIBERO_POLICY_STATE_INPUT_PATHS,
+        strict=True,
+    )
+    for path in pair
+)
 LIBERO_STATE_COLORS = (
     (78, 121, 167),
     (242, 142, 43),
@@ -278,6 +293,9 @@ sent to LIBERO, and the simulator result at `t+1`.
 - **Faint-orange dashed preview:** standard ACT chunk tail that will be discarded.
 - **Violet dashed preview:** Temporal Ensemble's new prediction chunk; it is not an
   execution queue.
+- **Simulator state:** physical 8D state before checkpoint normalization.
+- **Normalized policy state:** clean preprocessor output and the actual policy input. They
+  overlap for `perturbation=none`; with proprioception noise, only the input line changes.
 
 Command and plan endpoints visualize relative OSC commands. They are not simulated future
 states. The post-action agentview is the observation returned by the same simulator step,
@@ -629,6 +647,12 @@ def build_libero_blueprint(camera_keys: Sequence[str], fps: float) -> rrb.Bluepr
             origin="/",
             contents=list(LIBERO_STATE_SERIES_PATHS),
             name="Simulator state (click legend to toggle)",
+            plot_legend=rrb.PlotLegend(visible=True),
+        ),
+        rrb.TimeSeriesView(
+            origin="/",
+            contents=list(LIBERO_POLICY_STATE_SERIES_PATHS),
+            name="Normalized policy state: clean vs input",
             plot_legend=rrb.PlotLegend(visible=True),
         ),
         rrb.TimeSeriesView(
@@ -1030,6 +1054,33 @@ def log_libero_static_context(
             ),
             static=True,
         )
+    for clean_path, input_path, name, color in zip(
+        LIBERO_POLICY_STATE_CLEAN_PATHS,
+        LIBERO_POLICY_STATE_INPUT_PATHS,
+        LIBERO_STATE_NAMES,
+        LIBERO_STATE_COLORS,
+        strict=True,
+    ):
+        recorder.log(
+            clean_path,
+            rr.SeriesLines(
+                colors=[color],
+                widths=[1.0],
+                names=[f"{name} · clean normalized"],
+                visible_series=[True],
+            ),
+            static=True,
+        )
+        recorder.log(
+            input_path,
+            rr.SeriesLines(
+                colors=[color],
+                widths=[2.5],
+                names=[f"{name} · policy input"],
+                visible_series=[True],
+            ),
+            static=True,
+        )
     recorder.log(
         "documentation/libero_semantics",
         rr.TextDocument(LIBERO_SEMANTICS_MARKDOWN, media_type="text/markdown"),
@@ -1329,6 +1380,8 @@ def log_libero_step(
     step_index: int,
     observation_state: Sequence[float] | NDArray[Any],
     next_observation_state: Sequence[float] | NDArray[Any],
+    policy_state_normalized_clean: Sequence[float] | NDArray[Any],
+    policy_state_normalized_input: Sequence[float] | NDArray[Any],
     measured_pose: PandaMeasuredPose,
     display_frame: DisplayFrame,
     trajectory_history: LiberoTrajectoryHistory,
@@ -1352,6 +1405,8 @@ def log_libero_step(
 
     state = _validate_observation_state(observation_state)
     next_state = _validate_observation_state(next_observation_state)
+    normalized_clean = _validate_observation_state(policy_state_normalized_clean)
+    normalized_input = _validate_observation_state(policy_state_normalized_input)
     executed = _validate_action(action, "executed_action")
     queued = _validate_action_chunk(queued_actions, "queued_actions")
     discarded = _validate_action_chunk(discarded_actions, "discarded_actions")
@@ -1544,6 +1599,14 @@ def log_libero_step(
         recorder.log(
             f"state/observation/{state_name}",
             rr.Scalars(float(state[index])),
+        )
+        recorder.log(
+            f"state/policy_normalized_clean/{state_name}",
+            rr.Scalars(float(normalized_clean[index])),
+        )
+        recorder.log(
+            f"state/policy_normalized_input/{state_name}",
+            rr.Scalars(float(normalized_input[index])),
         )
     recorder.log("rollout/reward", rr.Scalars(float(reward)))
     recorder.log("rollout/success_so_far", rr.Scalars(int(success_so_far)))
