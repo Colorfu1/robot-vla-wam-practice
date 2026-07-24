@@ -39,7 +39,7 @@ robot-rerun --help
 ```
 
 除原生 Viewer 的图标处理外，参数、标准输入输出、信号和退出码都保持官方
-`rerun` 的语义。launcher 不自动增加 `--new`，也不修改用户指定的端口。
+`rerun` 的语义。launcher 不自动选择新端口，也不修改用户指定的端口。
 
 ## Recording 类型
 
@@ -57,8 +57,9 @@ robot-rerun --help
    sidecar 才对应当前输入并具有权威性：
    - `schema_version` 为 `1`；
    - `mode` 是 `offline` 或 `libero`；
-   - 输入文件名符合该 mode 的 evaluator 输出契约：
-     `offline/prediction.rrd` 或 `libero/rollout.rrd`。
+   - 输入文件 basename 符合该 mode 的 evaluator 输出契约：
+     `offline` 对应 `prediction.rrd`，`libero` 对应 `rollout.rrd`。父目录可以是
+     timestamp 目录或用户指定的任意输出目录。
    有效 sidecar 是 evaluator 正常产物中的快速路径；检测器信任它，不再为冲突检查
    加载同一 RRD。
 2. sidecar 缺失、无效、文件被重命名或不符合上述对应规则时，使用官方
@@ -148,13 +149,7 @@ robot-rerun args
 
 如果目标端口已有 Viewer，官方 Rerun 可能把 RRD 发送给已有窗口，而不创建新窗口。
 launcher 不重新标记已有窗口，因为已有 Viewer 可能已经包含其他类型的数据。
-此时输出简短提示，建议显式创建独立 Viewer：
-
-```bash
-robot-rerun --new file.rrd
-```
-
-或为并行窗口使用不同端口：
+此时输出简短提示，建议为并行窗口显式使用不同端口：
 
 ```bash
 robot-rerun --port=9876 first.rrd
