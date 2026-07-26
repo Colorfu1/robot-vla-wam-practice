@@ -330,6 +330,12 @@ def test_complete_checkpoint_accepts_act_delta_checkpoint(tmp_path: Path) -> Non
     assert manifest.policy_config == {"type": "act_delta"}
 
 
+def test_complete_checkpoint_accepts_act_obs_equal_checkpoint(tmp_path: Path) -> None:
+    checkpoint = _checkpoint(tmp_path, checkpoint_type="act_obs_equal")
+    manifest = validate_complete_checkpoint(checkpoint)
+    assert manifest.policy_config == {"type": "act_obs_equal"}
+
+
 def test_build_run_config_preserves_act_delta_type(tmp_path: Path) -> None:
     manifest = CheckpointManifest(
         path=_checkpoint(tmp_path, checkpoint_type="act_delta"),
@@ -354,6 +360,32 @@ def test_build_run_config_preserves_act_delta_type(tmp_path: Path) -> None:
         arguments={},
     )
     assert run_config["policy"]["type"] == "act_delta"
+
+
+def test_build_run_config_preserves_act_obs_equal_type(tmp_path: Path) -> None:
+    manifest = CheckpointManifest(
+        path=_checkpoint(tmp_path, checkpoint_type="act_obs_equal"),
+        policy_config={"type": "act_obs_equal"},
+        train_config=None,
+        processor_state_files=(),
+    )
+    loaded = LoadedACT(
+        manifest=manifest,
+        config=SimpleNamespace(device="cpu"),
+        policy=object(),
+        preprocessor=None,
+        postprocessor=None,
+        checkpoint_n_action_steps=5,
+        checkpoint_temporal_ensemble_coeff=None,
+    )
+    run_config = build_run_config(
+        status="complete",
+        mode="offline",
+        loaded=loaded,
+        input_config={},
+        arguments={},
+    )
+    assert run_config["policy"]["type"] == "act_obs_equal"
 
 
 def test_output_lock_blocks_active_overwrite_and_releases_on_completion(

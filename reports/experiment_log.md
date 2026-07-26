@@ -155,3 +155,67 @@ Use one section per run. Record incomplete or failed runs too.
   - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_ensemble_001/rollouts.parquet`
   - `outputs/act/a2_delta_loss/run_20000_01/closed_clean_ensemble_001/rollout.rrd`
 - Modes: Closed-loop / Formal
+
+## 2026-07-27 — ACT A1 Observation-equal Loss 20k
+
+- Date: 2026-07-27
+- Task suite: `libero_object`, task ID 8
+- Dataset size: 20 demonstrations, 3233 frames
+- Observation keys: `observation.images.image`, `observation.images.image2`,
+  `observation.state`
+- Action space: 7D LIBERO relative EEF action
+- Action horizon: `chunk_size=20`; Formal Clean Closed-loop uses `n_action_steps=5`
+- Control frequency: 10 Hz
+- Policy: `act_obs_equal`, `use_vae=false`, 20,000 updates, seed 1000; valid action
+  errors are averaged per observation before the batch mean
+- Train loss: unavailable; the retained checkpoint does not include a local training-loss
+  series
+- Open-loop action error: first-action MAE 0.02488; gripper MAE 0.04537;
+  delta-action MAE 0.01392; teacher-forced Action Jerk 0.01353
+- Closed-loop success rate: 9/20, 45% under clean Formal evaluation
+- Latency: model-query p50/p95 7.00/14.06 ms; policy-step p50/p95 0.45/8.64 ms
+- Failure cases: init states `0, 1, 4, 5, 6, 8, 9, 12, 15, 16, 17` reached the
+  280-step time limit; failure stages are not yet structurally annotated
+- Notes: Compared with A1, success increased by 30 percentage points, Action Jerk
+  decreased 14.1%, and mean gripper toggles decreased 8.8%. This single-seed result
+  supports the observation-level loss-weighting hypothesis but is not a cross-seed
+  conclusion.
+- Result artifacts:
+  - `outputs/act/a1_observation_equal/run_20000_01/offline_20/metrics.json`
+  - `outputs/act/a1_observation_equal/run_20000_01/offline_20/predictions.parquet`
+  - `outputs/act/a1_observation_equal/run_20000_01/offline_20/prediction.rrd`
+  - `outputs/act/a1_observation_equal/run_20000_01/closed_clean_n5/metrics.json`
+  - `outputs/act/a1_observation_equal/run_20000_01/closed_clean_n5/eval_info.json`
+  - `outputs/act/a1_observation_equal/run_20000_01/closed_clean_n5/rollouts.parquet`
+  - `outputs/act/a1_observation_equal/run_20000_01/closed_clean_n5/rollout.rrd`
+- Modes: Offline / Closed-loop / Formal
+
+## 2026-07-27 — ACT A1 VAE 20k
+
+- Date: 2026-07-27
+- Task suite: `libero_object`, task ID 8
+- Dataset size: 20 demonstrations, 3233 frames
+- Observation keys: `observation.images.image`, `observation.images.image2`,
+  `observation.state`
+- Action space: 7D LIBERO relative EEF action
+- Action horizon: `chunk_size=20`; Formal Clean Closed-loop uses `n_action_steps=5`
+- Control frequency: 10 Hz
+- Policy: standard ACT, `use_vae=true`, `latent_dim=32`, `kl_weight=10.0`,
+  20,000 updates, seed 1000
+- Train loss: unavailable; the retained checkpoint does not include a local training-loss
+  or KLD series
+- Open-loop action error: unavailable; A1-VAE Offline evaluation has not been run
+- Closed-loop success rate: 19/20, 95% under clean Formal evaluation
+- Latency: model-query p50/p95 7.13/12.39 ms; policy-step p50/p95 0.56/8.67 ms
+- Failure cases: init state `17` reached the 280-step time limit and produced 34 raw
+  gripper command sign toggles
+- Notes: Compared with A1, success increased by 80 percentage points, Action Jerk
+  decreased 26.9%, and mean gripper toggles decreased 23.0%. A1-VAE is the strongest
+  tested A1-family configuration on this task, subject to the single-seed and
+  single-task evidence boundary.
+- Result artifacts:
+  - `outputs/act/a1_vae/run_20000_01/closed_clean_n5/metrics.json`
+  - `outputs/act/a1_vae/run_20000_01/closed_clean_n5/eval_info.json`
+  - `outputs/act/a1_vae/run_20000_01/closed_clean_n5/rollouts.parquet`
+  - `outputs/act/a1_vae/run_20000_01/closed_clean_n5/rollout.rrd`
+- Modes: Closed-loop / Formal

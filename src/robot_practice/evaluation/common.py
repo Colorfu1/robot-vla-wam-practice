@@ -35,6 +35,12 @@ try:
     )
 except Exception:  # pragma: no cover - defensive import if package is temporarily unavailable
     ACTDeltaConfig = None
+try:
+    from robot_practice.policies.act_obs_equal.configuration_act_obs_equal import (
+        ACTObsEqualConfig,  # noqa: F401
+    )
+except Exception:  # pragma: no cover - defensive import if package is temporarily unavailable
+    ACTObsEqualConfig = None
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 
 LOGGER = logging.getLogger(__name__)
@@ -52,6 +58,7 @@ PROCESSOR_CONFIG_FILES = (
 T = TypeVar("T")
 INCOMPLETE_MARKER_TEXT = "Evaluation did not reach its atomic completion step.\n"
 _OUTPUT_DIRECTORY_LOCKS: dict[Path, Any] = {}
+ACT_CHECKPOINT_TYPES = frozenset({"act", "act_delta", "act_obs_equal"})
 
 
 @dataclass(frozen=True)
@@ -292,10 +299,10 @@ def validate_complete_checkpoint(policy_path: Path) -> CheckpointManifest:
 
     policy_config = read_json(path / "config.json")
     checkpoint_type = policy_config.get("type")
-    if checkpoint_type not in {"act", "act_delta"}:
+    if checkpoint_type not in ACT_CHECKPOINT_TYPES:
         raise ValueError(
-            "Expected an ACT checkpoint (config type 'act' or 'act_delta'), got "
-            f"{checkpoint_type!r}"
+            "Expected an ACT checkpoint (config type "
+            f"{', '.join(sorted(ACT_CHECKPOINT_TYPES))}), got {checkpoint_type!r}"
         )
 
     state_files: list[Path] = []
@@ -565,7 +572,7 @@ def _valid_run_config_sentinel(path: Path, *, mode: str) -> bool:
         and payload.get("status") in {"incomplete", "smoke", "complete"}
         and isinstance(payload.get("created_at"), str)
         and isinstance(payload.get("policy"), dict)
-        and payload["policy"].get("type") in {"act", "act_delta"}
+        and payload["policy"].get("type") in ACT_CHECKPOINT_TYPES
         and isinstance(payload.get("runtime"), dict)
         and isinstance(payload.get("input"), dict)
         and isinstance(payload.get("arguments"), dict)
