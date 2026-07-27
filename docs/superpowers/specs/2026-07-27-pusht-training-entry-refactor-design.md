@@ -252,6 +252,8 @@ checkpoint 行为，不在外层捕获并改写异常。
 - paired initialization 测试：
   - `initialization.py` 直接使用两个 Python factory；
   - manifest 记录并校验 mode、seed、split fingerprint 和 model config fingerprint；
+  - model config fingerprint 在 factory 返回后、dataset feature 推导和 checkpoint 路径注入
+    前计算；明确排除 `device`、`pretrained_path` 及 Hub 目标等 runtime-only 字段；
   - BCChunk 与 Diffusion 的共同 tensor hash 仍一致；
   - 从两个 paired 路径实际加载 policy 和 processor，加载后的 state-dict hash、policy
     类型及 resolved config 与 manifest/factory 一致。
