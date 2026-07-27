@@ -1,0 +1,16 @@
+**
+!.dockerignore
+!docker/
+!docker/training/
+!docker/training/Dockerfile
+!docker/training/conda-linux-64.lock
+!docker/training/requirements-linux-64.lock
+!docker/training/source-requirements-linux-64.lock
+!docker/training/environment-manifest.json
+!docker/training/entrypoint.sh
+!docker/training/robot-practice-init
+!docker/training/robot-practice-verify
+!docker/training/verify_environment.py
+!docker/training/nccl_probe.py
+!docker/training/nvidia_icd.json
+!docker/training/10_nvidia.json

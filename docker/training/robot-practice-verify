@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec python /usr/local/lib/robot-practice/verify_environment.py "$@"

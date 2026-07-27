@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: robot-practice-init [REPOSITORY_PATH]" >&2
+}
+
+if [[ "$#" -gt 1 ]]; then
+  usage
+  exit 64
+fi
+
+requested_path="${1:-$PWD}"
+repo_path="$(
+  python - "$requested_path" <<'PY'
+from pathlib import Path
+import sys
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=True))
+PY
+)"
+
+if [[ ! -f "$repo_path/pyproject.toml" ]]; then
+  echo "Not a robot-practice repository: missing $repo_path/pyproject.toml" >&2
+  exit 66
+fi
+if [[ ! -d "$repo_path/src/robot_practice" ]]; then
+  echo "Not a robot-practice repository: missing $repo_path/src/robot_practice" >&2
+  exit 66
+fi
+
+site_packages="$(
+  python - <<'PY'
+import site
+
+print(site.getsitepackages()[0])
+PY
+)"
+if [[ ! -w "$site_packages" ]]; then
+  cat >&2 <<EOF
+The robot-practice environment is not writable by uid=$(id -u) gid=$(id -g).
+Run the container with the image runtime group, configure Kubernetes runAsGroup/fsGroup,
+or deliberately use a writable root security context.
+Environment path: $site_packages
+EOF
+  exit 73
+fi
+
+runtime_tmp="${TMPDIR:-$HOME/.cache/robot-practice/tmp}"
+mkdir -p "$runtime_tmp"
+
+echo "Installing robot-practice from: $repo_path"
+PIP_NO_INDEX=1 TMPDIR="$runtime_tmp" python -m pip install \
+  --editable "$repo_path" \
+  --no-deps \
+  --no-build-isolation \
+  --force-reinstall \
+  --disable-pip-version-check
+
+python - "$repo_path" <<'PY'
+from pathlib import Path
+import sys
+
+import robot_practice
+
+expected = Path(sys.argv[1]).resolve()
+actual = Path(robot_practice.__file__).resolve()
+if not actual.is_relative_to(expected):
+    raise SystemExit(
+        f"robot_practice resolved outside the requested repository: {actual} not under {expected}"
+    )
+print(f"robot_practice import: {actual}")
+PY
