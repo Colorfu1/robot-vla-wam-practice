@@ -64,12 +64,20 @@ Generate locks from the currently working local `robot-practice` environment:
 2. A hash-locked Linux x86-64 PyPI artifact lock for entries that
    `conda list --json` identifies as `pypi`.
 
-The PyPI installation uses the public PyPI index, `--require-hashes`, and
-`--no-deps`. This prevents pip from replacing Conda-owned packages implicitly and
-pins the exact CUDA-enabled PyTorch, torchvision, Triton, and NVIDIA CUDA wheel
-family rather than accepting a CPU build with the same Python version string.
-Every selected artifact must have a compatible Linux x86-64 wheel or an
-explicitly reviewed source distribution.
+The PyPI installation uses only `https://pypi.org/simple`, `--require-hashes`,
+`--only-binary=:all:`, and `--no-deps`. The lock names and hashes the exact
+Linux x86-64 wheels for `torch==2.10.0`, `torchvision==0.25.0`,
+`triton==3.6.0`, and the complete `nvidia-*-cu12` family currently installed in
+the working environment. The resulting manifest must assert
+`torch.version.cuda == "12.8"` and the expected cuDNN version. This prevents pip
+from replacing Conda-owned packages implicitly or accepting an unintended
+PyTorch artifact.
+
+Source distributions are not allowed in the primary image. If any current
+dependency has no compatible public PyPI wheel, lock generation stops and names
+that package. Supporting it requires a separate design change for a fully locked
+wheel-building stage; it is not silently built with network-resolved build
+dependencies.
 
 Before committing either lock:
 
@@ -103,10 +111,11 @@ checks environment writability before invoking pip and reports the required
 runtime-group setting when it is unavailable.
 
 Repository source only needs to be readable. The implementation must verify that
-PEP 660 editable installation works from a read-only repository mount; if the
-selected build backend attempts to write source metadata, the helper must build
-metadata in a temporary writable directory without copying project source into
-the image.
+PEP 660 editable installation works from a read-only repository mount. Runtime
+initialization uses `--no-build-isolation`, the already locked setuptools and
+wheel packages, and a writable `TMPDIR`; it must never resolve build requirements
+from the network. If the selected backend still attempts to write into the
+source tree, verification fails and the helper is not released.
 
 ## Path-Independent Repository Setup
 
@@ -123,7 +132,8 @@ The path defaults to the current directory. The command:
 3. runs the environment's Python interpreter with:
 
    ```bash
-   python -m pip install -e REPOSITORY_PATH --no-deps --force-reinstall
+   python -m pip install -e REPOSITORY_PATH \
+     --no-deps --no-build-isolation --force-reinstall
    ```
 
 4. verifies that `robot_practice` imports from that repository.
@@ -204,13 +214,27 @@ change the primary image or downgrade PyTorch.
 - mount or copy the repository at a non-default path;
 - run `robot-practice-init` and verify the imported project path;
 - run `scripts/doctor.sh`;
-- reset and render a PushT environment headlessly;
-- initialize a minimal offscreen MuJoCo EGL renderer;
-- import and initialize the available LIBERO and ManiSkill/SAPIEN runtime
-  components without an X server; full benchmark task resets may consume assets
-  mounted separately and are run when those assets are present;
-- invoke documented `--print-command`/dry-run forms of the existing PushT
-  single-GPU and multi-GPU launchers and require exit status zero;
+- with `DISPLAY` unset, reset and render
+  `gym_pusht/PushT-v0` using `render_mode="rgb_array"` and assert a nonempty RGB
+  array;
+- with `MUJOCO_GL=egl`, construct a minimal MuJoCo model, create an offscreen
+  `mujoco.Renderer`, and assert a nonempty RGB array;
+- import `lerobot`, `gym_pusht`, `mujoco`, `libero`, `mani_skill`, and `sapien`;
+- construct the LIBERO benchmark registry and assert that its task-suite mapping
+  is nonempty;
+- create, reset, render, and close ManiSkill `PushCube-v1` in headless
+  `rgb_array` mode and assert a nonempty RGB observation or rendered frame;
+- after `robot-practice-init`, run these exact single-GPU dry runs and require
+  exit status zero plus the expected model entry and model-config module in the
+  printed JSON:
+
+  ```bash
+  bash scripts/experiments/pusht/train_bc_chunk.sh \
+    --mode=smoke --device=cuda --print-command
+  bash scripts/experiments/pusht/train_diffusion.sh \
+    --mode=smoke --device=cuda --print-command
+  ```
+
 - run a minimal distributed/NCCL probe when multiple local GPUs are available.
 
 ### Remote H20 checks
@@ -222,6 +246,16 @@ change the primary image or downgrade PyTorch.
   shared-memory setting or a memory-backed `/dev/shm` volume;
 - initialize the repository from its chosen path;
 - run the same headless graphics and launcher dry-run checks used locally;
+- run these exact eight-GPU launcher dry runs and require exit status zero,
+  `world_size: 8`, and the expected model entry/config modules:
+
+  ```bash
+  bash scripts/experiments/pusht/train_bc_chunk_multi_gpu.sh \
+    --num-gpus=8 --mode=smoke --device=cuda --print-command
+  bash scripts/experiments/pusht/train_diffusion_multi_gpu.sh \
+    --num-gpus=8 --mode=smoke --device=cuda --print-command
+  ```
+
 - run a minimal training smoke test only after the required dataset and
   initialization assets are made available separately.
 
@@ -246,11 +280,13 @@ compatibility variant is required, that exact variant must pass the same checks.
 - A driver compatibility failure identifies the optional H20 compatibility
   image as the next action.
 
-Secret and layer checks inspect the allowlisted build context, `docker history
---no-trunc`, an exported final filesystem, and every saved image layer. They
-search for repository-only paths, `.git`, common credential/token patterns, and
-the supplied registry destination. Deleted files found in earlier layers fail
-the build audit.
+Secret and layer checks inspect the allowlisted build context, image
+configuration, `docker history --no-trunc`, an exported final filesystem, and
+every saved image layer. They search for repository-only paths, `.git`, common
+credential/token patterns, and the supplied registry destination. The external
+repository tag stored in the saved-image manifest is excluded from the
+registry-string assertion because the tag necessarily names the requested
+destination. Deleted files found in earlier layers fail the build audit.
 
 ## Acceptance Criteria
 
