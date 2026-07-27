@@ -17,12 +17,13 @@
 1. Add a lock generator that separates Conda-owned and PyPI-owned packages from
    `conda list --json`, rejects private/local/VCS sources, and generates:
    - an explicit Linux x86-64 Conda artifact lock;
-   - a public-PyPI, wheel-only, hash-pinned lock using pip's target artifact
-     resolution report;
+   - a public-PyPI, hash-pinned artifact lock using wheels for all available
+     packages and an explicit allowlist for the six reviewed source-only
+     dependencies;
    - a machine-readable environment manifest.
-2. Add a CUDA 12.8/cuDNN 9/Ubuntu 22.04 Dockerfile pinned by base-image digest.
-   Install the explicit Conda lock first and the PyPI lock with
-   `--require-hashes --only-binary=:all: --no-deps`.
+2. Add a pinned multi-stage CUDA 12.8/cuDNN 9/Ubuntu 22.04 Dockerfile. Build the
+   six source-only dependencies with a locked builder toolchain, then install
+   only wheels into the final stage without an index or dependency resolution.
 3. Add a non-root runtime user, writable Conda environment group, headless
    graphics defaults, OCI environment labels, and a generic entrypoint.
 4. Add `robot-practice-init` to validate an arbitrary repository path and perform

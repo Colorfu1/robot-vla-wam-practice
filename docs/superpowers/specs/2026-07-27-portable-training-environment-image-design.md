@@ -73,11 +73,29 @@ the working environment. The resulting manifest must assert
 from replacing Conda-owned packages implicitly or accepting an unintended
 PyTorch artifact.
 
-Source distributions are not allowed in the primary image. If any current
-dependency has no compatible public PyPI wheel, lock generation stops and names
-that package. Supporting it requires a separate design change for a fully locked
-wheel-building stage; it is not silently built with network-resolved build
-dependencies.
+The current environment contains six public-PyPI dependencies without compatible
+Linux wheels:
+
+```text
+antlr4-python3-runtime
+bddl
+egl-probe
+evdev
+hf-egl-probe
+robomimic
+```
+
+Only these reviewed packages may use source distributions. Their public PyPI
+sdist URLs and SHA256 hashes are locked explicitly. A builder stage based on the
+same pinned Ubuntu 22.04 image uses recorded compiler, development-library,
+setuptools, and wheel versions with `--no-build-isolation --no-deps` to produce
+Linux x86-64 wheels. All other PyPI dependencies remain wheel-only.
+
+The final stage receives the builder's wheelhouse through a BuildKit bind mount,
+installs without a package index or dependency resolution, and does not retain
+the sdists, wheelhouse, compiler, development headers, or build caches in any
+final-image layer. Lock generation fails if another source-only dependency
+appears.
 
 Before committing either lock:
 
