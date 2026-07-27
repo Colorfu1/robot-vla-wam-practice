@@ -32,8 +32,10 @@ in tracked files.
 
 ## Image Architecture
 
-Use an NVIDIA CUDA 12.8, cuDNN 9, Ubuntu 22.04 runtime image as the base. Install
-Conda under `/opt/conda` and create `/opt/conda/envs/robot-practice`.
+Use an NVIDIA CUDA 12.8, cuDNN 9, Ubuntu 22.04 runtime image pinned by immutable
+digest as the base. Record the digest and the resolved CUDA and cuDNN versions in
+the image metadata. Install Conda under `/opt/conda` and create
+`/opt/conda/envs/robot-practice`.
 
 The image exports:
 
@@ -57,8 +59,17 @@ runtime contract.
 
 Generate locks from the currently working local `robot-practice` environment:
 
-1. An explicit Linux x86-64 Conda package lock for packages owned by Conda.
-2. A version-pinned PyPI lock for packages installed by pip.
+1. An explicit Linux x86-64 Conda package lock, including immutable public
+   artifact URLs, for entries that `conda list --json` identifies as Conda-owned.
+2. A hash-locked Linux x86-64 PyPI artifact lock for entries that
+   `conda list --json` identifies as `pypi`.
+
+The PyPI installation uses the public PyPI index, `--require-hashes`, and
+`--no-deps`. This prevents pip from replacing Conda-owned packages implicitly and
+pins the exact CUDA-enabled PyTorch, torchvision, Triton, and NVIDIA CUDA wheel
+family rather than accepting a CPU build with the same Python version string.
+Every selected artifact must have a compatible Linux x86-64 wheel or an
+explicitly reviewed source distribution.
 
 Before committing either lock:
 
@@ -66,10 +77,36 @@ Before committing either lock:
 - reject local filesystem paths, VCS project references, credentials, and
   authenticated package URLs;
 - retain only dependency data needed to reconstruct the environment;
+- allow only approved public Conda channels and the public PyPI index;
 - verify the expected key versions, including Python 3.10, PyTorch with CUDA
   12.8 support, LeRobot 0.4.4, Diffusers 0.35.2, and gym-pusht 0.1.x.
 
-The repository itself is installed only after it is made available at runtime.
+Lock generation must fail rather than silently dropping any additional local,
+VCS, or unapproved-index dependency. The repository itself is the only excluded
+entry and is installed after it is made available at runtime.
+
+The image also records the lock checksums, Python architecture, Conda channels,
+PyPI index, and key package versions as OCI labels and in a machine-readable
+environment manifest.
+
+## Runtime User And Permissions
+
+Create a non-root `robot-practice` user and group with configurable build-time
+UID and GID, defaulting to 1000. The Conda environment and the user's cache
+directory are owned by that user and group. Environment directories that need to
+receive editable-install metadata are group-writable and setgid.
+
+The default container user is non-root. Kubernetes configurations that override
+the UID must also provide the image's runtime GID, for example with
+`runAsGroup`/`fsGroup`, or deliberately run as root. The initialization command
+checks environment writability before invoking pip and reports the required
+runtime-group setting when it is unavailable.
+
+Repository source only needs to be readable. The implementation must verify that
+PEP 660 editable installation works from a read-only repository mount; if the
+selected build backend attempts to write source metadata, the helper must build
+metadata in a temporary writable directory without copying project source into
+the image.
 
 ## Path-Independent Repository Setup
 
@@ -86,13 +123,17 @@ The path defaults to the current directory. The command:
 3. runs the environment's Python interpreter with:
 
    ```bash
-   python -m pip install -e REPOSITORY_PATH --no-deps
+   python -m pip install -e REPOSITORY_PATH --no-deps --force-reinstall
    ```
 
 4. verifies that `robot_practice` imports from that repository.
 
 No fixed mount path is assumed. The editable installation must be repeated when
 the repository is mounted at a different path in a new container.
+
+Initialization tests cover a normal path, a path containing spaces, a symlinked
+path, a read-only source mount, and replacement of editable metadata pointing to
+a previous mount path.
 
 Commands containing relative paths such as
 `bash scripts/experiments/pusht/train_diffusion.sh` still need to be launched
@@ -123,6 +164,10 @@ The build command accepts the target image name as an argument or environment
 variable. A release is tagged with both an immutable version tag and an optional
 `latest` alias. Registry login and push remain explicit user actions.
 
+Tracked files must not contain the user-supplied registry destination. A build
+accepts it only through `--image` or `IMAGE_REF`, and validation uses `git grep`
+to enforce that rule.
+
 ## GPU Compatibility
 
 The initial image keeps the working local PyTorch and CUDA 12.8 software stack.
@@ -149,6 +194,8 @@ change the primary image or downgrade PyTorch.
 - lock files contain no rejected path, VCS, credential, or private-registry
   entries;
 - image history and filesystem do not contain repository data or credentials.
+- the pinned base digest, lock checksums, package sources, and CUDA wheel family
+  match the generated environment manifest.
 
 ### Local runtime checks
 
@@ -157,7 +204,13 @@ change the primary image or downgrade PyTorch.
 - mount or copy the repository at a non-default path;
 - run `robot-practice-init` and verify the imported project path;
 - run `scripts/doctor.sh`;
-- verify the existing training entry points can parse their configurations;
+- reset and render a PushT environment headlessly;
+- initialize a minimal offscreen MuJoCo EGL renderer;
+- import and initialize the available LIBERO and ManiSkill/SAPIEN runtime
+  components without an X server; full benchmark task resets may consume assets
+  mounted separately and are run when those assets are present;
+- invoke documented `--print-command`/dry-run forms of the existing PushT
+  single-GPU and multi-GPU launchers and require exit status zero;
 - run a minimal distributed/NCCL probe when multiple local GPUs are available.
 
 ### Remote H20 checks
@@ -165,12 +218,18 @@ change the primary image or downgrade PyTorch.
 - confirm all eight H20 devices are visible;
 - run CUDA tensor allocation and computation on every device;
 - run an eight-process NCCL all-reduce;
+- provide enough shared memory for PyTorch workers through the platform's
+  shared-memory setting or a memory-backed `/dev/shm` volume;
 - initialize the repository from its chosen path;
-- parse the existing single-GPU and multi-GPU PushT training commands;
+- run the same headless graphics and launcher dry-run checks used locally;
 - run a minimal training smoke test only after the required dataset and
   initialization assets are made available separately.
 
-The image is not considered remote-ready until the H20 CUDA and NCCL checks pass.
+The image may be built and delivered before remote access is available, but its
+status must then be reported as `remote verification pending`. It is not
+considered remote-ready until the CUDA, headless runtime, and eight-process NCCL
+checks pass on the actual H20 worker with the recorded R535 driver build. If a
+compatibility variant is required, that exact variant must pass the same checks.
 
 ## Error Handling
 
@@ -181,8 +240,17 @@ The image is not considered remote-ready until the H20 CUDA and NCCL checks pass
   versions before running GPU tests.
 - Missing GPUs produce a direct failure for GPU verification, not a silent CPU
   fallback.
+- Missing NVIDIA device-plugin/runtime injection, an undersized `/dev/shm`, or a
+  runtime user outside the writable environment group produces a specific
+  remediation message.
 - A driver compatibility failure identifies the optional H20 compatibility
   image as the next action.
+
+Secret and layer checks inspect the allowlisted build context, `docker history
+--no-trunc`, an exported final filesystem, and every saved image layer. They
+search for repository-only paths, `.git`, common credential/token patterns, and
+the supplied registry destination. Deleted files found in earlier layers fail
+the build audit.
 
 ## Acceptance Criteria
 
@@ -194,8 +262,16 @@ The work is complete when:
 3. the environment exposes the expected pinned core package versions;
 4. existing `conda run -n robot-practice` commands remain valid;
 5. a repository placed at an arbitrary path can be initialized and imported;
-6. local CUDA verification succeeds;
-7. the delivered remote verification command can validate eight H20 GPUs and
-   NCCL before training;
-8. build, initialization, verification, tagging, and push instructions are
-   documented without embedding credentials.
+6. the checked-out source tree contains no committed user-supplied registry
+   destination;
+7. local CUDA, headless PushT/MuJoCo/runtime-component, and launcher dry-run
+   verification succeeds;
+8. initialization succeeds as the non-root runtime user from normal, spaced,
+   symlinked, read-only, and replacement repository paths;
+9. the image remains explicitly `remote verification pending` until CUDA,
+   headless runtime, and eight-process NCCL checks pass on all eight H20 GPUs
+   with the recorded R535 driver;
+10. any required H20 compatibility variant is separately tagged and passes the
+    same remote tests;
+11. build, initialization, verification, Kubernetes runtime prerequisites,
+    tagging, and push instructions are documented without embedding credentials.
