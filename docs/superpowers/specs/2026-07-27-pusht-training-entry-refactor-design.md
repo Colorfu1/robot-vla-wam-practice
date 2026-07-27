@@ -73,7 +73,12 @@ src/robot_practice/experiments/pusht_diffusion/
   - 调用 `lerobot_train.train(cfg)`。
 - `training_runtime.py`
   - 只保存 `SubsetEpisodeAwareSampler` 及其安装函数。
+  - 提供训练 stdout/stderr 的 tee context，使日志同时显示在终端并持久化。
   - 不承担 CLI 解析或配置构造。
+
+现有 `initialization.py` 也必须改为直接 import 两个 model config factory。paired
+step-zero 生成与正式训练由此共享同一个模型配置源；删除 JSON 后不允许保留任何按文件名
+加载 model config 的路径。
 
 ## 5. 模型配置
 
@@ -177,6 +182,8 @@ Debug 可以覆盖 `--mode`、`--steps`、`--train-seed`、`--output-dir` 和调
 --output-dir=PATH
 --batch-size=N
 --num-workers=N
+--device=auto|cpu|cuda|mps
+--print-command
 ```
 
 默认值仍遵循当前实验：
@@ -184,8 +191,14 @@ Debug 可以覆盖 `--mode`、`--steps`、`--train-seed`、`--output-dir` 和调
 - smoke：默认 1,000 steps、batch size 8；
 - pilot：默认 200,000 steps、batch size 64；
 - train seed：默认 1000；
+- device：默认 `auto`，按 CUDA、MPS、CPU 的顺序选择当前可用设备，并把解析后的明确
+  device 字符串写入 policy config；
 - save frequency：不超过 25,000 steps；
 - log frequency：不超过 100 steps。
+
+`--print-command` 是无副作用路径：打印薄 Bash 最终转发的 Python module invocation
+以及 resolved configuration，然后在创建目录、加载数据或训练前退出。它保留现有脚本
+用于审阅命令的合同。
 
 启动前打印 resolved configuration，至少包括：
 
@@ -205,6 +218,11 @@ output directory
 
 输出目录维持 new-only 语义，避免静默覆盖已有实验。
 
+Python runtime 保留当前日志合同：训练期间写入与目标目录相邻的临时
+`<output-dir>.train.log`，同时原样输出到终端；训练成功后移动为
+`<output-dir>/train.log`，训练失败则保留临时日志并传播原始非零退出状态。日志持久化
+不放回 Bash。
+
 ## 9. 错误处理
 
 Python 入口必须在进入 LeRobot 前检查：
@@ -214,6 +232,8 @@ Python 入口必须在进入 LeRobot 前检查：
 - split 文件存在且包含所需 split；
 - dataset view 已准备；
 - paired initialization 的 config、processor 和权重完整；
+- initialization manifest 的 mode、seed、split fingerprint 与本次 resolved config
+  一致；
 - smoke/pilot 输出目录未串用；
 - 输出目录不存在。
 
@@ -229,10 +249,17 @@ checkpoint 行为，不在外层捕获并改写异常。
 - 训练配置测试：
   - smoke/pilot 数据、batch size、steps 和 paired initialization 解析正确；
   - 非法路径和已存在输出目录被拒绝。
+- paired initialization 测试：
+  - `initialization.py` 直接使用两个 Python factory；
+  - manifest 记录并校验 mode、seed、split fingerprint 和 model config fingerprint；
+  - BCChunk 与 Diffusion 的共同 tensor hash 仍一致；
+  - 从两个 paired 路径实际加载 policy 和 processor，加载后的 state-dict hash、policy
+    类型及 resolved config 与 manifest/factory 一致。
 - 启动器测试：
   - Bash 仅包含环境转发；
   - VSCode 与 Bash 指向同一 Python module；
   - 删除的 JSON 不再被引用。
+  - `--print-command` 不创建输出目录、不加载 dataset、不启动训练。
 - 回归测试：
   - subset sampler 仍只产生相对索引；
   - BCChunk 与 Diffusion 各完成一个真实 optimizer step；
@@ -241,11 +268,11 @@ checkpoint 行为，不在外层捕获并改写异常。
 ## 11. 迁移
 
 1. 创建 Python model config 和训练入口。
-2. 把 sampler 兼容代码移入 `training_runtime.py`。
-3. 将两个 Bash 脚本替换为薄转发层。
-4. 将 VSCode Debug 切换到模型专属 Python module。
-5. 更新 PushT guide 中的入口说明。
-6. 删除 `configs/experiments/pusht_diffusion/bc_chunk.json` 和
+2. 将 `initialization.py` 切换为直接使用两个 factory，并扩充 manifest。
+3. 把 sampler 与日志 tee 兼容代码移入 `training_runtime.py`。
+4. 将两个 Bash 脚本替换为薄转发层。
+5. 将 VSCode Debug 切换到模型专属 Python module。
+6. 更新 PushT guide 中的入口说明。
+7. 删除 `configs/experiments/pusht_diffusion/bc_chunk.json` 和
    `configs/experiments/pusht_diffusion/diffusion.json`。
-7. 运行单元测试、静态检查和两次单步训练。
-
+8. 运行单元测试、静态检查和两次单步训练。
