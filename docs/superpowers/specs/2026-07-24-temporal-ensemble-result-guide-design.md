@@ -3,7 +3,7 @@
 ## Goal
 
 Append the completed clean formal closed-loop result to
-`reports/act_temporal_ensemble.md` without overstating causality or generalization.
+`reports/guides/act/act_temporal_ensemble.md` without overstating causality or generalization.
 
 ## Result structure
 

@@ -10,7 +10,7 @@ if [[ "$#" -gt 1 ]]; then
   exit 64
 fi
 
-requested_path="${1:-$PWD}"
+requested_path="${1:-$(pwd -P)}"
 repo_path="$(
   python - "$requested_path" <<'PY'
 from pathlib import Path
@@ -49,13 +49,19 @@ fi
 runtime_tmp="${TMPDIR:-$HOME/.cache/robot-practice/tmp}"
 mkdir -p "$runtime_tmp"
 
+pip_root_options=()
+if [[ "$(id -u)" -eq 0 ]]; then
+  pip_root_options+=(--root-user-action=ignore)
+fi
+
 echo "Installing robot-practice from: $repo_path"
 PIP_NO_INDEX=1 TMPDIR="$runtime_tmp" python -m pip install \
   --editable "$repo_path" \
   --no-deps \
   --no-build-isolation \
   --force-reinstall \
-  --disable-pip-version-check
+  --disable-pip-version-check \
+  "${pip_root_options[@]}"
 
 python - "$repo_path" <<'PY'
 from pathlib import Path

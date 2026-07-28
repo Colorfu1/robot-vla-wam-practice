@@ -7,7 +7,7 @@ on 2026-07-16. The report is intended for the repository owner returning to the 
 not as a formal experiment result or an upstream-facing changelog.
 
 The final report is now maintained at
-`reports/2026-07-16-LeRobot-ACT调试与ALOHA数据可视化.md`.
+`reports/daily/2026-07-16-LeRobot-ACT调试与ALOHA数据可视化.md`.
 
 ## Organization
 

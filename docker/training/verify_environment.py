@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -161,12 +162,114 @@ def _verify_maniskill() -> None:
         environment.close()
 
 
+def _verify_torchcodec(repo: Path | None = None) -> None:
+    from torchcodec.decoders import VideoDecoder
+
+    print("TorchCodec shared libraries loaded")
+
+    with tempfile.TemporaryDirectory(prefix="robot-practice-torchcodec-") as temporary:
+        generated_video = Path(temporary) / "fixture.mp4"
+        _run(
+            [
+                "ffmpeg",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=16x16:r=10",
+                "-frames:v",
+                "2",
+                "-pix_fmt",
+                "yuv420p",
+                str(generated_video),
+            ]
+        )
+        generated_frame = VideoDecoder(str(generated_video))[0]
+        generated_shape = tuple(generated_frame.shape)
+        if generated_shape != (3, 16, 16):
+            raise RuntimeError(f"Unexpected generated TorchCodec frame shape: {generated_shape}")
+        print(f"TorchCodec generated-video decode: shape={generated_shape}")
+
+    if repo is None:
+        return
+
+    video_root = repo / "datasets" / "lerobot" / "lerobot" / "pusht" / "videos"
+    video_path = next(video_root.rglob("*.mp4"), None) if video_root.is_dir() else None
+    if video_path is None:
+        print("TorchCodec dataset decode skipped: no PushT MP4 under repository")
+        return
+
+    frame = VideoDecoder(str(video_path))[0]
+    shape = tuple(frame.shape)
+    if len(shape) != 3 or shape[0] != 3:
+        raise RuntimeError(f"Unexpected TorchCodec frame shape: {shape}")
+    print(f"TorchCodec PushT decode: path={video_path.relative_to(repo)} shape={shape}")
+
+
+def _verify_distributed_repo_import(repo: Path, world_size: int) -> None:
+    if world_size < 2:
+        return
+
+    program = """
+from pathlib import Path
+import os
+
+import robot_practice
+
+repo = Path(os.environ["ROBOT_PRACTICE_VERIFY_REPO"]).resolve()
+imported = Path(robot_practice.__file__).resolve()
+if not imported.is_relative_to(repo):
+    raise SystemExit(f"rank import came from {imported}, not {repo}")
+print(f"rank={os.environ['RANK']} robot_practice={imported}", flush=True)
+"""
+    with tempfile.TemporaryDirectory(prefix="robot-practice-distributed-") as temporary:
+        program_path = Path(temporary) / "verify_repo_import.py"
+        program_path.write_text(program, encoding="utf-8")
+        environment = os.environ.copy()
+        environment["ROBOT_PRACTICE_VERIFY_REPO"] = str(repo)
+        print(
+            "+",
+            "torchrun",
+            "--standalone",
+            f"--nproc-per-node={world_size}",
+            str(program_path),
+            flush=True,
+        )
+        completed = subprocess.run(
+            [
+                "torchrun",
+                "--standalone",
+                f"--nproc-per-node={world_size}",
+                str(program_path),
+            ],
+            cwd=repo,
+            env=environment,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        print(completed.stdout, end="")
+        observed_ranks = {
+            line.split()[0] for line in completed.stdout.splitlines() if line.startswith("rank=")
+        }
+        expected_ranks = {f"rank={rank}" for rank in range(world_size)}
+        if observed_ranks != expected_ranks:
+            raise RuntimeError(
+                f"Distributed repository imports missing ranks: "
+                f"expected={sorted(expected_ranks)} observed={sorted(observed_ranks)}"
+            )
+
+
 def _verify_repo(repo: Path, gpu_count: int) -> None:
     import robot_practice
 
     imported = Path(robot_practice.__file__).resolve()
     if not imported.is_relative_to(repo):
         raise RuntimeError(f"robot_practice imports from {imported}, not {repo}")
+    _verify_torchcodec(repo)
+    _verify_distributed_repo_import(repo, gpu_count)
     _run(["bash", "scripts/doctor.sh"], cwd=repo)
 
     device = "cuda" if gpu_count else "cpu"
@@ -258,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
     facts = _basic_facts()
     print(json.dumps(facts, indent=2, sort_keys=True))
     _run([sys.executable, "-m", "pip", "check"])
+    _verify_torchcodec()
 
     if arguments.require_gpus:
         _verify_gpu(arguments.require_gpus)

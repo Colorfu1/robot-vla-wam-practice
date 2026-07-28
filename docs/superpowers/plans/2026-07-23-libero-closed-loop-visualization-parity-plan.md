@@ -92,7 +92,7 @@ Work:
 Files:
 
 - `scripts/experiments/act/eval_libero.sh`
-- `reports/act_a_sanity.md`
+- `reports/guides/act/act_a_sanity.md`
 - `README.md`
 
 Work:

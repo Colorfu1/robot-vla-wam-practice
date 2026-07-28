@@ -283,7 +283,7 @@ Primary interpretation:
 Add:
 
 ```text
-reports/2026-07-26-ACT末尾样本等权与VAE实验指南.md
+reports/guides/act/act_observation_equal_and_vae.md
 ```
 
 It must follow `reports/AGENTS.md` and contain only:

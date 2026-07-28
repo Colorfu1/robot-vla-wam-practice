@@ -155,6 +155,8 @@ ARG SOURCE_LOCK_SHA256="unknown"
 
 ENV HOME=/home/robot-practice \
     PYTHONNOUSERSITE=1 \
+    PYTHONPATH=./src \
+    LD_LIBRARY_PATH=/opt/conda/envs/robot-practice/lib:/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/usr/local/cuda/lib64 \
     MUJOCO_GL=egl \
     PYOPENGL_PLATFORM=egl \
     SDL_VIDEODRIVER=dummy \

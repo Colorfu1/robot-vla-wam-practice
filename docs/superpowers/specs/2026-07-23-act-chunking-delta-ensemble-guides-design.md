@@ -16,9 +16,9 @@
 新增三份报告：
 
 ```text
-reports/act_action_chunking.md
-reports/act_delta_action_loss.md
-reports/act_temporal_ensemble.md
+reports/guides/act/act_action_chunking.md
+reports/guides/act/act_delta_action_loss.md
+reports/guides/act/act_temporal_ensemble.md
 ```
 
 每份指南统一包含：

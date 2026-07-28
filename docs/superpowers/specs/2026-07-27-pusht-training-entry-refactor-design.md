@@ -39,7 +39,7 @@ src/robot_practice/experiments/pusht_diffusion/
 │   ├── __init__.py
 │   ├── bc_chunk.py
 │   └── diffusion.py
-├── train_config.py
+├── training_common.py
 ├── train_bc_chunk.py
 ├── train_diffusion.py
 └── training_runtime.py
@@ -55,22 +55,23 @@ src/robot_practice/experiments/pusht_diffusion/
   - 显式 import LeRobot `DiffusionConfig`。
   - 提供 `make_diffusion_config()`。
   - 在函数中完整列出本实验关心的 policy 配置。
-- `train_config.py`
+- `training_common.py`
   - 定义统一的训练命令行参数。
   - 读取 `split.json` 并解析 smoke/pilot episode。
   - 构造官方 `DatasetConfig` 和 `TrainPipelineConfig`。
   - 设置 batch size、steps、seed、checkpoint 频率和输出目录。
   - 将 paired step-zero 目录赋给 `policy.pretrained_path`。
+  - 只负责共享配置和校验，不启动训练。
 - `train_bc_chunk.py`
   - import `make_bc_chunk_config()`。
   - 构造 BCChunk 的 `TrainPipelineConfig`。
   - 安装本地 runtime 兼容层。
-  - 调用 `lerobot_train.train(cfg)`。
+  - 在模型入口内直接调用 `lerobot_train.train(cfg)`。
 - `train_diffusion.py`
   - import `make_diffusion_config()`。
   - 构造 Diffusion 的 `TrainPipelineConfig`。
   - 安装本地 runtime 兼容层。
-  - 调用 `lerobot_train.train(cfg)`。
+  - 在模型入口内直接调用 `lerobot_train.train(cfg)`。
 - `training_runtime.py`
   - 只保存 `SubsetEpisodeAwareSampler` 及其安装函数。
   - 提供训练 stdout/stderr 的 tee context，使日志同时显示在终端并持久化。

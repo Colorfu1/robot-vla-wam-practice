@@ -1,0 +1,7 @@
+{
+  "scheduler": "DDPM",
+  "num_inference_steps": 100,
+  "num_action_samples": 20,
+  "bc_repeat_calls": 3,
+  "same_noise_tolerance": 0.000001
+}

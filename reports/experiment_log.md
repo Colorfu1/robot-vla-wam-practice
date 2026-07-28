@@ -219,3 +219,26 @@ Use one section per run. Record incomplete or failed runs too.
   - `outputs/act/a1_vae/run_20000_01/closed_clean_n5/rollouts.parquet`
   - `outputs/act/a1_vae/run_20000_01/closed_clean_n5/rollout.rrd`
 - Modes: Closed-loop / Formal
+
+## 2026-07-27 — PushT Diffusion Pilot 准备（计划，未运行）
+
+- Date: 2026-07-27
+- Task suite: PushT
+- Dataset size: planned fixed split of 206 episodes — 165 train / 20 development /
+  21 held-out audit; Smoke uses the first 8 train episodes only
+- Observation keys: `observation.image`, `observation.state`; two-step history
+- Action space: 2D absolute target position
+- Action horizon: internal horizon 16; public execution slice `[1:9]`, 8 actions
+- Control frequency: 10 Hz
+- Policy: strict deterministic BCChunk baseline and local Diffusion Policy, paired
+  step-zero initialization, train seed 1000
+- Train loss: not available; training has not started
+- Open-loop action error: not available; E1 has not run
+- Closed-loop success rate: not available; E2/E4 have not run
+- Latency: not available; E4 has not run
+- Failure cases: no measured rollout failures yet
+- Notes: Infrastructure and copy-ready commands are documented under
+  `reports/guides/pusht_diffusion/`. This entry records planned work only and must not
+  be interpreted as a Smoke or Formal result.
+- Result artifacts: none yet
+- Modes: Planned（未运行）

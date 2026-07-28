@@ -46,8 +46,8 @@ open-loop action error 或 closed-loop success rate 可以记录。两段参考�
 
 新增了可复现的 A-Sanity 启动脚本：
 
-- [a_sanity.sh](../scripts/experiments/act/a_sanity.sh)
-- [ACT Experiment Launcher Design](../docs/superpowers/specs/2026-07-20-act-experiment-launchers-design.md)
+- [a_sanity.sh](../../scripts/experiments/act/a_sanity.sh)
+- [ACT Experiment Launcher Design](../../docs/superpowers/specs/2026-07-20-act-experiment-launchers-design.md)
 
 实验使用 LIBERO Object task 8：`pick up the chocolate pudding and place it in the
 basket`。从本地 `lerobot/libero` 数据集中选择五条属于同一任务的完整 demonstration：
@@ -104,7 +104,7 @@ scripts/experiments/act/a_sanity.sh
 ## ACT 离线与闭环评测设计
 
 完成了
-[ACT Offline and Closed-Loop Evaluation Design](../docs/superpowers/specs/2026-07-20-act-evaluation-design.md)，
+[ACT Offline and Closed-Loop Evaluation Design](../../docs/superpowers/specs/2026-07-20-act-evaluation-design.md)，
 明确将评测分为两个互补但不能混淆的部分。
 
 ### 离线 teacher-forced prediction
@@ -235,9 +235,9 @@ autocast 的算子注册规则决定。
 
 | 文件 | 作用 |
 |---|---|
-| [2026-07-20-act-experiment-launchers-design.md](../docs/superpowers/specs/2026-07-20-act-experiment-launchers-design.md) | A-Sanity 启动器设计 |
-| [a_sanity.sh](../scripts/experiments/act/a_sanity.sh) | 五轨迹 ACT 过拟合训练入口 |
-| [2026-07-20-act-evaluation-design.md](../docs/superpowers/specs/2026-07-20-act-evaluation-design.md) | 离线与 LIBERO 闭环评测设计 |
+| [2026-07-20-act-experiment-launchers-design.md](../../docs/superpowers/specs/2026-07-20-act-experiment-launchers-design.md) | A-Sanity 启动器设计 |
+| [a_sanity.sh](../../scripts/experiments/act/a_sanity.sh) | 五轨迹 ACT 过拟合训练入口 |
+| [2026-07-20-act-evaluation-design.md](../../docs/superpowers/specs/2026-07-20-act-evaluation-design.md) | 离线与 LIBERO 闭环评测设计 |
 
 参考调试中没有调用文件修改工具；ACT、LeRobot 和 mmdet3d 源文件均为只读检查。
 该工作区当时也不是 Git working tree，因此没有本仓库 commit 或 push。
@@ -248,6 +248,6 @@ autocast 的算子注册规则决定。
 2. 启动 A-Sanity 20,000-step 训练，观察 loss 是否相对初始值下降 80% 以上。
 3. 训练完成后使用完整 `pretrained_model` 目录进行离线评测，检查 action MAE、TV 和 jerk。
 4. 在 LIBERO task 8 中执行 closed-loop rollout，以模拟器 `is_success` 作为成功标准。
-5. 将正式训练和评测结果补充到 [experiment_log.md](experiment_log.md)，完整记录数据规模、
+5. 将正式训练和评测结果补充到 [experiment_log.md](../experiment_log.md)，完整记录数据规模、
    observation keys、action horizon、train loss、open-loop error、success rate、latency 和
    failure cases。

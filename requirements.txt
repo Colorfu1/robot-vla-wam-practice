@@ -1,4 +1,6 @@
-lerobot[libero]
+lerobot[libero,pusht]==0.4.4
+diffusers==0.35.2
+gym-pusht>=0.1.5,<0.2
 torch
 mani_skill
 h5py
@@ -10,3 +12,5 @@ Pillow
 python-dotenv
 python-xlib
 rich
+scikit-learn<2
+pymunk>=6.6,<7

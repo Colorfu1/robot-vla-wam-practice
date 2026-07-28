@@ -134,8 +134,6 @@ PushT is implemented as a separate vertical experiment slice:
 ```text
 configs/experiments/pusht_diffusion/
 ├── split.json
-├── bc_chunk.json
-├── diffusion.json
 ├── e0_lite.json
 ├── e1_sampling.json
 ├── e2_rollout.json
@@ -1133,7 +1131,7 @@ shell syntax checks, and launcher `--print-command` checks. It must not start a
 Write the shareable guide/result document to:
 
 ```text
-reports/pusht_diffusion_pilot.md
+reports/guides/pusht_diffusion/
 ```
 
 Append each actual run to `reports/experiment_log.md`. Every completed entry must

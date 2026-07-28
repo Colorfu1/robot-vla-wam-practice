@@ -83,13 +83,23 @@ fi
 docker run --rm \
   --gpus all \
   --ipc=host \
-  --mount "type=bind,src=$repo_path,dst=/mnt/old-practice,readonly" \
   --mount "type=bind,src=$repo_path,dst=/mnt/robot practice,readonly" \
+  --workdir "/mnt/robot practice" \
+  --entrypoint /bin/bash \
   "$image_ref" \
-  bash -c '
+  -c '
     set -euo pipefail
-    robot-practice-init /mnt/old-practice
-    ln -s "/mnt/robot practice" /tmp/robot-practice-repo-link
-    robot-practice-init /tmp/robot-practice-repo-link
+    test "$PWD" = "/mnt/robot practice"
+    python - <<'"'"'PY'"'"'
+from pathlib import Path
+
+import robot_practice
+
+repo = Path.cwd().resolve()
+imported = Path(robot_practice.__file__).resolve()
+if not imported.is_relative_to(repo):
+    raise SystemExit(f"robot_practice imported from {imported}, not {repo}")
+print(f"Direct repository import without init: {imported}")
+PY
     exec robot-practice-verify "$@"
   ' bash "${verify_arguments[@]}"

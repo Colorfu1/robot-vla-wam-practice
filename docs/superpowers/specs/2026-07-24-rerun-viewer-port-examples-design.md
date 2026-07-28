@@ -9,9 +9,9 @@
 
 更新当前使用的用户指南和 evaluator 脚本头部：
 
-- `reports/act_action_chunking.md`
-- `reports/act_a_sanity.md`
-- `reports/act_temporal_ensemble.md`
+- `reports/guides/act/act_action_chunking.md`
+- `reports/guides/act/act_a_sanity.md`
+- `reports/guides/act/act_temporal_ensemble.md`
 - `scripts/experiments/act/eval_offline.sh`
 - `scripts/experiments/act/eval_libero.sh`
 

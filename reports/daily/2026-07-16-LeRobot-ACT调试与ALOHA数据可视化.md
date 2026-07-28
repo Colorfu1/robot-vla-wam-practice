@@ -73,8 +73,8 @@ $CONDA_PREFIX/lib/python3.10/site-packages/lerobot/scripts/lerobot_train.py
 
 已添加本地 VS Code 配置：
 
-- [`.vscode/settings.json`](../.vscode/settings.json)：固定使用 `robot-practice` Python；
-- [`.vscode/launch.json`](../.vscode/launch.json)：定义
+- [`.vscode/settings.json`](../../.vscode/settings.json)：固定使用 `robot-practice` Python；
+- [`.vscode/launch.json`](../../.vscode/launch.json)：定义
   `LeRobot: ACT train (3-step debug)`。
 
 Debug 配置使用 Python module 方式启动 `lerobot.scripts.lerobot_train`，并设置：
@@ -104,7 +104,7 @@ cfg.validate()
 `update_policy()`。
 
 详细设计见
-[LeRobot VS Code Debug Design](../docs/superpowers/specs/2026-07-16-lerobot-vscode-debug-design.md)。
+[LeRobot VS Code Debug Design](../../docs/superpowers/specs/2026-07-16-lerobot-vscode-debug-design.md)。
 
 ## ALOHA 数据集
 
@@ -151,9 +151,9 @@ VS Code Debug 使用的是 LeRobot 默认 dataset root：
 
 新增两个仓库自有模块，没有修改安装在 `site-packages` 中的 LeRobot：
 
-- [aloha_kinematics.py](../src/robot_practice/aloha_kinematics.py)：NumPy 实现的
+- [aloha_kinematics.py](../../src/robot_practice/aloha_kinematics.py)：NumPy 实现的
   双臂 ViperX 300S 标称正向运动学；
-- [visualize_aloha.py](../src/robot_practice/visualize_aloha.py)：dataset 校验、批量读取、
+- [visualize_aloha.py](../../src/robot_practice/visualize_aloha.py)：dataset 校验、批量读取、
   派生信号和 Rerun logging/blueprint。
 
 可视化内容包括：
@@ -171,9 +171,9 @@ VS Code Debug 使用的是 LeRobot 默认 dataset root：
 
 完整 Episode 0 已保存为：
 
-- [aloha_mobile_cabinet_episode_0.rrd](../outputs/aloha_mobile_cabinet_episode_0.rrd)，
+- [aloha_mobile_cabinet_episode_0.rrd](../../outputs/aloha_mobile_cabinet_episode_0.rrd)，
   约 186 MB；
-- [Rerun 最终界面截图](../outputs/rerun_viewer_clean.png)。
+- [Rerun 最终界面截图](../../outputs/rerun_viewer_clean.png)。
 
 直接打开 recording：
 
@@ -208,7 +208,7 @@ python -m robot_practice.visualize_aloha \
 ```
 
 详细几何约定和数据流见
-[可视化设计](../docs/superpowers/specs/2026-07-16-aloha-dataset-visualizer-design.md)。
+[可视化设计](../../docs/superpowers/specs/2026-07-16-aloha-dataset-visualizer-design.md)。
 
 ## 验证结果
 
@@ -223,20 +223,20 @@ python -m robot_practice.visualize_aloha \
 
 对应测试：
 
-- [test_aloha_kinematics.py](../tests/test_aloha_kinematics.py)
-- [test_visualize_aloha.py](../tests/test_visualize_aloha.py)
+- [test_aloha_kinematics.py](../../tests/test_aloha_kinematics.py)
+- [test_visualize_aloha.py](../../tests/test_visualize_aloha.py)
 
 ## 今日涉及的主要文件
 
 | 文件 | 作用 |
 |---|---|
-| [`.vscode/settings.json`](../.vscode/settings.json) | 固定 Python interpreter |
-| [`.vscode/launch.json`](../.vscode/launch.json) | ACT 三步训练 Debug 配置 |
-| [README.md](../README.md) | 增加 ALOHA 可视化用法 |
-| [aloha_kinematics.py](../src/robot_practice/aloha_kinematics.py) | 双臂标称 FK |
-| [visualize_aloha.py](../src/robot_practice/visualize_aloha.py) | Rerun 可视化入口 |
-| [test_aloha_kinematics.py](../tests/test_aloha_kinematics.py) | FK 单元测试 |
-| [test_visualize_aloha.py](../tests/test_visualize_aloha.py) | 数据与 Rerun 测试 |
+| [`.vscode/settings.json`](../../.vscode/settings.json) | 固定 Python interpreter |
+| [`.vscode/launch.json`](../../.vscode/launch.json) | ACT 三步训练 Debug 配置 |
+| [README.md](../../README.md) | 增加 ALOHA 可视化用法 |
+| [aloha_kinematics.py](../../src/robot_practice/aloha_kinematics.py) | 双臂标称 FK |
+| [visualize_aloha.py](../../src/robot_practice/visualize_aloha.py) | Rerun 可视化入口 |
+| [test_aloha_kinematics.py](../../tests/test_aloha_kinematics.py) | FK 单元测试 |
+| [test_visualize_aloha.py](../../tests/test_visualize_aloha.py) | 数据与 Rerun 测试 |
 
 `.vscode/`、`outputs/` 和数据缓存都是本机内容，按仓库规则不提交生成物。当前 workspace
 没有 `.git` 目录，因此今天无法创建 commit 或查看 Git diff。
@@ -247,6 +247,6 @@ python -m robot_practice.visualize_aloha \
    这次应直接进入 dataset/policy 构建。
 2. 依次进入 `make_dataset()`、`make_policy()` 和 `update_policy()`，记录实际 batch key、
    tensor shape、loss 和单步耗时。
-3. 如果三步训练成功，将结果补充到 [experiment_log.md](experiment_log.md)，并按模板填写
+3. 如果三步训练成功，将结果补充到 [experiment_log.md](../experiment_log.md)，并按模板填写
    能够实际获得的实验字段；缺失的 closed-loop 指标保持明确未测。
 4. 后续再决定是否保留两套 1.7 GB 数据。清理前先确认训练统一使用哪一个 root。

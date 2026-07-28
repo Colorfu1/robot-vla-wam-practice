@@ -1,0 +1,16 @@
+{
+  "conditions": [
+    {"scheduler": "DDIM", "num_inference_steps": 5},
+    {"scheduler": "DDIM", "num_inference_steps": 10},
+    {"scheduler": "DDIM", "num_inference_steps": 20},
+    {"scheduler": "DDIM", "num_inference_steps": 50},
+    {"scheduler": "DDIM", "num_inference_steps": 100},
+    {"scheduler": "DDPM", "num_inference_steps": 100}
+  ],
+  "reference_condition": {"scheduler": "DDPM", "num_inference_steps": 100},
+  "policy_seed": 0,
+  "num_environment_seeds": 50,
+  "latency_warmup_iterations": 50,
+  "latency_measurement_iterations": 1000,
+  "videos_per_condition": 5
+}

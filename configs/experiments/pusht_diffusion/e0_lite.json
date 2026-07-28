@@ -1,0 +1,7 @@
+{
+  "num_demonstrations": 50,
+  "num_candidates": 10,
+  "candidate_split": "audit",
+  "history_steps": 2,
+  "future_action_steps": 8
+}

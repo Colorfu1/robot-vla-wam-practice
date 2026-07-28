@@ -1,0 +1,8 @@
+{
+  "environment_seeds": [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009],
+  "policy_seeds": [0, 1, 2, 3, 4],
+  "n_action_steps": 8,
+  "trajectory_resample_points": 100,
+  "mode_distance_threshold": 0.05,
+  "mode_distance_sensitivity": [0.025, 0.075]
+}

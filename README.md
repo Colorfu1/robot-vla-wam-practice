@@ -221,7 +221,13 @@ eval/
   metrics.py
   perturbations.py
 reports/
+  README.md
   experiment_log.md
+  metrics.md
+  daily/
+  guides/
+    act/
+    pusht_diffusion/
 ```
 
 Keep reusable local Python helpers under `src/robot_practice/`.

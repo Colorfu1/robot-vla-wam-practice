@@ -1,0 +1,27 @@
+ARG BASE_IMAGE=robot-practice:latest
+FROM ${BASE_IMAGE}
+
+# Volc MLP owns task command execution, logging bootstrap, and storage setup.
+USER root
+WORKDIR /workspace
+
+ENV HOME=/root \
+    HF_HOME=/root/.cache/huggingface \
+    MPLCONFIGDIR=/root/.cache/matplotlib \
+    XDG_RUNTIME_DIR=/tmp/runtime-root \
+    PYTHONNOUSERSITE=1 \
+    PYTHONPATH=./src \
+    LD_LIBRARY_PATH=/opt/conda/envs/robot-practice/lib:/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/usr/local/cuda/lib64
+
+COPY docker/training/robot-practice-init /usr/local/bin/robot-practice-init
+COPY docker/training/verify_environment.py /usr/local/lib/robot-practice/verify_environment.py
+
+RUN mkdir -p \
+        /root/.cache/huggingface \
+        /root/.cache/matplotlib \
+        /tmp/runtime-root \
+    && chmod 0700 /tmp/runtime-root \
+    && chmod 0755 /usr/local/bin/robot-practice-init
+
+ENTRYPOINT []
+CMD ["/bin/bash"]

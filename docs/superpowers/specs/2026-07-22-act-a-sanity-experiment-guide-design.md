@@ -3,7 +3,7 @@
 ## Status
 
 User-directed rewrite approved in conversation on 2026-07-22. This replaces the earlier
-audit-oriented guide design for `reports/act_a_sanity.md`.
+audit-oriented guide design for `reports/guides/act/act_a_sanity.md`.
 
 ## Goal
 

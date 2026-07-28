@@ -1,0 +1,569 @@
+"""E1 fixed-observation BCChunk and explicit-noise Diffusion evaluation."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+from collections import defaultdict
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+import matplotlib
+import numpy as np
+import torch
+from lerobot.datasets.factory import resolve_delta_timestamps
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
+from lerobot.policies.utils import get_device_from_parameters, get_dtype_from_parameters
+from lerobot.utils.constants import OBS_IMAGES, OBS_STATE
+from torch import Tensor
+
+from robot_practice.policies.bc_chunk.modeling_bc_chunk import BCChunkPolicy
+
+from .config import (
+    DATASET_REPO_ID,
+    DATASET_REVISION,
+    DEFAULT_TRAIN_SEED,
+    default_dataset_root,
+    default_output_root,
+    load_named_config,
+)
+from .diversity_metrics import summarize_action_diversity
+from .noise import (
+    fixed_observation_noise_seed,
+    fixed_observation_reverse_seed,
+    make_initial_noise,
+)
+from .output import AtomicOutputDirectory, write_metrics, write_records_parquet
+from .policy_loading import (
+    controlled_sample,
+    load_policy_with_processors,
+    replace_scheduler,
+)
+from .provenance import (
+    collect_runtime_provenance,
+    sha256_file,
+    sha256_tensor,
+    write_json_atomic,
+)
+from .rerun_visualization import image_to_hwc_uint8, record_fixed_observation_samples
+
+matplotlib.use("Agg")
+from matplotlib import pyplot as plt
+
+_E1_CONFIG = load_named_config("e1_sampling.json")
+
+
+def _load_candidates(path: Path) -> list[dict[str, Any]]:
+    with path.open(encoding="utf-8") as stream:
+        payload = json.load(stream)
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError(f"{path} does not contain a non-empty candidates array")
+    return candidates
+
+
+def _index_frames(dataset: LeRobotDataset) -> dict[tuple[int, int], int]:
+    dataset._ensure_hf_dataset_loaded()
+    grouped_counts: dict[int, int] = defaultdict(int)
+    result: dict[tuple[int, int], int] = {}
+    for local_index, raw_episode in enumerate(dataset.hf_dataset["episode_index"]):
+        episode = int(raw_episode.item() if hasattr(raw_episode, "item") else raw_episode)
+        frame = grouped_counts[episode]
+        grouped_counts[episode] += 1
+        result[(episode, frame)] = local_index
+    return result
+
+
+def _observation_only(item: dict[str, Any], policy: torch.nn.Module) -> dict[str, Tensor]:
+    missing = [key for key in policy.config.input_features if key not in item]
+    if missing:
+        raise KeyError(f"Dataset item is missing policy inputs: {missing}")
+    return {
+        key: item[key].unsqueeze(0)
+        for key in policy.config.input_features
+        if isinstance(item[key], Tensor)
+    }
+
+
+def _stack_images(policy: torch.nn.Module, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+    prepared = dict(batch)
+    if policy.config.image_features:
+        prepared[OBS_IMAGES] = torch.stack(
+            [prepared[key] for key in policy.config.image_features],
+            dim=-4,
+        )
+    return prepared
+
+
+def _postprocess_chunk(postprocessor: Any, chunk: Tensor) -> np.ndarray:
+    value = postprocessor(chunk)
+    if not isinstance(value, Tensor):
+        raise TypeError("Policy postprocessor must return a Tensor")
+    result = value.detach().cpu().numpy()
+    if result.ndim != 3 or result.shape[0] != 1 or result.shape[-1] != 2:
+        raise ValueError(f"Expected postprocessed chunk [1,steps,2], got {result.shape}")
+    return result[0]
+
+
+def _tensor_payload(batch: dict[str, Tensor]) -> tuple[dict[str, np.ndarray], dict[str, str]]:
+    arrays: dict[str, np.ndarray] = {}
+    hashes: dict[str, str] = {}
+    for key, value in sorted(batch.items()):
+        if isinstance(value, Tensor):
+            arrays[key.replace(".", "__")] = value.detach().cpu().numpy()
+            hashes[key] = sha256_tensor(value)
+    return arrays, hashes
+
+
+def _save_static_figure(path: Path, candidates: Sequence[dict[str, Any]]) -> None:
+    columns = 2
+    rows = int(np.ceil(len(candidates) / columns))
+    figure, axes = plt.subplots(rows, columns, figsize=(10, 5 * rows), squeeze=False)
+    for axis, candidate in zip(axes.flat, candidates, strict=False):
+        agent = np.asarray(candidate["agent_position"])
+        axis.scatter([agent[0]], [agent[1]], c="#00aeef", s=30, label="agent")
+        axis.plot(
+            candidate["bc_actions"][:, 0],
+            candidate["bc_actions"][:, 1],
+            c="#e15759",
+            linewidth=2,
+            label="BCChunk",
+        )
+        for actions in candidate["diffusion_actions"]:
+            axis.plot(actions[:, 0], actions[:, 1], alpha=0.35)
+        axis.set(
+            xlim=(0, 512),
+            ylim=(512, 0),
+            title=str(candidate["candidate_id"]),
+            xlabel="absolute target x",
+            ylabel="absolute target y",
+        )
+    for axis in axes.flat[len(candidates) :]:
+        axis.axis("off")
+    axes.flat[0].legend()
+    figure.tight_layout()
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+
+
+def evaluate_fixed_observations(
+    *,
+    bc_policy_path: str | Path,
+    diffusion_policy_path: str | Path,
+    candidates_path: Path,
+    dataset_root: Path,
+    output_dir: Path,
+    num_action_samples: int,
+    train_seed: int,
+    label: str,
+    overwrite: bool,
+) -> Path:
+    if num_action_samples <= 1:
+        raise ValueError("num_action_samples must be greater than one")
+    if label not in {"Smoke", "Offline"}:
+        raise ValueError("label must be Smoke or Offline")
+    protocol = _E1_CONFIG
+    candidates = _load_candidates(candidates_path)
+    runtime = collect_runtime_provenance(Path(__file__).resolve().parents[4])
+    code_commit = runtime["repository"]["commit"]
+    checkpoint_ids = {
+        "bc_chunk": sha256_file(Path(bc_policy_path).expanduser().resolve() / "model.safetensors"),
+        "diffusion": sha256_file(
+            Path(diffusion_policy_path).expanduser().resolve() / "model.safetensors"
+        ),
+    }
+    bc_loaded = load_policy_with_processors(bc_policy_path, local_files_only=True)
+    diffusion_loaded = load_policy_with_processors(
+        diffusion_policy_path,
+        local_files_only=True,
+    )
+    if not isinstance(bc_loaded.policy, BCChunkPolicy):
+        raise TypeError("bc-policy must contain policy.type=bc_chunk")
+    if not isinstance(diffusion_loaded.policy, DiffusionPolicy):
+        raise TypeError("diffusion-policy must contain policy.type=diffusion")
+    replace_scheduler(
+        diffusion_loaded.policy,
+        scheduler_name=str(protocol["scheduler"]),
+        num_inference_steps=int(protocol["num_inference_steps"]),
+    )
+    for field in ("n_obs_steps", "horizon", "n_action_steps"):
+        if getattr(bc_loaded.config, field) != getattr(diffusion_loaded.config, field):
+            raise ValueError(f"BCChunk and Diffusion disagree on {field}")
+
+    metadata = LeRobotDatasetMetadata(
+        DATASET_REPO_ID,
+        root=dataset_root,
+        revision=DATASET_REVISION,
+    )
+    delta_timestamps = resolve_delta_timestamps(diffusion_loaded.config, metadata)
+    episode_ids = sorted({int(candidate["episode_index"]) for candidate in candidates})
+    dataset = LeRobotDataset(
+        DATASET_REPO_ID,
+        root=dataset_root,
+        episodes=episode_ids,
+        delta_timestamps=delta_timestamps,
+        revision=DATASET_REVISION,
+    )
+    frame_lookup = _index_frames(dataset)
+    action_rows: list[dict[str, Any]] = []
+    metric_rows: list[dict[str, Any]] = []
+    visualization_candidates: list[dict[str, Any]] = []
+
+    with AtomicOutputDirectory(output_dir, overwrite=overwrite) as temporary:
+        observation_dir = temporary / "observations"
+        noise_dir = temporary / "noises"
+        processor_dir = temporary / "processor_metadata"
+        observation_dir.mkdir()
+        noise_dir.mkdir()
+        processor_dir.mkdir()
+        processor_hashes: dict[str, str] = {}
+        for model_name, policy_path in (
+            ("bc_chunk", Path(bc_policy_path)),
+            ("diffusion", Path(diffusion_policy_path)),
+        ):
+            for filename in (
+                "config.json",
+                "policy_preprocessor.json",
+                "policy_postprocessor.json",
+            ):
+                source = policy_path.expanduser().resolve() / filename
+                if not source.is_file():
+                    raise FileNotFoundError(f"Checkpoint metadata is missing: {source}")
+                destination = processor_dir / f"{model_name}_{filename}"
+                shutil.copy2(source, destination)
+                processor_hashes[f"{model_name}/{filename}"] = sha256_file(destination)
+        for candidate in candidates:
+            candidate_id = str(candidate["candidate_id"])
+            ordinal = int(candidate["candidate_ordinal"])
+            key = (int(candidate["episode_index"]), int(candidate["frame_index"]))
+            if key not in frame_lookup:
+                raise KeyError(f"Candidate frame is not present in dataset: {key}")
+            item = dataset[frame_lookup[key]]
+
+            bc_processed = bc_loaded.preprocessor(_observation_only(item, bc_loaded.policy))
+            diffusion_processed = diffusion_loaded.preprocessor(
+                _observation_only(item, diffusion_loaded.policy)
+            )
+            bc_batch = _stack_images(bc_loaded.policy, bc_processed)
+            diffusion_batch = _stack_images(
+                diffusion_loaded.policy,
+                diffusion_processed,
+            )
+            for input_key in (OBS_STATE, OBS_IMAGES):
+                if (
+                    input_key in bc_batch
+                    and input_key in diffusion_batch
+                    and not torch.allclose(
+                        bc_batch[input_key],
+                        diffusion_batch[input_key],
+                        rtol=0,
+                        atol=1e-7,
+                    )
+                ):
+                    raise RuntimeError(
+                        f"BCChunk and Diffusion processed inputs differ for {input_key}"
+                    )
+
+            arrays, input_hashes = _tensor_payload(diffusion_batch)
+            arrays["raw__observation_state"] = np.asarray(item[OBS_STATE])
+            for image_key in diffusion_loaded.config.image_features:
+                arrays[f"raw__{image_key.replace('.', '__')}"] = np.asarray(item[image_key])
+            np.savez_compressed(observation_dir / f"{candidate_id}.npz", **arrays)
+            with torch.inference_mode():
+                full_bc = bc_loaded.policy.predict_full_action_horizon(bc_batch)
+                start = bc_loaded.config.n_obs_steps - 1
+                end = start + bc_loaded.config.n_action_steps
+                normalized_bc = full_bc[:, start:end]
+                repeat_errors = []
+                for _ in range(int(protocol["bc_repeat_calls"]) - 1):
+                    repeated = bc_loaded.policy.predict_full_action_horizon(bc_batch)[:, start:end]
+                    repeat_errors.append(
+                        float(torch.max(torch.abs(normalized_bc - repeated)).cpu())
+                    )
+                bc_actions = _postprocess_chunk(bc_loaded.postprocessor, normalized_bc)
+            for step, (normalized_action, action) in enumerate(
+                zip(
+                    normalized_bc[0].detach().cpu().numpy(),
+                    bc_actions,
+                    strict=True,
+                )
+            ):
+                action_rows.append(
+                    {
+                        "experiment_id": "E1",
+                        "condition_id": "bc_chunk",
+                        "candidate_id": candidate_id,
+                        "model": "bc_chunk",
+                        "checkpoint_id": checkpoint_ids["bc_chunk"],
+                        "train_seed": train_seed,
+                        "environment_seed": None,
+                        "policy_seed": None,
+                        "replan_index": None,
+                        "sample_ordinal": 0,
+                        "step": step,
+                        "normalized_action_x": float(normalized_action[0]),
+                        "normalized_action_y": float(normalized_action[1]),
+                        "action_x": float(action[0]),
+                        "action_y": float(action[1]),
+                        "initial_noise_seed": None,
+                        "initial_noise_sha256": None,
+                        "reverse_noise_seed": None,
+                        "reverse_generator_state_sha256": None,
+                        "num_inference_steps": None,
+                        "num_action_samples": 1,
+                        "num_rollouts": 0,
+                        "dataset_revision": DATASET_REVISION,
+                        "code_commit": code_commit,
+                    }
+                )
+
+            reverse_seed = fixed_observation_reverse_seed(candidate_ordinal=ordinal)
+            diffusion_actions: list[np.ndarray] = []
+            normalized_diffusion_actions: list[np.ndarray] = []
+            same_noise_error = None
+            explicit_noises = []
+            for sample_ordinal in range(num_action_samples):
+                seed = fixed_observation_noise_seed(
+                    candidate_ordinal=ordinal,
+                    sample_ordinal=sample_ordinal,
+                )
+                explicit = make_initial_noise(
+                    seed=seed,
+                    batch_size=1,
+                    device=get_device_from_parameters(diffusion_loaded.policy),
+                    dtype=get_dtype_from_parameters(diffusion_loaded.policy),
+                    horizon=diffusion_loaded.config.horizon,
+                    action_dim=diffusion_loaded.config.action_feature.shape[0],
+                )
+                np.save(
+                    noise_dir / f"{candidate_id}_sample_{sample_ordinal:02d}.npy",
+                    explicit.tensor.detach().cpu().numpy(),
+                )
+                explicit_noises.append((sample_ordinal, seed, explicit))
+
+            for sample_ordinal, seed, explicit in explicit_noises:
+                with torch.inference_mode():
+                    sampled = controlled_sample(
+                        diffusion_loaded.policy,
+                        diffusion_batch,
+                        initial_noise=explicit.tensor,
+                        reverse_seed=reverse_seed,
+                    )
+                denormalized = _postprocess_chunk(
+                    diffusion_loaded.postprocessor,
+                    sampled.actions,
+                )
+                normalized = sampled.actions[0].detach().cpu().numpy()
+                diffusion_actions.append(denormalized)
+                normalized_diffusion_actions.append(normalized)
+                if sample_ordinal == 0:
+                    with torch.inference_mode():
+                        repeated = controlled_sample(
+                            diffusion_loaded.policy,
+                            diffusion_batch,
+                            initial_noise=explicit.tensor,
+                            reverse_seed=reverse_seed,
+                        )
+                    same_noise_error = float(
+                        torch.max(torch.abs(sampled.actions - repeated.actions)).cpu()
+                    )
+                for step, (normalized_action, action) in enumerate(
+                    zip(normalized, denormalized, strict=True)
+                ):
+                    action_rows.append(
+                        {
+                            "experiment_id": "E1",
+                            "condition_id": "diffusion_ddpm100",
+                            "candidate_id": candidate_id,
+                            "model": "diffusion",
+                            "checkpoint_id": checkpoint_ids["diffusion"],
+                            "train_seed": train_seed,
+                            "environment_seed": None,
+                            "policy_seed": None,
+                            "replan_index": 0,
+                            "sample_ordinal": sample_ordinal,
+                            "step": step,
+                            "normalized_action_x": float(normalized_action[0]),
+                            "normalized_action_y": float(normalized_action[1]),
+                            "action_x": float(action[0]),
+                            "action_y": float(action[1]),
+                            "initial_noise_seed": seed,
+                            "initial_noise_sha256": explicit.tensor_sha256,
+                            "reverse_noise_seed": reverse_seed,
+                            "reverse_generator_state_sha256": (
+                                sampled.reverse_generator_state_sha256
+                            ),
+                            "num_inference_steps": sampled.num_inference_steps,
+                            "num_action_samples": num_action_samples,
+                            "num_rollouts": 0,
+                            "dataset_revision": DATASET_REVISION,
+                            "code_commit": code_commit,
+                        }
+                    )
+
+            stacked_actions = np.stack(diffusion_actions)
+            stacked_normalized_actions = np.stack(normalized_diffusion_actions)
+            agent_position = np.asarray(item[OBS_STATE])[-1].reshape(-1)
+            normalized_agent_position = (
+                diffusion_batch[OBS_STATE][0, -1].detach().cpu().numpy().reshape(-1)
+            )
+            denormalized_summary = summarize_action_diversity(
+                stacked_actions,
+                agent_position=agent_position,
+            )
+            normalized_summary = summarize_action_diversity(
+                stacked_normalized_actions,
+                agent_position=normalized_agent_position,
+                lower_bound=-1.0,
+                upper_bound=1.0,
+            )
+            metric_rows.append(
+                {
+                    "candidate_id": candidate_id,
+                    **{
+                        f"denormalized_{key}": value
+                        for key, value in denormalized_summary.to_dict().items()
+                    },
+                    **{
+                        f"normalized_{key}": value
+                        for key, value in normalized_summary.to_dict().items()
+                    },
+                    "bc_repeat_max_error": max(repeat_errors),
+                    "diffusion_same_noise_max_error": same_noise_error,
+                    "input_tensor_hashes_json": json.dumps(input_hashes, sort_keys=True),
+                }
+            )
+            camera_key = next(iter(diffusion_loaded.config.image_features))
+            raw_history = np.asarray(item[camera_key])
+            visualization_candidates.append(
+                {
+                    "candidate_id": candidate_id,
+                    "previous_image": image_to_hwc_uint8(raw_history[0]),
+                    "current_image": image_to_hwc_uint8(raw_history[-1]),
+                    "agent_position": agent_position,
+                    "bc_actions": bc_actions,
+                    "diffusion_actions": stacked_actions,
+                    "metrics": metric_rows[-1],
+                }
+            )
+
+        write_records_parquet(temporary / "action_chunks.parquet", action_rows)
+        write_records_parquet(temporary / "diversity_metrics.parquet", metric_rows)
+        aggregate_metrics = {
+            "num_candidates": len(candidates),
+            "num_action_samples": num_action_samples,
+            "mean_denormalized_trajectory_pairwise_rms": float(
+                np.mean([row["denormalized_trajectory_pairwise_rms"] for row in metric_rows])
+            ),
+            "mean_denormalized_endpoint_pairwise_distance": float(
+                np.mean([row["denormalized_endpoint_pairwise_distance"] for row in metric_rows])
+            ),
+            "mean_normalized_trajectory_pairwise_rms": float(
+                np.mean([row["normalized_trajectory_pairwise_rms"] for row in metric_rows])
+            ),
+            "bc_repeat_max_error": float(max(row["bc_repeat_max_error"] for row in metric_rows)),
+            "diffusion_same_noise_max_error": float(
+                max(row["diffusion_same_noise_max_error"] for row in metric_rows)
+            ),
+            "num_rollouts": 0,
+        }
+        tolerance = float(protocol["same_noise_tolerance"])
+        if aggregate_metrics["bc_repeat_max_error"] > tolerance:
+            raise RuntimeError(f"BCChunk repeated-call determinism exceeded {tolerance}")
+        if aggregate_metrics["diffusion_same_noise_max_error"] > tolerance:
+            raise RuntimeError(f"Diffusion same-noise determinism exceeded {tolerance}")
+        write_metrics(
+            temporary,
+            aggregate_metrics,
+            comments={
+                "num_candidates": "Held-out frozen observation histories",
+                "num_action_samples": "Independent initial noises per observation",
+                "mean_denormalized_trajectory_pairwise_rms": (
+                    "Mean action-trajectory diversity in 512-pixel coordinates"
+                ),
+                "mean_denormalized_endpoint_pairwise_distance": (
+                    "Mean eighth-target diversity in 512-pixel coordinates"
+                ),
+                "mean_normalized_trajectory_pairwise_rms": (
+                    "Mean action-trajectory diversity in policy-normalized space"
+                ),
+                "bc_repeat_max_error": "Deterministic BC repeated-call error",
+                "diffusion_same_noise_max_error": "Controlled DDPM repeat error",
+                "num_rollouts": "E1 does not execute environment actions",
+            },
+        )
+        write_json_atomic(
+            temporary / "run_manifest.json",
+            {
+                "schema_version": 1,
+                "label": label,
+                "experiment": "E1",
+                "dataset_repo_id": DATASET_REPO_ID,
+                "dataset_revision": DATASET_REVISION,
+                "candidate_source_sha256": sha256_file(candidates_path),
+                "processor_metadata_sha256": processor_hashes,
+                "checkpoint_ids": checkpoint_ids,
+                "bc_checkpoint": str(Path(bc_policy_path)),
+                "diffusion_checkpoint": str(Path(diffusion_policy_path)),
+                "scheduler": protocol["scheduler"],
+                "num_inference_steps": protocol["num_inference_steps"],
+                "num_action_samples": num_action_samples,
+                "num_rollouts": 0,
+                "train_seed": train_seed,
+                "runtime": runtime,
+            },
+        )
+        record_fixed_observation_samples(
+            output_path=temporary / "recording.rrd",
+            candidates=visualization_candidates,
+        )
+        _save_static_figure(
+            temporary / "fixed_observation_samples.png",
+            visualization_candidates,
+        )
+    return output_dir.resolve()
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bc-policy", required=True)
+    parser.add_argument("--diffusion-policy", required=True)
+    parser.add_argument("--candidates", required=True, type=Path)
+    parser.add_argument("--dataset-root", type=Path, default=default_dataset_root())
+    parser.add_argument(
+        "--num-action-samples",
+        type=int,
+        default=int(_E1_CONFIG["num_action_samples"]),
+    )
+    parser.add_argument("--train-seed", type=int, default=DEFAULT_TRAIN_SEED)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=default_output_root() / "pilot" / "e1_fixed_observation",
+    )
+    parser.add_argument("--label", choices=("Smoke", "Offline"), default="Offline")
+    parser.add_argument("--overwrite", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = _build_parser().parse_args(argv)
+    result = evaluate_fixed_observations(
+        bc_policy_path=args.bc_policy,
+        diffusion_policy_path=args.diffusion_policy,
+        candidates_path=args.candidates.expanduser().resolve(),
+        dataset_root=args.dataset_root.expanduser().resolve(),
+        output_dir=args.output_dir.expanduser().resolve(),
+        num_action_samples=args.num_action_samples,
+        train_seed=args.train_seed,
+        label=args.label,
+        overwrite=args.overwrite,
+    )
+    print(f"E1 output: {result}")
+
+
+if __name__ == "__main__":
+    main()

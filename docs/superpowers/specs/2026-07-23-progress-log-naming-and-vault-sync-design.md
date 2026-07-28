@@ -8,7 +8,7 @@ logs mirrored into the existing Obsidian `BestPractice` directory, with Chinese 
 ## Scope
 
 This change applies only to the three dated progress reports currently under `reports/`.
-`reports/act_a_sanity.md` remains an experiment guide, and `reports/experiment_log.md`
+`reports/guides/act/act_a_sanity.md` remains an experiment guide, and `reports/experiment_log.md`
 remains the append-only structured experiment record required by repository instructions.
 An unrelated LIBERO setup note already in the Vault remains untouched.
 
@@ -18,9 +18,9 @@ Rename the three canonical reports exactly as follows:
 
 | Existing file | New file |
 |---|---|
-| `reports/2026-07-16-progress.md` | `reports/2026-07-16-LeRobot-ACT调试与ALOHA数据可视化.md` |
-| `reports/2026-07-20-progress.md` | `reports/2026-07-20-ACT-A-Sanity实验与模型源码调试.md` |
-| `reports/2026-07-23-progress.md` | `reports/2026-07-23-ACT离线评测与标定可视化.md` |
+| `reports/2026-07-16-progress.md` | `reports/daily/2026-07-16-LeRobot-ACT调试与ALOHA数据可视化.md` |
+| `reports/2026-07-20-progress.md` | `reports/daily/2026-07-20-ACT-A-Sanity实验与模型源码调试.md` |
+| `reports/2026-07-23-progress.md` | `reports/daily/2026-07-23-ACT离线评测与标定可视化.md` |
 
 Each file's H1 uses the same date and Chinese topic wording as its filename, with normal
 spaces for readability. Repository-relative Markdown links that reference an old filename

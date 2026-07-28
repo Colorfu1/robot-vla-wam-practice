@@ -52,8 +52,9 @@ bash scripts/docker/audit_training_image.sh \
   --save-layers
 ```
 
-The verification mounts the repository read-only at non-default paths, replaces
-a stale editable installation, and checks CUDA and headless simulation.
+The verification mounts the repository read-only at a non-default path containing
+spaces, changes directly into the repository, and checks that local imports,
+TorchCodec video decoding, CUDA, and headless simulation work without initialization.
 
 ## Push
 
@@ -68,10 +69,10 @@ Push the immutable tag printed by the build script as well.
 
 ## Use the repository at any path
 
-After starting a worker from the image, put the repository anywhere and run:
+After starting a worker from the image, put the repository anywhere and change to
+its root:
 
 ```bash
-robot-practice-init /any/path/to/practice
 cd /any/path/to/practice
 ```
 
@@ -80,10 +81,14 @@ Existing commands continue to work:
 ```bash
 bash scripts/experiments/pusht/train_diffusion.sh \
   --mode=pilot
+
+python -m robot_practice.experiments.pusht_diffusion.train_diffusion \
+  --help
 ```
 
-The editable installation must be repeated if a new container mounts the
-repository at a different path.
+No editable install or `robot-practice-init` call is required. The image intentionally
+uses the relative `PYTHONPATH=./src`, so commands must be launched from the repository
+root. `robot-practice-init` remains available only as a compatibility tool.
 
 ## Verify an eight-H20 worker
 
@@ -92,10 +97,9 @@ GPUs, provide the image runtime group or a writable root context, and allocate
 at least 1 GiB to `/dev/shm`.
 
 ```bash
-robot-practice-init /any/path/to/practice
-
+cd /any/path/to/practice
 robot-practice-verify \
-  --repo=/any/path/to/practice \
+  --repo=. \
   --require-gpus=8 \
   --nccl-world-size=8 \
   --headless
