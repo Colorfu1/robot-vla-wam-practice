@@ -1,7 +1,13 @@
 # PushT Paired Rerun Recordings Design
 
 **Date:** 2026-07-28
-**Status:** Approved for implementation
+**Status:** Superseded
+
+This design was implemented, but real Viewer switching exposed a flaw in its
+seed-specific entity paths: a persisted/shared Blueprint can remain bound to the
+previous Recording's path and show a black view after switching. The authoritative
+replacement is
+[`2026-07-28-pusht-recording-folder-and-stable-blueprint-design.md`](2026-07-28-pusht-recording-folder-and-stable-blueprint-design.md).
 
 ## Goal
 
@@ -127,6 +133,10 @@ the same visualization schema. Incidental SDK timelines such as `log_tick` and
 `log_time` are not copied by the compatibility splitter; `global_frame` is the sole
 playback timeline.
 
+Rerun's SDK-managed `/__properties` entity carries the selector-visible Recording name
+and start time. It is treated as internal metadata and is excluded from the application
+entity-path restriction above.
+
 Images remain Rerun `EncodedImage` payloads. Compatibility splitting must copy the
 existing encoded payloads through the Rerun DataFrame API and must not reconstruct data
 from MP4 files or re-encode simulator frames.
@@ -213,7 +223,8 @@ CLI verification alone is insufficient. Each final archive is also loaded with
 - Recording IDs are exactly `env_1000..env_1019` with no duplicates;
 - every Recording has exactly one expected selector-visible name;
 - every Recording contains exactly its expected model/seed rollout subtree plus the
-  canonical `/task/*` static entities, with no other entity paths;
+  canonical `/task/*` static entities, with no other application entity paths
+  (`/__properties` is the sole SDK-managed exception);
 - `global_frame` exists, starts at zero, is monotonic, and contains no values from
   another task;
 - simulator images and measured/action/reward components are present;
