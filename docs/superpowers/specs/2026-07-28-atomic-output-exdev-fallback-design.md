@@ -34,14 +34,17 @@ Keep `rename()` as the primary publication path. Only when it raises `errno.EXDE
 fall back to a recursive copy:
 
 1. retain the temporary directory's `.incomplete` marker;
-2. copy the complete temporary tree to the final path, including the marker;
-3. if copying succeeds, remove the temporary tree;
-4. remove `<final>/.incomplete` last;
-5. mark the context as committed.
+2. create the final directory and its own `.incomplete` marker before copying any
+   payload;
+3. copy the complete temporary tree into the already marked final directory;
+4. if copying succeeds, remove the temporary tree;
+5. remove `<final>/.incomplete` last;
+6. mark the context as committed.
 
 The marker is the completion boundary. During a fallback copy, the final path may be
 visible, but it remains explicitly incomplete until every copy and cleanup step has
-succeeded.
+succeeded. The implementation must not depend on recursive traversal order to publish
+the marker before payload files.
 
 ## Alternatives Rejected
 
@@ -58,10 +61,12 @@ The temporary tree keeps `.incomplete` until publication moves or copies it. A
 non-`EXDEV` rename failure is re-raised and leaves the temporary tree marked
 incomplete.
 
-If fallback copying fails, both the source staging tree and any partially copied final
-tree retain `.incomplete`. The code must not delete either tree or report success. If
-temporary-tree cleanup or final-marker removal fails, the final tree retains
-`.incomplete` and the exception propagates.
+If creating the destination marker fails, the implementation removes the still-empty
+final directory when possible and propagates the error. If fallback copying fails, both
+the source staging tree and any partially copied final tree retain `.incomplete`. The
+code must not delete either tree or report success. If temporary-tree cleanup or
+final-marker removal fails, the final tree retains `.incomplete` and the exception
+propagates.
 
 Existing overwrite behavior remains unchanged: a later run requires `--overwrite` to
 replace an existing final directory.
@@ -76,7 +81,10 @@ Automated tests cover:
 3. a non-`EXDEV` rename error that propagates while retaining the staging marker;
 4. an injected copy failure that propagates while retaining incomplete markers and
    recoverable files;
-5. existing PushT output and launcher tests.
+5. an injected staging-cleanup failure that leaves both trees marked incomplete;
+6. an injected final-marker-removal failure that leaves the copied final tree marked
+   incomplete;
+7. existing PushT output and launcher tests.
 
 The development-machine verification uses a small throwaway output directory on the
 same HPVS mount. It must publish through the fallback without running another model
