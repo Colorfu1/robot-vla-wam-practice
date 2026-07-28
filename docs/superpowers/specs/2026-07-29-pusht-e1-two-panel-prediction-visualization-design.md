@@ -1,7 +1,7 @@
 # PushT E1 Two-Panel Prediction Visualization Design
 
 **Date:** 2026-07-29  
-**Status:** Approved for specification review
+**Status:** Approved for implementation
 
 ## Purpose
 
@@ -26,19 +26,42 @@ Each call produces one eight-step public action chunk.
 - `step=0..7` for every chunk;
 - the existing normalized and denormalized action fields.
 
-With the formal E1 defaults, each candidate contributes:
+Formal E1 (`label=Offline`) requires exactly twenty Diffusion samples. Each candidate
+contributes:
 
 ```text
 (3 BC predictions + 20 Diffusion predictions) × 8 steps = 184 rows
 ```
 
 Ten candidates therefore produce 1,840 rows. `bc_repeat_max_error` remains the maximum
-pairwise error relative to BC call zero and continues to enforce the configured
-determinism tolerance. Diffusion noise artifacts, reproducibility fields, diversity
-metrics, and the `num_rollouts=0` contract remain unchanged.
+normalized-action absolute difference between BC call zero and calls one and two, reduced
+across both eight steps and both action coordinates. It continues to enforce the configured
+determinism tolerance. Diffusion noise artifacts, reproducibility fields, diversity metrics,
+and the `num_rollouts=0` contract remain unchanged.
 
 The visualization input changes from one `bc_actions` array with shape `[8, 2]` to
 `bc_actions` with shape `[3, 8, 2]`. `diffusion_actions` remains `[20, 8, 2]`.
+
+Smoke E1 (`label=Smoke`) retains its configurable small Diffusion sample count, currently
+three. Its visualization shape is `[M,8,2]` and its per-candidate row count is
+`(3 + M) × 8`. Smoke does not change the formal E1 requirement.
+
+## Artifact Contract
+
+Keep the authoritative E1 artifacts:
+
+- frozen observation tensors and input hashes;
+- saved Diffusion noise tensors;
+- `action_chunks.parquet`;
+- `diversity_metrics.parquet`;
+- `metrics.json` and `metrics.md`;
+- `run_manifest.json`;
+- `recording.rrd`.
+
+Remove `fixed_observation_samples.png`. Its non-interactive layout cannot represent three
+BC and twenty Diffusion predictions with independent visibility, and its current
+single-BC-array consumer would become incorrect after the shape change. Update the E1 guide
+and any output-contract tests accordingly.
 
 ## Viewer Layout
 
@@ -93,7 +116,8 @@ not alter saved model outputs.
 
 ## Candidate Navigation
 
-Candidate scenes are temporal frames on one stable `candidate` sequence timeline:
+Candidate scenes are temporal frames on one stable `candidate` sequence timeline. Order is
+defined by validated `candidate_ordinal`, not incidental JSON/list order:
 
 ```text
 candidate #0 = candidate scene 0
@@ -107,6 +131,9 @@ scenes with Rerun's previous-frame/next-frame controls, the left/right arrow key
 timeline. Both BC and Diffusion panels update together. Candidate IDs must not appear in
 entity paths because unique roots would reintroduce latest-at accumulation.
 
+Candidate ordinals must be unique. Formal candidates must form the expected ordered sequence
+for the selected candidate set before recording begins.
+
 The E1 application and recording identities remain stable so `--persist-state` can remember
 user visibility choices and panel sizing. The embedded Blueprint is the active/default
 layout for newly generated E1 recordings.
@@ -116,6 +143,7 @@ layout for newly generated E1 recordings.
 The evaluator fails before writing a completed output when:
 
 - the configured BC repeat count is not three for this formal protocol;
+- `label=Offline` is requested with a Diffusion sample count other than twenty;
 - BC or Diffusion chunks are not `[8, 2]`;
 - the expected three BC or requested Diffusion samples are missing;
 - BC repeated-call error exceeds the configured tolerance;
@@ -132,11 +160,20 @@ Automated tests verify:
 - all candidate frames reuse stable entity paths;
 - moving from one candidate frame to the next updates both panels without stale entities;
 - each prediction path contains the agent plus eight targets;
+- all three BC and all twenty formal Diffusion prediction parents contain `path`, `steps`,
+  `first_action`, and `endpoint` on every candidate frame;
+- prediction colors remain stable by model and sample ordinal across candidate frames;
 - metrics and deterministic-reproduction checks remain unchanged.
 
 Manual acceptance opens a newly generated RRD with `--persist-state`, switches across at
 least three candidates using previous/next frame controls, and independently toggles one BC
 prediction and multiple Diffusion predictions in their respective panels.
+
+The implementation also updates
+`reports/guides/pusht_diffusion/e1_fixed_observation.md`: it must describe the two-panel
+layout, three saved BC calls, twenty formal Diffusion samples, candidate frame navigation,
+individual prediction controls, and the removal of the static PNG. No previous-observation,
+summary, or residual panel may remain in the guide's Viewer instructions.
 
 ## Rejected Alternatives
 
