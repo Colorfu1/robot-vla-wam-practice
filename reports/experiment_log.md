@@ -242,3 +242,105 @@ Use one section per run. Record incomplete or failed runs too.
   be interpreted as a Smoke or Formal result.
 - Result artifacts: none yet
 - Modes: Planned（未运行）
+
+## 2026-07-28 — PushT BCChunk 与 Diffusion Formal 200k
+
+- Date: 2026-07-28
+- Task suite: PushT
+- Dataset size: 165 train episodes, 20,610 frames；完整固定数据为 206 episodes
+- Observation keys: `observation.image`, `observation.state`；两步 history
+- Action space: 2D absolute target position
+- Action horizon: internal `horizon=16`；执行 `[1:9]`，8 actions
+- Control frequency: 10 Hz
+- Policy: paired-initialized BCChunk and Diffusion；各 200,000 updates，train seed 1000
+- Train loss: 最后日志值 BCChunk 0.000（仅三位小数，非精确零）；
+  Diffusion epsilon loss 0.004；二者语义不同
+- Open-loop action error: 本训练 run 未独立测量；在后续 checkpoint selection 中测量
+- Closed-loop success rate: 本训练 run 未独立测量；在后续 development selection 中测量
+- Latency: 未测量；等待 E4
+- Failure cases: 两个训练任务均正常结束；未发生训练中断
+- Notes: 213 个共享 step-zero tensor 已验证一致。训练 loss 不能跨策略直接比较，
+  也不能单独用于选模。
+- Result artifacts:
+  - `outputs/pusht_diffusion/pilot/bc_chunk/train.log`
+  - `outputs/pusht_diffusion/pilot/diffusion/train.log`
+  - `outputs/pusht_diffusion/initialization/pilot/seed_1000/initialization_manifest.json`
+- Modes: Formal
+
+## 2026-07-28 — PushT Development Checkpoint Selection
+
+- Date: 2026-07-28
+- Task suite: PushT
+- Dataset size: checkpoints trained on 165 episodes；selection uses 20 development
+  episodes and 20 committed environment seeds
+- Observation keys: `observation.image`, `observation.state`；两步 history
+- Action space: 2D absolute target position
+- Action horizon: internal `horizon=16`；执行 `[1:9]`，8 actions
+- Control frequency: 10 Hz
+- Policy: BCChunk checkpoints 25k–200k；Diffusion checkpoints 25k–200k，
+  DDPM-100，policy seed 0
+- Train loss: 继承 Formal training；不作为 selection 排序项
+- Open-loop action error: selected BCChunk-150k denormalized MSE 582.31；
+  selected Diffusion-175k denormalized MSE 1169.87
+- Closed-loop success rate: BCChunk-150k 11/20（55%）；Diffusion-175k
+  16/20（80%）
+- Latency: 未测量；等待 E4
+- Failure cases: selected checkpoint 逐 seed 对比中，仅 BC 成功 1、仅 Diffusion
+  成功 6、两者失败 3、两者成功 10
+- Notes: exact paired McNemar `p=0.125`。同一 development seed 参与了选模，
+  因而结果不是独立 final 泛化估计。最低 offline MSE 与最高闭环成功率不重合。
+- Result artifacts:
+  - `outputs/pusht_diffusion/pilot/checkpoint_selection/metrics.md`
+  - `outputs/pusht_diffusion/pilot/checkpoint_selection/selection.parquet`
+  - `outputs/pusht_diffusion/pilot/development_comparison/metrics.md`
+  - `outputs/pusht_diffusion/pilot/development_comparison/rollouts.parquet`
+- Modes: Closed-loop / Formal
+
+## 2026-07-28 — PushT E0 Full Demonstration Audit
+
+- Date: 2026-07-28
+- Task suite: PushT
+- Dataset size: 206 demonstrations, 25,650 frames
+- Observation keys: recorded PushT image/state trajectory and reconstructed block geometry
+- Action space: 2D absolute target position
+- Action horizon: E0 analyzes complete demonstrations；训练公共 chunk 为 8 actions
+- Control frequency: 10 Hz
+- Policy: N/A；dataset audit
+- Train loss: N/A；未训练
+- Open-loop action error: N/A；未执行模型预测
+- Closed-loop success rate: N/A；未执行 rollout
+- Latency: N/A；未测量
+- Failure cases: 206 episodes 均无显式正 `next.success` label；只存在 terminal 和
+  dense reward 信息
+- Notes: 自动识别 33 个全局策略组，block geometry coverage 为 100%。
+  全局分组不证明相同 observation 下的严格条件多模态。
+- Result artifacts:
+  - `outputs/pusht_diffusion/data_inspection_e0_full/metrics.md`
+  - `outputs/pusht_diffusion/data_inspection_e0_full/metrics.json`
+- Modes: Offline / Formal
+
+## 2026-07-29 — PushT E1 Paired Fixed-observation Sampling
+
+- Date: 2026-07-29
+- Task suite: PushT
+- Dataset size: selected policies trained on 165 episodes；E1 uses 10 held-out
+  observation candidates and 20 Diffusion samples per protocol
+- Observation keys: fixed two-frame `observation.image` and `observation.state` history
+- Action space: 2D absolute target position
+- Action horizon: 8-action public chunk `[1:9]`
+- Control frequency: 10 Hz action semantics；E1 不执行环境
+- Policy: selected BCChunk-150k and Diffusion-175k；DDPM-100
+- Train loss: 继承 Formal training；E1 不训练
+- Open-loop action error: E1a denormalized trajectory RMS 0.00659 px、endpoint
+  0.00750 px；E1b 为 1.94563 px、2.80300 px
+- Closed-loop success rate: 未测量；E1 的 `num_rollouts=0`
+- Latency: 未测量；等待 E4
+- Failure cases: N/A；未执行闭环。BCChunk、E1a、E1b 的相同条件复现误差均为 0
+- Notes: E1a 只改变 initial noise、固定 reverse seed；E1b 改变完整 sampling
+  seed。E1b/E1a trajectory RMS 约 295 倍，说明完整 reverse sampling stream
+  是当前 action 多样性的主要来源；是否为成功行为仍需 E2。
+- Result artifacts:
+  - `outputs/pusht_diffusion/pilot/e1_fixed_observation/metrics.md`
+  - `outputs/pusht_diffusion/pilot/e1_fixed_observation/action_chunks.parquet`
+  - `outputs/pusht_diffusion/pilot/e1_fixed_observation/diversity_metrics.parquet`
+- Modes: Offline / Formal
