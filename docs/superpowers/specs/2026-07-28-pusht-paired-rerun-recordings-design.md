@@ -113,17 +113,19 @@ splitting and future direct generation.
 
 ## Timeline and Entity Contract
 
-Every task Recording uses its own `global_frame` sequence starting at zero. It contains
-only the entity subtree for its model and environment seed:
+Every task Recording uses its own `global_frame` sequence starting at zero. Its dynamic
+entities are limited to exactly one subtree for its model and environment seed:
 
 ```text
 /rollouts/development_checkpoint_comparison/<model>/env_<seed>/policy_00/**
 ```
 
-The entity paths and components under that subtree remain unchanged so the compatibility
-splitter and future direct writer produce the same visualization schema. Incidental SDK
-timelines such as `log_tick` and `log_time` are not copied by the compatibility splitter;
-`global_frame` is the sole playback timeline.
+The only entities allowed outside that rollout subtree are the canonical static
+`/task/*` entities defined above. The entity paths and components under the rollout
+subtree remain unchanged so the compatibility splitter and future direct writer produce
+the same visualization schema. Incidental SDK timelines such as `log_tick` and
+`log_time` are not copied by the compatibility splitter; `global_frame` is the sole
+playback timeline.
 
 Images remain Rerun `EncodedImage` payloads. Compatibility splitting must copy the
 existing encoded payloads through the Rerun DataFrame API and must not reconstruct data
@@ -210,7 +212,8 @@ CLI verification alone is insufficient. Each final archive is also loaded with
 - application ID equals the registered model-specific ID;
 - Recording IDs are exactly `env_1000..env_1019` with no duplicates;
 - every Recording has exactly one expected selector-visible name;
-- every Recording contains only its expected model/seed subtree;
+- every Recording contains exactly its expected model/seed rollout subtree plus the
+  canonical `/task/*` static entities, with no other entity paths;
 - `global_frame` exists, starts at zero, is monotonic, and contains no values from
   another task;
 - simulator images and measured/action/reward components are present;
