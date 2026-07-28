@@ -155,6 +155,11 @@ applies to independently namespaced development task Recordings.
 
 ## Shared Blueprint
 
+The view composition in this section is superseded by
+[`2026-07-28-pusht-compact-rerun-layout-design.md`](2026-07-28-pusht-compact-rerun-layout-design.md).
+The stable `/rollout/*` path, application identity, and Blueprint persistence contracts
+remain unchanged.
+
 Add one PushT development Blueprint builder and send the same Blueprint definition to
 every per-seed Recording after its file sink is configured. Its view queries refer only
 to the canonical `/rollout/*` and `/task/*` paths; no model, seed, condition, policy, or
