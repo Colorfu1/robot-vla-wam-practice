@@ -71,6 +71,12 @@ robot_practice_pusht_bc_chunk
 robot_practice_pusht_diffusion
 ```
 
+The legacy single-Recording input has the exact application ID:
+
+```text
+robot_practice_pusht_rollouts
+```
+
 The model-specific application ID prevents two stores from colliding if both archives
 are accidentally loaded into one Viewer, while the shared Recording ID remains the
 cross-window comparison key.
@@ -90,9 +96,20 @@ authoritative source for the four paired categories:
 - `both_fail`
 - `both_pass`
 
-Each Recording also logs static task context containing at least model,
-`environment_seed`, `policy_seed`, success, maximum reward, checkpoint step, and
-checkpoint ID.
+Each Recording logs the following canonical static task context:
+
+```text
+/task/model             TextDocument: "bc_chunk" or "diffusion"
+/task/environment_seed  Scalars:      integer-valued seed
+/task/policy_seed       Scalars:      integer-valued seed
+/task/success           Scalars:      0 or 1
+/task/max_reward        Scalars:      finite rollout maximum reward
+/task/checkpoint_step   Scalars:      integer-valued training step
+/task/checkpoint_id     TextDocument: lowercase SHA256 digest
+```
+
+These paths, component types, and value representations are identical for compatibility
+splitting and future direct generation.
 
 ## Timeline and Entity Contract
 
@@ -134,8 +151,8 @@ The splitter:
 1. rejects an output directory carrying `.incomplete`;
 2. validates `comparison.json` contains exactly seeds `1000..1019`, both model results,
    and one of the four registered categories for each seed;
-3. loads the source archive and requires exactly one legacy Recording with the expected
-   PushT application ID;
+3. loads the source archive and requires exactly one legacy Recording with application
+   ID `robot_practice_pusht_rollouts`;
 4. selects one model/seed entity subtree at a time;
 5. requires non-empty data and a finite, monotonically increasing `global_frame`;
 6. removes incidental timelines and rebases `global_frame` to zero while retaining its
@@ -197,7 +214,8 @@ CLI verification alone is insufficient. Each final archive is also loaded with
 - `global_frame` exists, starts at zero, is monotonic, and contains no values from
   another task;
 - simulator images and measured/action/reward components are present;
-- static task context agrees with `comparison.json`;
+- every canonical `/task/*` static component exists with the required type and agrees
+  with `comparison.json`;
 - corresponding BCChunk and Diffusion archives expose the same ordered ID set.
 
 Any failed invariant leaves the archive unpublished and retains recoverable temporary
