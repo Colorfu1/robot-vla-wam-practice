@@ -1,7 +1,7 @@
 # Atomic Output EXDEV Fallback Design
 
 **Date:** 2026-07-28
-**Status:** Approved for specification review
+**Status:** Approved for implementation
 
 ## Goal
 
