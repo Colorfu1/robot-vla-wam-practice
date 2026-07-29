@@ -24,3 +24,4 @@
 
 - [2026-07-27 PushT BCChunk 与 Diffusion 模型规划和训练](daily/2026-07-27-PushT-BCChunk与Diffusion模型规划和训练.md)
 - [2026-07-29 PushT Benchmark 阶段性结论](daily/2026-07-29-PushT-Benchmark阶段性结论.md)
+- [2026-07-29 PushT 实验进展总结](daily/2026-07-29-PushT实验进展总结.md)
