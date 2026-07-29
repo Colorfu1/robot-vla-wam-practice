@@ -234,8 +234,8 @@ Use one section per run. Record incomplete or failed runs too.
   step-zero initialization, train seed 1000
 - Train loss: not available; training has not started
 - Open-loop action error: not available; E1 has not run
-- Closed-loop success rate: not available; E2/E4 have not run
-- Latency: not available; E4 has not run
+- Closed-loop success rate: not available; E2/E3 have not run
+- Latency: not available; E3 has not run
 - Failure cases: no measured rollout failures yet
 - Notes: Infrastructure and copy-ready commands are documented under
   `reports/guides/pusht_diffusion/`. This entry records planned work only and must not
@@ -257,7 +257,7 @@ Use one section per run. Record incomplete or failed runs too.
   Diffusion epsilon loss 0.004；二者语义不同
 - Open-loop action error: 本训练 run 未独立测量；在后续 checkpoint selection 中测量
 - Closed-loop success rate: 本训练 run 未独立测量；在后续 development selection 中测量
-- Latency: 未测量；等待 E4
+- Latency: 未测量；等待 E3
 - Failure cases: 两个训练任务均正常结束；未发生训练中断
 - Notes: 213 个共享 step-zero tensor 已验证一致。训练 loss 不能跨策略直接比较，
   也不能单独用于选模。
@@ -284,7 +284,7 @@ Use one section per run. Record incomplete or failed runs too.
   selected Diffusion-175k denormalized MSE 1169.87
 - Closed-loop success rate: BCChunk-150k 11/20（55%）；Diffusion-175k
   16/20（80%）
-- Latency: 未测量；等待 E4
+- Latency: 未测量；等待 E3
 - Failure cases: selected checkpoint 逐 seed 对比中，仅 BC 成功 1、仅 Diffusion
   成功 6、两者失败 3、两者成功 10
 - Notes: exact paired McNemar `p=0.125`。同一 development seed 参与了选模，
@@ -334,13 +334,209 @@ Use one section per run. Record incomplete or failed runs too.
 - Open-loop action error: E1a denormalized trajectory RMS 0.00659 px、endpoint
   0.00750 px；E1b 为 1.94563 px、2.80300 px
 - Closed-loop success rate: 未测量；E1 的 `num_rollouts=0`
-- Latency: 未测量；等待 E4
-- Failure cases: N/A；未执行闭环。BCChunk、E1a、E1b 的相同条件复现误差均为 0
+- Latency: 未测量；等待 E3
+- Failure cases: 未执行闭环。BCChunk、E1a、E1b 的相同条件复现误差均为 0；
+  固定 observation action-mode 探索分析中 E1b 为 0/10 candidate 通过
 - Notes: E1a 只改变 initial noise、固定 reverse seed；E1b 改变完整 sampling
-  seed。E1b/E1a trajectory RMS 约 295 倍，说明完整 reverse sampling stream
-  是当前 action 多样性的主要来源；是否为成功行为仍需 E2。
+  seed。E1b/E1a trajectory RMS 约 295 倍、endpoint distance 约 374 倍，
+  说明完整 reverse sampling stream 是当前 action 多样性的主要来源。复用现有
+  20 samples 的 GMM/BIC 与完整 chunk 距离聚类交叉验证得到 E1a 0/10、E1b 0/10，
+  BC averaging-consistent signature 0/10；因此未获得固定 observation
+  action-distribution 多峰证据，但小样本阴性结果不证明真实分布必然单峰。
 - Result artifacts:
   - `outputs/pusht_diffusion/pilot/e1_fixed_observation/metrics.md`
   - `outputs/pusht_diffusion/pilot/e1_fixed_observation/action_chunks.parquet`
   - `outputs/pusht_diffusion/pilot/e1_fixed_observation/diversity_metrics.parquet`
+  - `outputs/pusht_diffusion/pilot/e1_fixed_observation/action_mode_analysis/metrics.json`
+  - `outputs/pusht_diffusion/pilot/e1_fixed_observation/action_mode_analysis/candidate_summary.parquet`
+  - `outputs/pusht_diffusion/pilot/e1_fixed_observation/action_mode_analysis/figures/`
 - Modes: Offline / Formal
+
+## 2026-07-29 — PushT E2 Dual Closed-loop Sampling Rollout
+
+- Date: 2026-07-29
+- Task suite: PushT
+- Dataset size: selected policies trained on 165 episodes；E2 uses 20 committed final
+  environment seeds
+- Observation keys: 96×96 RGB and 2D agent position；two-step history
+- Action space: 2D absolute target position
+- Action horizon: internal horizon 16；每次闭环执行 `[1:9]` 共 8 actions
+- Control frequency: 10 Hz
+- Policy: selected BCChunk-150k and Diffusion-175k；DDPM-100
+- Train loss: 继承 Formal training；最后日志值 BCChunk 0.000（三位小数）、
+  Diffusion epsilon loss 0.004
+- Open-loop action error: 继承 checkpoint selection；BCChunk denormalized MSE
+  582.31，Diffusion 1169.87
+- Closed-loop success rate: E2b BCChunk 5/20（25%）；Diffusion `policy_seed=0`
+  11/20（55%）；全部 Diffusion samples 105/200（52.5%）；any@10 为 18/20（90%，
+  oracle coverage）
+- Latency: E2b per-chunk median/p95：BCChunk 9.35/10.98 ms；Diffusion
+  585.79/601.55 ms。E2 不作最终 speed benchmark，正式速度结论由 E3 给出
+- Failure cases: E2b 有 2 个环境的 10 条 Diffusion rollout 全部失败；失败轨迹
+  diversity 0.18217，高于成功轨迹 0.11576
+- Notes: E2a 使用 2×5、只改变 initial noise；env 2000 为 0/5、轨迹被明显放大，
+  env 2001 为 5/5、轨迹几乎重合，因此没有 success 翻转或多成功 mode 证据。E2b
+  使用 20×10 完整 sampling stream；主阈值 0.05 下 16/20 个环境至少有 2 个成功
+  mode，在阈值 0.025 和 0.075 下仍为 16/20。该结果支持多个成功闭环行为 mode，
+  但结合 E1 action-mode 阴性结果后，不能声称已经证明固定 observation 的
+  \(p(a\mid o)\) 多峰或 DP 克服了 MSE mode averaging
+- Result artifacts:
+  - `outputs/pusht_diffusion/pilot/e2a_initial_noise_sensitivity/metrics.md`
+  - `outputs/pusht_diffusion/pilot/e2b_full_ddpm_sampling/metrics.md`
+  - `outputs/pusht_diffusion/pilot/e2b_full_ddpm_sampling/per_environment_metrics.parquet`
+  - `outputs/pusht_diffusion/pilot/e2b_full_ddpm_sampling/mode_analysis.json`
+  - `outputs/pusht_diffusion/pilot/e2b_full_ddpm_sampling/recordings/`
+- Modes: Closed-loop / Formal
+
+## 2026-07-29 — PushT E4 Rotation-only DP OOD Diagnostic
+
+- Date: 2026-07-29
+- Task suite: custom PushT E4 center-aligned rotation-only scene
+- Dataset size: E4 dataset 0; evaluated DP-175000 was trained on 165 original PushT
+  train episodes
+- Observation keys: 96×96 RGB and 2D agent position; two-step history
+- Action space: 2D absolute target position
+- Action horizon: internal horizon 16; executes `[1:9]`, 8 actions per replan
+- Control frequency: 10 Hz
+- Policy: selected Diffusion-175k; DDPM-100; full sampling policy seeds 0–4
+- Train loss: inherited from original PushT training; E4 did not train
+- Open-loop action error: not measured
+- Closed-loop success rate: 0/5; OOD diagnostic only, not an E4 performance estimate
+- Latency: not aggregated in this diagnostic
+- Failure cases: all five rollouts reached the 300-step time limit; per-seed max reward
+  was 0.4597, 0.5515, 0.4612, 0.5858, and 0.5836
+- Notes: all rollouts used the same deterministic E4 initial state and independent
+  full-DDPM sampling streams. Results show that the unadapted original PushT policy did
+  not directly solve E4; they do not test whether E4 training can learn CW/CCW modes.
+- Result artifacts:
+  - `outputs/pusht_diffusion/pilot/e4_rotation_only_dp_ood/metrics.json`
+  - `outputs/pusht_diffusion/pilot/e4_rotation_only_dp_ood/rollouts.json`
+  - `outputs/pusht_diffusion/pilot/e4_rotation_only_dp_ood/recordings/`
+  - `outputs/pusht_diffusion/pilot/e4_rotation_only_dp_ood/videos/`
+- Modes: Closed-loop / OOD diagnostic
+
+## 2026-07-29 — PushT E4 Contact-offset OOD Diagnostic
+
+- Date: 2026-07-29
+- Task suite: custom PushT E4 lower-left-to-center 180-degree scene
+- Dataset size: E4 dataset 0; evaluated Diffusion-175k was trained on 165 original
+  PushT train episodes; reference screening used 206 original demonstrations
+- Observation keys: 96×96 RGB and 2D agent position; two-step history
+- Action space: 2D absolute target position in `[0,512]`
+- Action horizon: internal horizon 16; executes `[1:9]`, 8 actions per replan
+- Control frequency: 10 Hz
+- Policy: selected Diffusion-175k; DDPM-100; full sampling seeds 0–4
+- Train loss: inherited from original PushT training; E4 did not train
+- Open-loop action error: not measured
+- Closed-loop success rate: left-up `0/5`, center `0/5`, right-down `0/5`; OOD
+  diagnostic only
+- Latency: not aggregated in this diagnostic
+- Failure cases: all 15 rollouts reached the 300-step time limit. Mean max reward was
+  0.1595/0.2266/0.5664 for left-up/center/right-down; right-down seeds 0/1/3 reached
+  0.8357/0.8441/0.6671 but remained below the 0.95 success threshold
+- Notes: moving the initial contact point changed overlap quality substantially but did
+  not produce a rollout that approached from the opposite side. This supports contact
+  geometry sensitivity, not fixed-observation left/right multimodality. Offline screening
+  selected left references 110/132/151 and right references 171/134/90, but they are not
+  paired E4 demonstrations
+- Result artifacts:
+  - `outputs/pusht_diffusion/pilot/e4_contact_offset_probe/metrics.json`
+  - `outputs/pusht_diffusion/pilot/e4_contact_offset_probe/reference_demonstrations.json`
+  - `outputs/pusht_diffusion/pilot/e4_contact_offset_probe/*/recordings/`
+  - `outputs/pusht_diffusion/pilot/e4_contact_offset_probe/*/videos/`
+- Modes: Closed-loop / OOD diagnostic; reference screening is Offline / diagnostic
+
+## 2026-07-30 — PushT E5 Prototype-ID Conditioning Implementation
+
+- Date: 2026-07-30
+- Task suite: PushT
+- Dataset size: 206 episodes total；prototype fit and training sidecar use 165 train
+  episodes
+- Observation keys: 96×96 RGB and 2D agent position；two-step history
+- Action space: 2D absolute target position
+- Action horizon: internal horizon 16；closed loop executes `[1:9]`, 8 actions per replan
+- Control frequency: 10 Hz
+- Policy: Mode-BCChunk and Mode-Diffusion；`nn.Embedding(K+1, 32)`；20% train-only
+  NULL dropout
+- Train loss: 1-step Smoke only；Mode-BCChunk approximately 0.221，Mode-Diffusion
+  approximately 1.189；formal training not run
+- Open-loop action error: not formally measured；fixed-observation one-seed Smoke wrote
+  640 action rows and four recordings
+- Closed-loop success rate: not formally measured；one-frame 8-rollout Smoke is a pipeline
+  check and is not a performance estimate
+- Latency: runtime recording path verified；formal DDPM100 latency not measured
+- Failure cases: one-frame Smoke cannot form stable contact or a classifiable complete
+  trajectory sketch
+- Notes: Offline K-medoids selected K=3 with cluster sizes 57/70/38, silhouette
+  0.278858, initialization ARI median 1.0, and 80% subsample ARI median 0.829350.
+  Formal mode training, fixed-observation sampling, and the 880-rollout closed-loop grid
+  remain pending. No controllability or NULL multimode capability conclusion is claimed.
+- Result artifacts:
+  - `outputs/pusht_diffusion/pilot/e5_mode_conditioned/prototypes/metrics.json`
+  - `outputs/pusht_diffusion/pilot/e5_mode_conditioned/prototypes/prototype_manifest.json`
+  - `outputs/pusht_diffusion/pilot/e5_mode_conditioned/prototypes/leakage_audit.json`
+  - `outputs/pusht_diffusion/smoke/e5_fixed_observation_one_seed/`
+  - `outputs/pusht_diffusion/smoke/e5_closed_loop_one_frame/`
+- Modes: Offline / Formal prototype audit；training/evaluation pipeline Smoke
+
+## 2026-07-30 — SmolVLA LIBERO Native LoRA Two-step Smoke
+
+- Date: 2026-07-30
+- Task suite: `libero_goal` tasks 1/4/8; one demonstration per target task
+- Dataset size: 3 episodes, 315 frames
+- Observation keys: `observation.images.image`, `observation.images.image2`,
+  `observation.state`
+- Action space: 7D LIBERO relative end-effector action
+- Action horizon: `chunk_size=50`, `n_action_steps=10`
+- Control frequency: dataset 10 Hz; no closed-loop execution
+- Policy: `lerobot/smolvla_base`, LoRA rank 32, BF16, batch size 1, seed 1000
+- Train loss: step 1 `0.252`; step 2 `0.814`; both finite
+- Open-loop action error: N/A; two-step optimizer-path Smoke only
+- Closed-loop success rate: N/A; no environment rollout
+- Latency: optimizer update time 0.656/0.111 seconds for steps 1/2; not a benchmark
+- Failure cases: the first launch stopped before model loading because local Smoke omitted
+  `--policy.push_to_hub=false`; the corrected launch completed. The saved base config retains
+  a 6D state declaration while dataset samples and normalization statistics are 8D.
+  SmolVLA consumes the runtime state through dynamic padding, but closed-loop processor
+  compatibility remains to be checked.
+- Notes: PEFT wrapped successfully with 1,485,312 trainable parameters out of 451,531,488.
+  The step-2 adapter checkpoint is 18 MB including training state and reloaded successfully
+  as an inference-mode `PeftModel` with a 7D action output. This is a native training Smoke
+  and does not satisfy the planned instrumented VRAM/gradient audit or C0 closed-loop
+  acceptance gate.
+- Result artifacts:
+  - `outputs/smolvla_libero/smoke/lora_20260730_010647/metrics.json`
+  - `outputs/smolvla_libero/smoke/lora_20260730_010647/checkpoints/000002/pretrained_model/train_config.json`
+  - `outputs/smolvla_libero/smoke/lora_20260730_010647/checkpoints/000002/pretrained_model/adapter_config.json`
+  - `outputs/smolvla_libero/smoke/lora_20260730_010647/checkpoints/000002/pretrained_model/adapter_model.safetensors`
+- Modes: Smoke
+
+## 2026-07-30 — Public SmolVLA-LIBERO Closed-loop Smoke
+
+- Date: 2026-07-30
+- Task suite: `libero_goal`, task 1, `put the bowl on the stove`
+- Dataset size: evaluated public checkpoint `HuggingFaceVLA/smolvla_libero`; local training
+  data was not used
+- Observation keys: `observation.images.image`, `observation.images.image2`,
+  `observation.state` (8D)
+- Action space: 7D LIBERO relative end-effector action
+- Action horizon: `chunk_size=50`, `n_action_steps=1`
+- Control frequency: environment configured at 30 Hz; evaluation ran as fast as possible,
+  not wall-clock real time
+- Policy: `HuggingFaceVLA/smolvla_libero`; 10 flow-matching inference steps; seed 1000;
+  fixed LIBERO initial state
+- Train loss: N/A; public pretrained checkpoint was evaluated without training
+- Open-loop action error: N/A; no dataset-side evaluation in this Smoke
+- Closed-loop success rate: 1/1 (100%); task completed at control step 90
+- Latency: 31.12 seconds for the episode, approximately 0.346 seconds per environment
+  step including policy inference, simulation, and recording; not policy-only latency
+- Failure cases: none observed in the single episode
+- Notes: This run verifies native compatibility between the public checkpoint and the
+  current LeRobot LIBERO environment: two 256×256 image inputs, 8D state, and 7D relative
+  action all matched without an adapter. A single successful episode is only a pipeline
+  and visualization Smoke, not a formal success-rate estimate.
+- Result artifacts:
+  - `outputs/smolvla_libero/smoke/hf_libero_goal_task1_20260730_013110_http/eval_info.json`
+  - `outputs/smolvla_libero/smoke/hf_libero_goal_task1_20260730_013110_http/videos/libero_goal_1/eval_episode_0.mp4`
+  - `outputs/smolvla_libero/smoke/hf_libero_goal_task1_20260730_013110_http/videos/libero_goal_1/contact_sheet.png`
+- Modes: Closed-loop / Smoke

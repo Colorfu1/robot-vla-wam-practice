@@ -33,7 +33,7 @@ from .dataset_split import EpisodeSplit, load_split
 from .model_configs import model_config_fingerprint
 from .provenance import sha256_file
 
-_POLICY_TYPES = {"bc_chunk", "diffusion"}
+_POLICY_TYPES = {"bc_chunk", "diffusion", "mode_bc_chunk", "mode_diffusion"}
 _REQUIRED_INITIALIZATION_FILES = {
     "config.json",
     "model.safetensors",
@@ -116,9 +116,10 @@ class ResolvedTraining:
     split: EpisodeSplit
     episodes: tuple[int, ...]
     dataset_root: Path
-    initialization_root: Path
+    initialization_root: Path | None
     output_dir: Path
     config: TrainPipelineConfig
+    prototype_manifest: Path | None = None
 
     def summary(
         self,
@@ -129,7 +130,7 @@ class ResolvedTraining:
             raise RuntimeError("Resolved training config has no policy")
         context = process_context or DistributedProcessContext.from_environment()
         per_gpu_batch_size = self.config.batch_size
-        return {
+        summary = {
             "entry_module": self.entry_module,
             "model": {
                 "config_module": self.model_config_module,
@@ -159,10 +160,30 @@ class ResolvedTraining:
                 "seed": self.config.seed,
                 "num_workers": self.config.num_workers,
                 "save_freq": self.config.save_freq,
-                "initialization": str(self.initialization_root),
+                "initialization": (
+                    str(self.initialization_root)
+                    if self.initialization_root is not None
+                    else "random_from_train_seed"
+                ),
+                "initialization_seed": (
+                    None if self.initialization_root is not None else self.config.seed
+                ),
                 "output_dir": str(self.output_dir),
             },
         }
+        if self.prototype_manifest is not None:
+            summary["prototype_conditioning"] = {
+                "manifest": str(self.prototype_manifest),
+                "num_prototypes": getattr(policy, "num_prototypes", None),
+                "mode_embedding_dim": getattr(policy, "mode_embedding_dim", None),
+                "condition_dropout_prob": getattr(
+                    policy,
+                    "condition_dropout_prob",
+                    None,
+                ),
+                "null_prototype_id": getattr(policy, "num_prototypes", None),
+            }
+        return summary
 
 
 def _positive_integer(value: str) -> int:
@@ -288,6 +309,8 @@ def build_train_pipeline_config(
     policy_type: str,
     entry_module: str,
     model_config_module: str,
+    prototype_manifest: Path | None = None,
+    random_initialization: bool = False,
 ) -> ResolvedTraining:
     """Resolve experiment paths and construct LeRobot's official config object."""
 
@@ -300,15 +323,21 @@ def build_train_pipeline_config(
     output_dir = resolve_training_output_dir(arguments, policy_type)
     _reject_mode_mixing(output_dir, arguments.mode)
     dataset_root = (default_output_root() / "dataset_views" / arguments.mode).resolve()
-    initialization_root = (
-        default_output_root()
-        / "initialization"
-        / arguments.mode
-        / f"seed_{arguments.train_seed}"
-        / policy_type
-    ).resolve()
+    if random_initialization:
+        initialization_root = None
+        policy.pretrained_path = None
+    else:
+        initialization_parent = (
+            default_output_root()
+            / "initialization"
+            / arguments.mode
+            / f"seed_{arguments.train_seed}"
+        )
+        if policy_type in {"mode_bc_chunk", "mode_diffusion"}:
+            initialization_parent /= "e5_mode_conditioned"
+        initialization_root = (initialization_parent / policy_type).resolve()
+        policy.pretrained_path = initialization_root
     fingerprint = model_config_fingerprint(policy)
-    policy.pretrained_path = initialization_root
     config = TrainPipelineConfig(
         dataset=DatasetConfig(
             repo_id=DATASET_REPO_ID,
@@ -343,6 +372,7 @@ def build_train_pipeline_config(
         initialization_root=initialization_root,
         output_dir=output_dir,
         config=config,
+        prototype_manifest=prototype_manifest,
     )
 
 
@@ -370,6 +400,42 @@ def validate_training_inputs(
         raise FileNotFoundError(
             f"Dataset view is missing: {resolved.dataset_root}. Run prepare_dataset.sh first."
         )
+    is_mode_policy = resolved.policy_type in {"mode_bc_chunk", "mode_diffusion"}
+    if is_mode_policy != (resolved.prototype_manifest is not None):
+        raise ValueError("Mode-conditioned policies require exactly one prototype manifest")
+    prototype: dict[str, Any] | None = None
+    if resolved.prototype_manifest is not None:
+        prototype = load_json_object(resolved.prototype_manifest)
+        _require_equal(
+            prototype,
+            "schema_version",
+            1,
+            source=resolved.prototype_manifest,
+        )
+        _require_equal(
+            prototype,
+            "status",
+            "complete",
+            source=resolved.prototype_manifest,
+        )
+        _require_equal(
+            prototype,
+            "split_manifest_sha256",
+            resolved.split.manifest_sha256,
+            source=resolved.prototype_manifest,
+        )
+        _require_equal(
+            prototype,
+            "selected_k",
+            resolved.config.policy.num_prototypes,
+            source=resolved.prototype_manifest,
+        )
+    if resolved.initialization_root is None:
+        if resolved.config.policy.pretrained_path is not None:
+            raise ValueError(
+                "Randomly initialized training must not set policy.pretrained_path"
+            )
+        return
     missing = sorted(
         name
         for name in _REQUIRED_INITIALIZATION_FILES
@@ -423,12 +489,19 @@ def validate_training_inputs(
         resolved.policy_type,
         source=resolved.initialization_root / "config.json",
     )
+    if resolved.prototype_manifest is not None:
+        _require_equal(
+            manifest,
+            "prototype_manifest_sha256",
+            sha256_file(resolved.prototype_manifest),
+            source=manifest_path,
+        )
 
 
 def training_worker_arguments(resolved: ResolvedTraining) -> list[str]:
     """Return the canonical arguments accepted by a model-specific worker."""
 
-    return [
+    arguments = [
         f"--mode={resolved.mode}",
         f"--steps={resolved.config.steps}",
         f"--train-seed={resolved.config.seed}",
@@ -438,6 +511,9 @@ def training_worker_arguments(resolved: ResolvedTraining) -> list[str]:
         f"--num-workers={resolved.config.num_workers}",
         f"--device={resolved.device}",
     ]
+    if resolved.prototype_manifest is not None:
+        arguments.append(f"--prototype-manifest={resolved.prototype_manifest}")
+    return arguments
 
 
 def _resolved_command(resolved: ResolvedTraining) -> str:

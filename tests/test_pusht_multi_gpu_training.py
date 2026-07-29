@@ -275,6 +275,8 @@ def test_multi_gpu_launcher_rejects_more_than_visible_devices(
     [
         ("train_bc_chunk_multi_gpu.sh", "train_bc_chunk_multi_gpu"),
         ("train_diffusion_multi_gpu.sh", "train_diffusion_multi_gpu"),
+        ("train_mode_bc_chunk_multi_gpu.sh", "train_mode_bc_chunk_multi_gpu"),
+        ("train_mode_diffusion_multi_gpu.sh", "train_mode_diffusion_multi_gpu"),
     ],
 )
 def test_multi_gpu_bash_is_only_a_model_specific_environment_forwarder(
@@ -347,6 +349,7 @@ def test_guides_keep_single_gpu_commands_and_add_compatible_multi_gpu_alternativ
     readme = (guide_root / "README.md").read_text(encoding="utf-8")
     smoke = (guide_root / "smoke.md").read_text(encoding="utf-8")
     benchmark = (guide_root / "benchmark.md").read_text(encoding="utf-8")
+    e5 = (guide_root / "e5_mode_conditioned.md").read_text(encoding="utf-8")
 
     for guide in (readme, smoke, benchmark):
         assert "train_bc_chunk_multi_gpu.sh" in guide
@@ -358,4 +361,7 @@ def test_guides_keep_single_gpu_commands_and_add_compatible_multi_gpu_alternativ
     assert "train_bc_chunk.sh" in benchmark
     assert "train_diffusion.sh" in benchmark
     assert "--batch-size=32" in benchmark
+    assert "train_mode_bc_chunk_multi_gpu.sh" in e5
+    assert "train_mode_diffusion_multi_gpu.sh" in e5
+    assert "--num-gpus=8" in e5
     assert "checkpoint selection" in benchmark

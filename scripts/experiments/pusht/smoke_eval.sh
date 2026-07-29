@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Purpose: reduced E1 (three noises) plus two-environment/two-noise closed-loop checks.
+# Purpose: reduced E1 plus fresh closed-loop E2a and E2b checks.
 # Entry points: fixed_observation_eval and rollout_eval Python modules.
 # Required: --bc-policy=DIR and --diffusion-policy=DIR.
 # Optional: --candidates=FILE, --dataset-root=DIR, --output-dir=DIR.
@@ -32,18 +32,25 @@ if [[ ! -f "${candidates}" ]]; then
   echo "error: Smoke Eval candidates file does not exist: ${candidates}" >&2
   echo "Generate it before running Smoke Eval:" >&2
   echo "  bash scripts/experiments/pusht/inspect_demonstrations.sh \\" >&2
-  echo "    --num-episodes=50 \\" >&2
+  echo "    --num-episodes=206 \\" >&2
   echo "    --num-candidates=10 \\" >&2
   echo "    --output-dir=outputs/pusht_diffusion/data_inspection" >&2
   exit 66
 fi
 e1_command=(conda run --no-capture-output -n robot-practice python -m robot_practice.experiments.pusht_diffusion.fixed_observation_eval "--bc-policy=${bc_policy}" "--diffusion-policy=${diffusion_policy}" "--candidates=${candidates}" "--dataset-root=${dataset_root}" "--num-action-samples=3" "--label=Smoke" "--output-dir=${output_dir}/e1_fixed_observation")
-e2_command=(conda run --no-capture-output -n robot-practice python -m robot_practice.experiments.pusht_diffusion.rollout_eval "--bc-policy=${bc_policy}" "--diffusion-policy=${diffusion_policy}" "--num-environment-seeds=2" "--num-policy-seeds=2" "--label=Smoke" "--output-dir=${output_dir}/e2_rollouts")
-if [[ "${overwrite}" == true ]]; then e1_command+=(--overwrite); e2_command+=(--overwrite); fi
+e2a_command=(conda run --no-capture-output -n robot-practice python -m robot_practice.experiments.pusht_diffusion.rollout_eval "--protocol=initial-noise-sensitivity" "--diffusion-policy=${diffusion_policy}" "--num-environment-seeds=1" "--num-policy-seeds=2" "--label=Smoke" "--output-dir=${output_dir}/e2a_initial_noise_sensitivity")
+e2b_command=(conda run --no-capture-output -n robot-practice python -m robot_practice.experiments.pusht_diffusion.rollout_eval "--protocol=full-ddpm-sampling" "--bc-policy=${bc_policy}" "--diffusion-policy=${diffusion_policy}" "--num-environment-seeds=1" "--num-policy-seeds=2" "--label=Smoke" "--output-dir=${output_dir}/e2b_full_ddpm_sampling")
+if [[ "${overwrite}" == true ]]; then
+  e1_command+=(--overwrite)
+  e2a_command+=(--overwrite)
+  e2b_command+=(--overwrite)
+fi
 if [[ "${print_command}" == true ]]; then
   printf '%q ' "${e1_command[@]}"; printf '\n'
-  printf '%q ' "${e2_command[@]}"; printf '\n'
+  printf '%q ' "${e2a_command[@]}"; printf '\n'
+  printf '%q ' "${e2b_command[@]}"; printf '\n'
   exit 0
 fi
 "${e1_command[@]}"
-"${e2_command[@]}"
+"${e2a_command[@]}"
+"${e2b_command[@]}"

@@ -40,6 +40,7 @@ def resolve_training(
         policy_type="bc_chunk",
         entry_module=ENTRY_MODULE,
         model_config_module=MODEL_CONFIG_MODULE,
+        random_initialization=True,
     )
     return arguments, resolved
 

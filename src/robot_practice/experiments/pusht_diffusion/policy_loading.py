@@ -27,6 +27,12 @@ from safetensors import safe_open
 from torch import Tensor
 
 from robot_practice.policies.bc_chunk.configuration_bc_chunk import BCChunkConfig  # noqa: F401
+from robot_practice.policies.mode_bc_chunk.configuration_mode_bc_chunk import (  # noqa: F401
+    ModeBCChunkConfig,
+)
+from robot_practice.policies.mode_diffusion.configuration_mode_diffusion import (  # noqa: F401
+    ModeDiffusionConfig,
+)
 
 from .noise import generator_state_sha256, make_generator
 from .provenance import state_dict_hashes

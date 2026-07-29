@@ -21,7 +21,7 @@
 3. 正式训练与 checkpoint selection；
 4. development closed-loop 配对比较；
 5. E0 与当前 E1 能支持的结论；
-6. 明确统计限制、尚未完成的 E1/E2/E4 和下一步判断标准。
+6. 明确统计限制、尚未完成的 E1/E2/E3 和下一步判断标准。
 
 每组结果必须使用 Offline、Closed-loop、Smoke 或 Formal 标签；“阶段性诊断”
 只能作为补充状态，不能替代模式标签。日报和 `experiment_log.md` 必须覆盖任务

@@ -77,8 +77,8 @@ Formal scale:
 
 ```text
 environment seeds: 2000..2019
-policy seeds: 0..19
-20 environments x 20 policy seeds = 400 complete Diffusion rollouts
+policy seeds: 0..9
+20 environments x 10 policy seeds = 200 complete Diffusion rollouts
 ```
 
 E2b also runs one deterministic BCChunk closed-loop baseline for each of the twenty environment
@@ -86,15 +86,15 @@ seeds:
 
 ```text
 20 BCChunk rollouts
-+ 400 Diffusion rollouts
-= 420 complete E2b rollouts
++ 200 Diffusion rollouts
+= 220 complete E2b rollouts
 ```
 
 The BCChunk rollouts are a paired task-difficulty and deterministic-policy reference. They do
 not participate in Diffusion success variance, trajectory diversity, or successful mode
 clustering.
 
-Environment seed is the independent statistical unit. The twenty policy seeds are repeated
+Environment seed is the independent statistical unit. The ten policy seeds are repeated
 stochastic samples within one initial environment state.
 
 ## Paired RNG Contract
@@ -150,7 +150,7 @@ Required invariants:
   reproduce the same initial and reverse seeds;
 - E2a reverse seeds are identical across its five policy seeds for the same environment and
   replan index;
-- E2b reverse seeds are unique across its twenty policy seeds for the same environment and
+- E2b reverse seeds are unique across its ten policy seeds for the same environment and
   replan index;
 - paired E2a/E2b replans use identical initial-noise seeds;
 - seed derivation does not include checkpoint identity, candidate ordering, scheduler name,
@@ -195,7 +195,7 @@ Report success variance in both forms needed to interpret stochastic outcomes:
 - between-environment population variance of \(p_e\);
 - fixed-policy-seed-0 single-sample success with a Wilson interval;
 - all-sample success with an environment-cluster bootstrap interval;
-- success-any@20 with a Wilson interval, explicitly labeled oracle coverage rather than
+- success-any@10 with a Wilson interval, explicitly labeled oracle coverage rather than
   deployment success.
 
 Trajectory diversity uses the existing joint agent/block representation. Stop each path at
@@ -266,23 +266,19 @@ metrics.json
 metrics.md
 mode_analysis.json
 run_manifest.json
-recording.rrd
+recordings/policy_seed_XX/env_YYYY.rrd
+bc_recordings/env_YYYY.rrd
 videos/
 ```
 
 Every rollout stores complete numeric agent, block, action-target, reward, success, and episode
-length data. The Rerun recording contains paths for every rollout.
+length data. Every Diffusion rollout also has an independently loadable RRD with its complete
+simulator-frame timeline. E2b contains ten policy-seed directories with twenty scene recordings
+each. The viewer loads these 200 files in environment-major order so the ten samples for the
+same scene are adjacent in the Recording selector. BC baselines use `bc_recordings/`.
 
-To bound E2b storage without changing execution semantics, embedded frames and MP4 video are
-pre-registered for:
-
-- every BCChunk baseline rollout;
-- `policy_seed=0` for every E2b environment;
-- `policy_seed=0` for both E2a environments.
-
-All other policy seeds still execute full closed-loop rollouts and remain fully represented by
-their numeric paths and outcomes. Video selection is seed-based and fixed before results are
-known; it is not success-based cherry-picking.
+MP4 videos remain pre-registered for every BCChunk baseline and `policy_seed=0`. Video selection
+is seed-based and fixed before results are known; it is not success-based cherry-picking.
 
 The run manifest records the frame/video selection rule and the exact count of rollouts that
 were actually reset and executed.
@@ -328,10 +324,11 @@ The evaluator fails before launching rollouts when:
 - loaded BCChunk and Diffusion checkpoints disagree on observation or action horizon;
 - an environment/policy seed pair is duplicated;
 - a formal output would contain a count other than 10 E2a Diffusion rollouts or
-  400 E2b Diffusion plus 20 BCChunk rollouts.
+  200 E2b Diffusion plus 20 BCChunk rollouts.
 
 Outputs remain atomic. An interrupted formal run is incomplete and cannot be consumed by the
-report.
+report. Formal execution always creates a new atomic temporary directory and never resumes
+rollouts or restores intermediate environment/policy state.
 
 ## Testing and Acceptance
 
@@ -344,7 +341,7 @@ Unit and integration tests must verify:
 - protocol names and condition IDs are present in rollout and replan rows;
 - success variance formulas on synthetic grouped outcomes;
 - successful mode count excludes failed trajectories;
-- formal count validation rejects altered 2x5 and 20x20 matrices;
+- formal count validation rejects altered 2x5 and 20x10 matrices;
 - smoke count overrides are accepted only with `label=Smoke`;
 - launcher `--print-command` exposes the resolved protocol without creating outputs;
 - report validation rejects E2a where E2b is required.
@@ -357,16 +354,16 @@ Formal acceptance requires:
 
 ```text
 E2a: 10 complete Diffusion rollouts
-E2b: 400 complete Diffusion rollouts + 20 complete BCChunk rollouts
+E2b: 200 complete Diffusion rollouts + 20 complete BCChunk rollouts
 ```
 
 The result may claim successful multimodality only when at least one E2b environment contains
-two or more successful modes at the primary `0.05` trajectory threshold. Success-any@20 alone
+two or more successful modes at the primary `0.05` trajectory threshold. Success-any@10 alone
 does not support that claim.
 
 ## Considered Alternatives
 
-1. **One combined 430-rollout output:** simpler aggregation, but E2a would block the primary
+1. **One combined 230-rollout output:** simpler aggregation, but E2a would block the primary
    experiment and a late failure would invalidate both protocols.
 2. **Only E2b:** cheapest main answer, but loses the controlled closed-loop test of whether
    \(x_T\)-only differences amplify.

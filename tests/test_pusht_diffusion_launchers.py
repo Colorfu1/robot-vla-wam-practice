@@ -50,9 +50,19 @@ def _training_plan(result: subprocess.CompletedProcess[str]) -> tuple[list[str],
             "checkpoint_selection",
         ),
         (
+            "compare_development_checkpoints.sh",
+            (),
+            "development_comparison",
+        ),
+        (
             "eval_fixed_observations.sh",
             ("--bc-policy=bc", "--diffusion-policy=diff"),
             "fixed_observation_eval",
+        ),
+        (
+            "analyze_fixed_observation_action_modes.sh",
+            (),
+            "fixed_observation_action_modes",
         ),
         (
             "eval_multi_seed_rollouts.sh",
@@ -65,8 +75,35 @@ def _training_plan(result: subprocess.CompletedProcess[str]) -> tuple[list[str],
             "sampling_steps_eval",
         ),
         (
+            "eval_e5_fixed_observations.sh",
+            (
+                "--bc-policy=bc",
+                "--diffusion-policy=diff",
+                "--prototype-manifest=prototype_manifest.json",
+                "--label=Smoke",
+                "--num-policy-seeds=2",
+                "--num-inference-steps=2",
+            ),
+            "e5_fixed_observation",
+        ),
+        (
+            "eval_e5_rollouts.sh",
+            (
+                "--bc-policy=bc",
+                "--diffusion-policy=diff",
+                "--prototype-manifest=prototype_manifest.json",
+                "--num-gpus=1",
+                "--label=Smoke",
+                "--num-environment-seeds=1",
+                "--num-policy-seeds=1",
+                "--episode-length=1",
+                "--num-inference-steps=1",
+            ),
+            "e5_rollout_eval",
+        ),
+        (
             "make_report.sh",
-            ("--e0=e0", "--e1=e1", "--e2=e2", "--e4=e4"),
+            ("--e0=e0", "--e1=e1", "--e2=e2", "--e3=e3"),
             "report",
         ),
     ],
@@ -91,6 +128,242 @@ def test_eval_launchers_print_direct_python_commands(
     assert f"robot_practice.experiments.pusht_diffusion.{module}" in command
 
 
+def test_sampling_steps_launcher_uses_e3_default_output() -> None:
+    result = _run(
+        "benchmark_sampling_steps.sh",
+        "--diffusion-policy=diff",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert (
+        f"--output-dir={PRACTICE_ROOT}/outputs/pusht_diffusion/pilot/e3_sampling_steps" in command
+    )
+    assert "--latency-iterations=200" in command
+
+
+def test_sampling_steps_launcher_forwards_num_gpus() -> None:
+    result = _run(
+        "benchmark_sampling_steps.sh",
+        "--diffusion-policy=diff",
+        "--num-gpus=8",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--num-gpus=8" in shlex.split(result.stdout)
+
+
+def test_sampling_steps_launcher_rejects_zero_gpus() -> None:
+    result = _run(
+        "benchmark_sampling_steps.sh",
+        "--diffusion-policy=diff",
+        "--num-gpus=0",
+        "--print-command",
+    )
+
+    assert result.returncode == 64
+    assert "positive counts required" in result.stderr
+
+
+def test_e3_recording_viewer_loads_scenes_in_environment_order(tmp_path: Path) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    for seed in reversed(range(2000, 2050)):
+        (recordings / f"env_{seed:04d}.rrd").write_bytes(b"rrd")
+
+    result = _run(
+        "view_e3_rollouts.sh",
+        f"--recordings-dir={recordings}",
+        "--port=9879",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert "--port=9879" in command
+    assert command[-50:] == [str(recordings / f"env_{seed:04d}.rrd") for seed in range(2000, 2050)]
+
+
+def test_e5_viewers_keep_same_scene_and_conditions_adjacent(tmp_path: Path) -> None:
+    fixed = tmp_path / "fixed"
+    fixed.mkdir()
+    for condition in ("P0", "P1", "NULL"):
+        (fixed / f"condition_{condition}.rrd").write_bytes(b"rrd")
+    fixed_result = _run(
+        "view_e5_fixed_observations.sh",
+        f"--recordings-dir={fixed}",
+        "--print-command",
+    )
+    assert fixed_result.returncode == 0, fixed_result.stderr
+    assert shlex.split(fixed_result.stdout)[-3:] == [
+        str(fixed / "condition_P0.rrd"),
+        str(fixed / "condition_P1.rrd"),
+        str(fixed / "condition_NULL.rrd"),
+    ]
+
+    rollouts = tmp_path / "rollouts"
+    for condition in ("P0", "P1", "NULL"):
+        bc = rollouts / "mode_bc_chunk" / f"condition_{condition}"
+        dp = rollouts / "mode_diffusion" / f"condition_{condition}" / "policy_seed_00"
+        bc.mkdir(parents=True)
+        dp.mkdir(parents=True)
+        (bc / "env_2000.rrd").write_bytes(b"rrd")
+        (dp / "env_2000.rrd").write_bytes(b"rrd")
+    rollout_result = _run(
+        "view_e5_rollouts.sh",
+        f"--recordings-dir={rollouts}",
+        "--print-command",
+    )
+    assert rollout_result.returncode == 0, rollout_result.stderr
+    expected = []
+    for condition in ("P0", "P1", "NULL"):
+        expected.extend(
+            [
+                str(rollouts / "mode_bc_chunk" / f"condition_{condition}" / "env_2000.rrd"),
+                str(
+                    rollouts
+                    / "mode_diffusion"
+                    / f"condition_{condition}"
+                    / "policy_seed_00"
+                    / "env_2000.rrd"
+                ),
+            ]
+        )
+    assert shlex.split(rollout_result.stdout)[-6:] == expected
+
+
+def test_report_launcher_forwards_e3_input() -> None:
+    result = _run(
+        "make_report.sh",
+        "--e0=e0",
+        "--e1=e1",
+        "--e2=e2",
+        "--e3=e3",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert f"--e3={PRACTICE_ROOT}/e3" in command
+    assert not any(argument.startswith("--e4=") for argument in command)
+
+
+def test_checkpoint_selection_launcher_forwards_num_gpus() -> None:
+    result = _run(
+        "select_checkpoints.sh",
+        "--bc-run=bc",
+        "--diffusion-run=diff",
+        "--num-gpus=8",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--num-gpus=8" in shlex.split(result.stdout)
+
+
+def test_checkpoint_selection_launcher_rejects_zero_gpus() -> None:
+    result = _run(
+        "select_checkpoints.sh",
+        "--bc-run=bc",
+        "--diffusion-run=diff",
+        "--num-gpus=0",
+        "--print-command",
+    )
+
+    assert result.returncode == 64
+    assert "invalid numeric argument" in result.stderr
+
+
+def test_development_comparison_launcher_forwards_inputs() -> None:
+    result = _run(
+        "compare_development_checkpoints.sh",
+        "--selection=selection.json",
+        "--device=cuda:3",
+        "--output-dir=comparison",
+        "--overwrite",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert f"--selection={PRACTICE_ROOT}/selection.json" in command
+    assert "--device=cuda:3" in command
+    assert f"--output-dir={PRACTICE_ROOT}/comparison" in command
+    assert "--overwrite" in command
+
+
+def test_development_recording_viewer_expands_complete_directory(tmp_path: Path) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    for seed in range(1000, 1020):
+        (recordings / f"env_{seed:04d}.rrd").write_bytes(b"rrd")
+
+    result = _run(
+        "view_development_recordings.sh",
+        f"--recordings-dir={recordings}",
+        "--port=9877",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert command[:6] == [
+        "conda",
+        "run",
+        "--no-capture-output",
+        "-n",
+        "robot-practice",
+        "robot-rerun",
+    ]
+    assert "--persist-state" in command
+    assert "--detach-process" in command
+    assert "--port=9877" in command
+    assert command[-20:] == [str(recordings / f"env_{seed:04d}.rrd") for seed in range(1000, 1020)]
+
+
+def test_development_recording_viewer_rejects_incomplete_and_invalid_inputs(
+    tmp_path: Path,
+) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    for seed in range(1000, 1019):
+        (recordings / f"env_{seed:04d}.rrd").write_bytes(b"rrd")
+    incomplete = _run(
+        "view_development_recordings.sh",
+        f"--recordings-dir={recordings}",
+        "--print-command",
+    )
+    duplicate = _run(
+        "view_development_recordings.sh",
+        f"--recordings-dir={recordings}",
+        f"--recordings-dir={recordings}",
+        "--print-command",
+    )
+    unknown = _run(
+        "view_development_recordings.sh",
+        f"--recordings-dir={recordings}",
+        "--unknown",
+        "--print-command",
+    )
+    invalid_port = _run(
+        "view_development_recordings.sh",
+        f"--recordings-dir={recordings}",
+        "--port=0",
+        "--print-command",
+    )
+
+    assert incomplete.returncode == 66
+    assert "expected exactly 20 RRD files" in incomplete.stderr
+    assert duplicate.returncode == 64
+    assert "duplicate --recordings-dir" in duplicate.stderr
+    assert unknown.returncode == 64
+    assert "unknown argument" in unknown.stderr
+    assert invalid_port.returncode == 64
+    assert "--port must be an integer" in invalid_port.stderr
+
+
 def test_smoke_eval_requires_candidates_before_loading_policies(tmp_path: Path) -> None:
     missing = tmp_path / "candidates.json"
 
@@ -105,7 +378,7 @@ def test_smoke_eval_requires_candidates_before_loading_policies(tmp_path: Path) 
     assert result.returncode == 66
     assert f"candidates file does not exist: {missing}" in result.stderr
     assert "inspect_demonstrations.sh" in result.stderr
-    assert "--num-episodes=50" in result.stderr
+    assert "--num-episodes=206" in result.stderr
     assert "--num-candidates=10" in result.stderr
     assert "conda run" not in result.stdout
 
@@ -124,22 +397,164 @@ def test_smoke_eval_prints_commands_when_candidates_exist(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     commands = [shlex.split(line) for line in result.stdout.splitlines()]
-    assert len(commands) == 2
-    assert (
-        "robot_practice.experiments.pusht_diffusion.fixed_observation_eval" in commands[0]
-    )
+    assert len(commands) == 3
+    assert "robot_practice.experiments.pusht_diffusion.fixed_observation_eval" in commands[0]
     assert "robot_practice.experiments.pusht_diffusion.rollout_eval" in commands[1]
+    assert "--protocol=initial-noise-sensitivity" in commands[1]
+    assert "robot_practice.experiments.pusht_diffusion.rollout_eval" in commands[2]
+    assert "--protocol=full-ddpm-sampling" in commands[2]
+
+
+def test_e2_launcher_defaults_to_exact_full_sampling_protocol() -> None:
+    result = _run(
+        "eval_multi_seed_rollouts.sh",
+        "--bc-policy=bc",
+        "--diffusion-policy=diff",
+        "--overwrite",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert "--protocol=full-ddpm-sampling" in command
+    assert "--label=Closed-loop" in command
+    assert "--num-environment-seeds" not in " ".join(command)
+    assert "--num-policy-seeds" not in " ".join(command)
+    assert "--num-gpus=1" in command
+    assert "--overwrite" in command
+
+
+def test_e2_launcher_forwards_explicit_gpu_count() -> None:
+    result = _run(
+        "eval_multi_seed_rollouts.sh",
+        "--bc-policy=bc",
+        "--diffusion-policy=diff",
+        "--num-gpus=4",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--num-gpus=4" in shlex.split(result.stdout)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "two"])
+def test_e2_launcher_rejects_invalid_gpu_count(value: str) -> None:
+    result = _run(
+        "eval_multi_seed_rollouts.sh",
+        "--bc-policy=bc",
+        "--diffusion-policy=diff",
+        f"--num-gpus={value}",
+        "--print-command",
+    )
+
+    assert result.returncode == 64
+    assert (
+        "numeric argument required" in result.stderr
+        or "GPU count must be positive" in result.stderr
+    )
+
+
+def test_e2b_viewer_loads_environment_major_recording_order(tmp_path: Path) -> None:
+    recordings = tmp_path / "recordings"
+    bc_recordings = tmp_path / "bc_recordings"
+    bc_recordings.mkdir()
+    for policy_seed in range(10):
+        seed_dir = recordings / f"policy_seed_{policy_seed:02d}"
+        seed_dir.mkdir(parents=True)
+        for environment_seed in range(2000, 2020):
+            (seed_dir / f"env_{environment_seed:04d}.rrd").write_bytes(b"rrd")
+    for environment_seed in range(2000, 2020):
+        (bc_recordings / f"env_{environment_seed:04d}.rrd").write_bytes(b"rrd")
+
+    result = _run(
+        "view_e2b_rollouts.sh",
+        f"--recordings-dir={recordings}",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    rrd_paths = [Path(value) for value in command if value.endswith(".rrd")]
+    assert "--persist-state" in command
+    assert len(rrd_paths) == 220
+    assert rrd_paths[:11] == [
+        bc_recordings / "env_2000.rrd",
+        *[
+            recordings / f"policy_seed_{policy_seed:02d}" / "env_2000.rrd"
+            for policy_seed in range(10)
+        ],
+    ]
+    assert rrd_paths[11:22] == [
+        bc_recordings / "env_2001.rrd",
+        *[
+            recordings / f"policy_seed_{policy_seed:02d}" / "env_2001.rrd"
+            for policy_seed in range(10)
+        ],
+    ]
 
 
 def test_main_guide_exposes_required_candidate_generation_command() -> None:
-    guide = (
-        PRACTICE_ROOT / "reports" / "guides" / "pusht_diffusion" / "README.md"
-    ).read_text(encoding="utf-8")
+    guide = (PRACTICE_ROOT / "reports" / "guides" / "pusht_diffusion" / "README.md").read_text(
+        encoding="utf-8"
+    )
 
     assert "bash scripts/experiments/pusht/inspect_demonstrations.sh" in guide
-    assert "--num-episodes=50" in guide
+    assert "--num-episodes=206" in guide
     assert "--num-candidates=10" in guide
     assert "--output-dir=outputs/pusht_diffusion/data_inspection" in guide
+
+
+def test_development_comparison_guide_exposes_complete_command_and_outputs() -> None:
+    guide = (
+        PRACTICE_ROOT / "reports" / "guides" / "pusht_diffusion" / "development_comparison.md"
+    ).read_text(encoding="utf-8")
+
+    assert "bash scripts/experiments/pusht/compare_development_checkpoints.sh" in guide
+    assert "--selection=outputs/pusht_diffusion/pilot/checkpoint_selection/" in guide
+    assert "--device=cuda:0" in guide
+    assert "--output-dir=outputs/pusht_diffusion/pilot/development_comparison" in guide
+    for filename in (
+        "comparison.json",
+        "rollouts.parquet",
+        "recordings/bc_chunk",
+        "recordings/diffusion",
+        "env_1000.rrd",
+        "env_1019.rrd",
+    ):
+        assert filename in guide
+    assert "bash scripts/experiments/pusht/view_development_recordings.sh" in guide
+    assert "--port=9876" in guide
+    assert "--port=9877" in guide
+    assert "Reset Blueprint" in guide
+
+
+def test_e3_guide_exposes_multi_gpu_command_and_scene_viewer() -> None:
+    guide = (
+        PRACTICE_ROOT / "reports" / "guides" / "pusht_diffusion" / "e3_sampling_speed.md"
+    ).read_text(encoding="utf-8")
+
+    assert "bash scripts/experiments/pusht/benchmark_sampling_steps.sh" in guide
+    assert "--num-gpus=8" in guide
+    assert "--overwrite" in guide
+    assert "bash scripts/experiments/pusht/view_e3_rollouts.sh" in guide
+    assert "recording.rrd" not in guide
+    assert "env_2000.rrd" in guide
+    assert "DDIM-5/10/20/50/100" in guide
+    assert "DDPM-100" in guide
+
+
+def test_e1_guide_exposes_both_sampling_protocol_recordings() -> None:
+    guide = (
+        PRACTICE_ROOT / "reports" / "guides" / "pusht_diffusion" / "e1_fixed_observation.md"
+    ).read_text(encoding="utf-8")
+
+    assert "eval_fixed_observations.sh" in guide
+    assert "--num-action-samples=20" in guide
+    assert "recording_initial_noise_only.rrd" in guide
+    assert "recording_full_sampling_seed.rrd" in guide
+    assert "344" in guide
+    assert "E1a" in guide
+    assert "E1b" in guide
 
 
 @pytest.mark.parametrize(
@@ -195,9 +610,8 @@ def test_training_launchers_expose_explicit_python_config(
     assert resolved["training"]["batch_size"] == 8
     assert resolved["training"]["steps"] == 17
     assert resolved["training"]["save_freq"] == 17
-    assert resolved["training"]["initialization"].endswith(
-        f"/initialization/smoke/seed_1000/{policy_type}"
-    )
+    assert resolved["training"]["initialization"] == "random_from_train_seed"
+    assert resolved["training"]["initialization_seed"] == 1000
     assert not output.exists()
 
 
@@ -318,10 +732,10 @@ def test_training_launchers_reject_duplicates_unknowns_and_mode_mixing(name: str
     assert mixed.returncode == 64
 
 
-def test_prepare_dataset_prints_all_five_operations_without_writing() -> None:
+def test_prepare_dataset_prints_three_data_operations_without_writing() -> None:
     result = _run("prepare_dataset.sh", "--print-command")
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.count("dataset_views") >= 1
     assert result.stdout.count("padding_stats") >= 2
-    assert result.stdout.count("initialization") >= 2
+    assert "pusht_diffusion.initialization" not in result.stdout

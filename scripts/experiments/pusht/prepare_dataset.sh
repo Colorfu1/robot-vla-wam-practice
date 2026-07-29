@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Purpose: download/validate PushT, create smoke/pilot train-stat views, padding summaries,
-# and paired BCChunk/Diffusion step-zero checkpoints.
-# Entry points: dataset_views, padding_stats, and initialization Python modules.
-# Arguments: --train-seed=N, --device=cpu|cuda, --no-download, --overwrite, --print-command.
+# Purpose: download/validate PushT and create smoke/pilot train-stat views and padding summaries.
+# Entry points: dataset_views and padding_stats Python modules.
+# Arguments: --no-download, --overwrite, --print-command.
+# Deprecated compatibility: --train-seed and --device are accepted but no longer used.
 # Example: bash scripts/experiments/pusht/prepare_dataset.sh
-# Output: outputs/pusht_diffusion/{dataset_views,initialization}.
+# Output: outputs/pusht_diffusion/dataset_views.
 
 set -euo pipefail
 
@@ -14,8 +14,6 @@ Usage: prepare_dataset.sh [--train-seed=N] [--device=cpu|cuda] [--no-download] [
 EOF
 }
 
-train_seed="1000"
-device="cuda"
 download=true
 overwrite=false
 print_command=false
@@ -27,8 +25,8 @@ for argument in "$@"; do
     exit 64
   fi
   case "${argument}" in
-    --train-seed=*) train_seed="${argument#*=}"; seen+=" ${key}" ;;
-    --device=cpu|--device=cuda) device="${argument#*=}"; seen+=" ${key}" ;;
+    --train-seed=*) seen+=" ${key}" ;;
+    --device=cpu|--device=cuda) seen+=" ${key}" ;;
     --no-download) download=false; seen+=" ${key}" ;;
     --overwrite) overwrite=true; seen+=" ${key}" ;;
     --print-command) print_command=true; seen+=" ${key}" ;;
@@ -36,7 +34,6 @@ for argument in "$@"; do
     *) echo "error: unknown argument: ${argument}" >&2; usage >&2; exit 64 ;;
   esac
 done
-[[ "${train_seed}" =~ ^[0-9]+$ ]] || { echo "error: invalid --train-seed" >&2; exit 64; }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 practice_root="$(cd -- "${script_dir}/../../.." && pwd)"
@@ -63,25 +60,11 @@ run_mode_commands() {
     "--split-file=${split_file}"
     "--output=${views_root}/${mode}/padding_stats.json"
   )
-  initialization_command=(
-    conda run --no-capture-output -n robot-practice
-    python -m robot_practice.experiments.pusht_diffusion.initialization
-    "--mode=${mode}"
-    "--dataset-root=${views_root}/${mode}"
-    "--output-dir=${practice_root}/outputs/pusht_diffusion/initialization/${mode}/seed_${train_seed}"
-    "--split-file=${split_file}"
-    "--train-seed=${train_seed}"
-    "--device=${device}"
-  )
-  [[ "${overwrite}" == true ]] && initialization_command+=(--overwrite)
   if [[ "${print_command}" == true ]]; then
     printf '%q ' "${padding_command[@]}"
     printf '\n'
-    printf '%q ' "${initialization_command[@]}"
-    printf '\n'
   else
     "${padding_command[@]}"
-    "${initialization_command[@]}"
   fi
 }
 

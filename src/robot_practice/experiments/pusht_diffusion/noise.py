@@ -12,6 +12,10 @@ from .provenance import sha256_bytes, sha256_tensor
 
 INITIAL_NOISE_STREAM = 0
 REVERSE_NOISE_STREAM = 1
+E1A_REVERSE_NOISE_STREAM = 1
+E1B_REVERSE_NOISE_STREAM = 2
+E2A_REVERSE_NOISE_STREAM = 1
+E2B_REVERSE_NOISE_STREAM = 2
 
 
 def _uint32_seed(parts: list[int]) -> int:
@@ -44,7 +48,26 @@ def reverse_noise_seed(*, environment_seed: int, replan_index: int) -> int:
             PROTOCOL_NAMESPACE,
             environment_seed,
             replan_index,
-            REVERSE_NOISE_STREAM,
+            E2A_REVERSE_NOISE_STREAM,
+        ]
+    )
+
+
+def full_sampling_reverse_noise_seed(
+    *,
+    environment_seed: int,
+    policy_seed: int,
+    replan_index: int,
+) -> int:
+    """Return the E2b reverse seed for one full-DDPM closed-loop replan."""
+
+    return _uint32_seed(
+        [
+            PROTOCOL_NAMESPACE,
+            environment_seed,
+            policy_seed,
+            replan_index,
+            E2B_REVERSE_NOISE_STREAM,
         ]
     )
 
@@ -59,6 +82,62 @@ def fixed_observation_noise_seed(*, candidate_ordinal: int, sample_ordinal: int)
 
 def fixed_observation_reverse_seed(*, candidate_ordinal: int) -> int:
     return reverse_noise_seed(environment_seed=candidate_ordinal, replan_index=0)
+
+
+def fixed_observation_initial_noise_seed(
+    *,
+    episode_index: int,
+    frame_index: int,
+    sample_ordinal: int,
+) -> int:
+    """Return the E1 paired initial-noise seed for one stable candidate key."""
+
+    return _uint32_seed(
+        [
+            PROTOCOL_NAMESPACE,
+            episode_index,
+            frame_index,
+            sample_ordinal,
+            INITIAL_NOISE_STREAM,
+        ]
+    )
+
+
+def fixed_observation_e1a_reverse_seed(
+    *,
+    episode_index: int,
+    frame_index: int,
+) -> int:
+    """Return the candidate-level reverse seed shared by every E1a sample."""
+
+    return _uint32_seed(
+        [
+            PROTOCOL_NAMESPACE,
+            episode_index,
+            frame_index,
+            0,
+            E1A_REVERSE_NOISE_STREAM,
+        ]
+    )
+
+
+def fixed_observation_e1b_reverse_seed(
+    *,
+    episode_index: int,
+    frame_index: int,
+    sample_ordinal: int,
+) -> int:
+    """Return the sample-level reverse seed used by E1b full sampling."""
+
+    return _uint32_seed(
+        [
+            PROTOCOL_NAMESPACE,
+            episode_index,
+            frame_index,
+            sample_ordinal,
+            E1B_REVERSE_NOISE_STREAM,
+        ]
+    )
 
 
 def make_generator(*, seed: int, device: torch.device | str) -> torch.Generator:

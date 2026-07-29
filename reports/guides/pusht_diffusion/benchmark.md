@@ -3,15 +3,18 @@
 ## 实验目标
 
 使用固定的 165 条 train episode 公平训练 BCChunk 与 Diffusion，仅通过 20 个
-development environment seed 选择 checkpoint，并为 E1、E2、E4 提供冻结模型。
+development environment seed 选择 checkpoint，并为 E1、E2、E3 提供冻结模型。
 
 ## 实验思路
 
-- 正式训练必须从 Pilot 的成对随机 step-zero 权重开始，不能续训 Smoke checkpoint。
+- BCChunk 与 Diffusion 均由各自训练入口按 `train_seed` 直接随机初始化，不读取
+  step-zero 或 Smoke checkpoint。
 - 两个策略使用相同数据、batch size、训练步数和 checkpoint 保存频率。
 - checkpoint 主排序使用 development closed-loop success、mean max reward、较早 step。
 - held-out audit episode 和 final environment seed 不参与模型选择。
 - 公开预训练模型只验证环境和评测兼容性，单独标记为外部参考。
+- 当前 `train_seed=1000` 结果是单次 checkpoint 对比；若要把性能差异提升为模型家族
+  结论，至少运行 3 个 training seeds 并报告均值和方差。
 
 ## 模式
 
@@ -25,9 +28,7 @@ development environment seed 选择 checkpoint，并为 E1、E2、E4 提供冻�
 如果尚未运行 Smoke 数据准备，先执行：
 
 ```bash
-bash scripts/experiments/pusht/prepare_dataset.sh \
-  --train-seed=1000 \
-  --device=cuda
+bash scripts/experiments/pusht/prepare_dataset.sh
 ```
 
 ### 2. 可选：公开预训练模型兼容性参考
@@ -50,6 +51,8 @@ migration 语义恢复这些统计。启动时看到仅包含 `normalize_inputs`
 
 模型结构与优化器配置来自两个明确的 Python model factory；Bash 不保存模型参数。
 需要先审阅配置时，在命令末尾添加 `--print-command`，该操作无副作用。
+两个入口的 resolved configuration 应显示
+`initialization=random_from_train_seed` 和对应的 `initialization_seed`。
 
 ```bash
 bash scripts/experiments/pusht/train_bc_chunk.sh \
@@ -90,7 +93,7 @@ batch；所以上面的双卡配置是 `32 × 2 = 64`，保持原正式实验的
 设置双卡 `--batch-size=64`，全局 batch 会变为 128。脚本不会自动缩放。
 
 单卡和多卡只允许二选一，不能写入同一已有输出目录。二者生成相同结构的 LeRobot
-checkpoint，后续 development checkpoint selection、E1、E2 和 E4 命令都不需要修改。
+checkpoint，后续 development checkpoint selection、E1、E2 和 E3 命令都不需要修改。
 
 正式训练保持全局 batch size 64，每 25,000 step 保存 checkpoint。BCChunk 的
 clean-action MSE 与 Diffusion 的 epsilon-prediction MSE 含义不同，不能直接比较数值
@@ -103,8 +106,28 @@ bash scripts/experiments/pusht/select_checkpoints.sh \
   --bc-run=outputs/pusht_diffusion/pilot/bc_chunk \
   --diffusion-run=outputs/pusht_diffusion/pilot/diffusion \
   --num-development-seeds=20 \
+  --num-gpus=8 \
   --output-dir=outputs/pusht_diffusion/pilot/checkpoint_selection
 ```
+
+`--num-gpus` 默认为 1，保留原来的单卡串行行为。设置为 8 时会启动 8 个独立进程，
+每个进程固定使用一张可见 CUDA GPU，并以完整 checkpoint 为任务动态领取工作；同一
+checkpoint 的 20 个 rollout 始终由一个进程完成，因此模型只加载一次。这不是 DDP，
+不会拆分单个 rollout，也不会改变 seed、指标或 checkpoint 排序规则。
+
+需要保存两个选中模型的逐 seed 对比、仿真视频和可移植 Rerun 数据时，在目标 GPU 上
+继续执行：
+
+```bash
+bash scripts/experiments/pusht/compare_development_checkpoints.sh \
+  --selection=outputs/pusht_diffusion/pilot/checkpoint_selection/selected_checkpoints.json \
+  --device=cuda:0 \
+  --output-dir=outputs/pusht_diffusion/pilot/development_comparison
+```
+
+输出格式与本机查看方式见
+[Development checkpoint 对比](development_comparison.md)。仿真会为每个模型和
+environment seed 直接生成一个独立 RRD；同一模型目录可通过指南中的启动器一次加载。
 
 后续实验读取选中的路径：
 
@@ -113,14 +136,14 @@ BC_POLICY="$(python -c 'import json; print(json.load(open("outputs/pusht_diffusi
 DIFFUSION_POLICY="$(python -c 'import json; print(json.load(open("outputs/pusht_diffusion/pilot/checkpoint_selection/selected_checkpoints.json"))["diffusion"]["checkpoint_path"])')"
 ```
 
-### 5. E1、E2、E4 完成后生成总报告
+### 5. E1、E2、E3 完成后生成总报告
 
 ```bash
 bash scripts/experiments/pusht/make_report.sh \
   --e0=outputs/pusht_diffusion/data_inspection \
   --e1=outputs/pusht_diffusion/pilot/e1_fixed_observation \
-  --e2=outputs/pusht_diffusion/pilot/e2_rollouts \
-  --e4=outputs/pusht_diffusion/pilot/e4_sampling_steps \
+  --e2=outputs/pusht_diffusion/pilot/e2b_full_ddpm_sampling \
+  --e3=outputs/pusht_diffusion/pilot/e3_sampling_steps \
   --output-dir=outputs/pusht_diffusion/pilot/report
 ```
 
@@ -131,12 +154,16 @@ bash scripts/experiments/pusht/make_report.sh \
 - 训练日志：各训练目录下的 `train.log`
 - checkpoint 选择：
   `outputs/pusht_diffusion/pilot/checkpoint_selection/selected_checkpoints.json`
+- development 逐 seed 对比：
+  `outputs/pusht_diffusion/pilot/development_comparison/`
 - 总报告：`outputs/pusht_diffusion/pilot/report/report.md`
 
 ## 判断标准
 
 - 正式训练只读取 165 条 train episode。
-- BCChunk 与 Diffusion 的初始共享参数 hash 一致。
+- 两种训练都不读取初始化 checkpoint，并记录各自的 `train_seed`。
+- 单个 training seed 只支持 checkpoint-level 描述；模型家族比较至少使用 3 个
+  training seeds。
 - 20 个 development seed 的 closed-loop 结果完整且没有使用 audit/final seed。
 - checkpoint 排序依据和最终选择写入机器可读结果。
 - `report.md` 不接受 `Smoke` 输出冒充正式结果。

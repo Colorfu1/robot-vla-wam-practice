@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import argparse
 import gc
+import multiprocessing as mp
+import traceback
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 import numpy as np
@@ -17,6 +21,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetad
 from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.policies.utils import get_device_from_parameters, get_dtype_from_parameters
 from lerobot.utils.constants import ACTION, OBS_IMAGES
+from tqdm import tqdm
 
 from robot_practice.policies.bc_chunk.modeling_bc_chunk import BCChunkPolicy
 
@@ -34,6 +39,36 @@ from .output import AtomicOutputDirectory, write_metrics, write_records_parquet
 from .policy_loading import controlled_sample, load_policy_with_processors, replace_scheduler
 from .provenance import collect_runtime_provenance, sha256_file, write_json_atomic
 from .rollout import run_rollout
+
+CheckpointEventCallback = Callable[[str, int | None], None]
+
+
+@dataclass(frozen=True)
+class CheckpointTask:
+    model_name: str
+    step: int
+    path: Path
+
+
+@dataclass(frozen=True)
+class WorkerConfig:
+    dataset_root: Path
+    development_episodes: tuple[int, ...]
+    environment_seeds: tuple[int, ...]
+    train_seed: int
+    code_commit: str | None
+
+
+@dataclass(frozen=True)
+class WorkerEvent:
+    kind: str
+    gpu_index: int
+    model_name: str
+    step: int
+    phase: str | None = None
+    environment_seed: int | None = None
+    row: dict[str, Any] | None = None
+    error: str | None = None
 
 
 def discover_checkpoints(run_root: str | Path) -> tuple[tuple[int, Path], ...]:
@@ -153,19 +188,27 @@ def _offline_error(
     return float(np.mean(normalized_errors)), float(np.mean(denormalized_errors))
 
 
-def _evaluate_run(
+def _evaluate_checkpoint(
     *,
     model_name: str,
-    checkpoints: Sequence[tuple[int, Path]],
+    step: int,
+    path: Path,
     dataset_root: Path,
     development_episodes: Sequence[int],
     environment_seeds: Sequence[int],
     train_seed: int,
     code_commit: str | None,
-) -> list[dict[str, Any]]:
-    rows = []
-    for step, path in checkpoints:
-        loaded = load_policy_with_processors(path, local_files_only=True)
+    device: str | None = None,
+    event_callback: CheckpointEventCallback | None = None,
+) -> dict[str, Any]:
+    if event_callback is not None:
+        event_callback("loading", None)
+    loaded = load_policy_with_processors(
+        path,
+        local_files_only=True,
+        device=device,
+    )
+    try:
         if model_name == "bc_chunk" and not isinstance(loaded.policy, BCChunkPolicy):
             raise TypeError(f"{path} is not a BCChunk checkpoint")
         if model_name == "diffusion":
@@ -176,6 +219,8 @@ def _evaluate_run(
                 scheduler_name="DDPM",
                 num_inference_steps=100,
             )
+        if event_callback is not None:
+            event_callback("offline", None)
         normalized_mse, denormalized_mse = _offline_error(
             loaded,
             dataset_root=dataset_root,
@@ -184,6 +229,8 @@ def _evaluate_run(
         rollout_successes = []
         max_rewards = []
         for environment_seed in environment_seeds:
+            if event_callback is not None:
+                event_callback("rollout", environment_seed)
             result = run_rollout(
                 policy=loaded.policy,
                 preprocessor=loaded.preprocessor,
@@ -195,32 +242,295 @@ def _evaluate_run(
             )
             rollout_successes.append(result.success)
             max_rewards.append(result.max_reward)
-        rows.append(
-            {
-                "model": model_name,
-                "step": step,
-                "checkpoint_path": str(path),
-                "checkpoint_id": sha256_file(path / "model.safetensors"),
-                "train_seed": train_seed,
-                "development_episode_count": len(development_episodes),
-                "development_environment_seed_count": len(environment_seeds),
-                "offline_normalized_action_mse": normalized_mse,
-                "offline_denormalized_action_mse": denormalized_mse,
-                "closed_loop_success_rate": float(np.mean(rollout_successes)),
-                "mean_max_reward": float(np.mean(max_rewards)),
-                "num_rollouts": len(environment_seeds),
-                "scheduler": "DDPM" if model_name == "diffusion" else None,
-                "num_inference_steps": 100 if model_name == "diffusion" else None,
-                "num_action_samples": 1,
-                "dataset_revision": DATASET_REVISION,
-                "code_commit": code_commit,
-            }
-        )
+            if event_callback is not None:
+                event_callback("rollout_complete", environment_seed)
+        return {
+            "model": model_name,
+            "step": step,
+            "checkpoint_path": str(path),
+            "checkpoint_id": sha256_file(path / "model.safetensors"),
+            "train_seed": train_seed,
+            "development_episode_count": len(development_episodes),
+            "development_environment_seed_count": len(environment_seeds),
+            "offline_normalized_action_mse": normalized_mse,
+            "offline_denormalized_action_mse": denormalized_mse,
+            "closed_loop_success_rate": float(np.mean(rollout_successes)),
+            "mean_max_reward": float(np.mean(max_rewards)),
+            "num_rollouts": len(environment_seeds),
+            "scheduler": "DDPM" if model_name == "diffusion" else None,
+            "num_inference_steps": 100 if model_name == "diffusion" else None,
+            "num_action_samples": 1,
+            "dataset_revision": DATASET_REVISION,
+            "code_commit": code_commit,
+        }
+    finally:
         del loaded
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+
+def _checkpoint_summary(row: dict[str, Any]) -> str:
+    return (
+        f"{row['model']} checkpoint {int(row['step']):06d}: "
+        f"success={float(row['closed_loop_success_rate']):.3f}, "
+        f"mean_max_reward={float(row['mean_max_reward']):.3f}, "
+        f"offline_mse={float(row['offline_denormalized_action_mse']):.6f}"
+    )
+
+
+def _evaluate_run(
+    *,
+    model_name: str,
+    checkpoints: Sequence[tuple[int, Path]],
+    dataset_root: Path,
+    development_episodes: Sequence[int],
+    environment_seeds: Sequence[int],
+    train_seed: int,
+    code_commit: str | None,
+    progress: tqdm | None = None,
+) -> list[dict[str, Any]]:
+    rows = []
+    for step, path in checkpoints:
+
+        def report_event(
+            phase: str,
+            environment_seed: int | None,
+            *,
+            current_step: int = step,
+        ) -> None:
+            if progress is None:
+                return
+            if phase == "rollout_complete":
+                progress.update(1)
+                return
+            values: dict[str, Any] = {
+                "model": model_name,
+                "checkpoint": f"{current_step:06d}",
+                "phase": phase,
+            }
+            if environment_seed is not None:
+                values["environment_seed"] = environment_seed
+            progress.set_postfix(**values, refresh=True)
+
+        row = _evaluate_checkpoint(
+            model_name=model_name,
+            step=step,
+            path=path,
+            dataset_root=dataset_root,
+            development_episodes=development_episodes,
+            environment_seeds=environment_seeds,
+            train_seed=train_seed,
+            code_commit=code_commit,
+            event_callback=report_event,
+        )
+        rows.append(row)
+        if progress is not None:
+            progress.write(_checkpoint_summary(row))
     return rows
+
+
+def _checkpoint_tasks(
+    bc_checkpoints: Sequence[tuple[int, Path]],
+    diffusion_checkpoints: Sequence[tuple[int, Path]],
+) -> tuple[CheckpointTask, ...]:
+    # Diffusion checkpoints are slower, so enqueue them first for better load balancing.
+    return tuple(
+        [CheckpointTask("diffusion", step, path) for step, path in diffusion_checkpoints]
+        + [CheckpointTask("bc_chunk", step, path) for step, path in bc_checkpoints]
+    )
+
+
+def _validate_num_gpus(num_gpus: int) -> None:
+    if num_gpus < 1:
+        raise ValueError("num_gpus must be at least 1")
+    if num_gpus == 1:
+        return
+    if not torch.cuda.is_available():
+        raise RuntimeError("multi-GPU checkpoint selection requires CUDA")
+    available = torch.cuda.device_count()
+    if num_gpus > available:
+        raise RuntimeError(
+            f"num_gpus={num_gpus} requested, but only {available} CUDA device(s) are visible"
+        )
+
+
+def _checkpoint_worker(
+    gpu_index: int,
+    task_queue: Any,
+    event_queue: Any,
+    config: WorkerConfig,
+) -> None:
+    torch.cuda.set_device(gpu_index)
+    torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+    while True:
+        task = task_queue.get()
+        if task is None:
+            return
+        if not isinstance(task, CheckpointTask):
+            event_queue.put(
+                WorkerEvent(
+                    kind="error",
+                    gpu_index=gpu_index,
+                    model_name="unknown",
+                    step=-1,
+                    error=f"Worker received invalid task: {task!r}",
+                )
+            )
+            return
+
+        def report_event(
+            phase: str,
+            environment_seed: int | None,
+            *,
+            current_task: CheckpointTask = task,
+        ) -> None:
+            event_queue.put(
+                WorkerEvent(
+                    kind="progress",
+                    gpu_index=gpu_index,
+                    model_name=current_task.model_name,
+                    step=current_task.step,
+                    phase=phase,
+                    environment_seed=environment_seed,
+                )
+            )
+
+        try:
+            row = _evaluate_checkpoint(
+                model_name=task.model_name,
+                step=task.step,
+                path=task.path,
+                dataset_root=config.dataset_root,
+                development_episodes=config.development_episodes,
+                environment_seeds=config.environment_seeds,
+                train_seed=config.train_seed,
+                code_commit=config.code_commit,
+                device=f"cuda:{gpu_index}",
+                event_callback=report_event,
+            )
+        except Exception:  # noqa: BLE001 - relay the complete worker failure to the parent.
+            event_queue.put(
+                WorkerEvent(
+                    kind="error",
+                    gpu_index=gpu_index,
+                    model_name=task.model_name,
+                    step=task.step,
+                    error=traceback.format_exc(),
+                )
+            )
+            return
+        event_queue.put(
+            WorkerEvent(
+                kind="result",
+                gpu_index=gpu_index,
+                model_name=task.model_name,
+                step=task.step,
+                row=row,
+            )
+        )
+
+
+def _evaluate_parallel(
+    *,
+    tasks: Sequence[CheckpointTask],
+    config: WorkerConfig,
+    num_gpus: int,
+) -> list[dict[str, Any]]:
+    context = mp.get_context("spawn")
+    task_queue = context.Queue()
+    event_queue = context.Queue()
+    worker_count = min(num_gpus, len(tasks))
+    for task in tasks:
+        task_queue.put(task)
+    for _ in range(worker_count):
+        task_queue.put(None)
+    workers = [
+        context.Process(
+            target=_checkpoint_worker,
+            args=(gpu_index, task_queue, event_queue, config),
+            name=f"checkpoint-gpu-{gpu_index}",
+        )
+        for gpu_index in range(worker_count)
+    ]
+    for worker in workers:
+        worker.start()
+
+    rows: list[dict[str, Any]] = []
+    total_rollouts = len(tasks) * len(config.environment_seeds)
+    try:
+        with tqdm(
+            total=total_rollouts,
+            desc="Checkpoint selection",
+            unit="rollout",
+            dynamic_ncols=True,
+        ) as progress:
+            while len(rows) < len(tasks):
+                try:
+                    event = event_queue.get(timeout=1.0)
+                except Empty:
+                    failed = [worker for worker in workers if worker.exitcode not in (None, 0)]
+                    if failed:
+                        details = ", ".join(
+                            f"{worker.name} exitcode={worker.exitcode}" for worker in failed
+                        )
+                        raise RuntimeError(f"Checkpoint worker exited unexpectedly: {details}")
+                    if not any(worker.is_alive() for worker in workers):
+                        raise RuntimeError("All checkpoint workers exited before producing results")
+                    continue
+                if not isinstance(event, WorkerEvent):
+                    raise TypeError(f"Received invalid worker event: {event!r}")
+                if event.kind == "error":
+                    raise RuntimeError(
+                        f"GPU {event.gpu_index} failed on {event.model_name} "
+                        f"checkpoint {event.step:06d}:\n{event.error}"
+                    )
+                if event.kind == "progress":
+                    if event.phase == "rollout_complete":
+                        progress.update(1)
+                        continue
+                    values: dict[str, Any] = {
+                        "gpu": event.gpu_index,
+                        "model": event.model_name,
+                        "checkpoint": f"{event.step:06d}",
+                        "phase": event.phase,
+                    }
+                    if event.environment_seed is not None:
+                        values["environment_seed"] = event.environment_seed
+                    progress.set_postfix(**values, refresh=True)
+                    continue
+                if event.kind == "result":
+                    if event.row is None:
+                        raise RuntimeError("Checkpoint worker returned an empty result")
+                    rows.append(event.row)
+                    progress.write(_checkpoint_summary(event.row))
+                    continue
+                raise RuntimeError(f"Unknown worker event kind: {event.kind!r}")
+    except BaseException:
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+        raise
+    finally:
+        for worker in workers:
+            worker.join(timeout=10)
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=5)
+        task_queue.close()
+        event_queue.close()
+
+    failed = [worker for worker in workers if worker.exitcode != 0]
+    if failed:
+        details = ", ".join(f"{worker.name} exitcode={worker.exitcode}" for worker in failed)
+        raise RuntimeError(f"Checkpoint worker shutdown failed: {details}")
+    model_order = {"bc_chunk": 0, "diffusion": 1}
+    return sorted(rows, key=lambda row: (model_order[str(row["model"])], int(row["step"])))
 
 
 def _select(rows: Sequence[dict[str, Any]], model: str) -> dict[str, Any]:
@@ -276,33 +586,60 @@ def select_checkpoints(
     num_development_seeds: int,
     train_seed: int,
     overwrite: bool,
+    num_gpus: int = 1,
 ) -> Path:
+    _validate_num_gpus(num_gpus)
     split = load_split()
     if not 1 <= num_development_seeds <= len(split.development_environment_seeds):
         raise ValueError("num_development_seeds must fit the committed development seed list")
     environment_seeds = split.development_environment_seeds[:num_development_seeds]
     runtime = collect_runtime_provenance(practice_root())
     code_commit = runtime["repository"]["commit"]
-    rows = _evaluate_run(
-        model_name="bc_chunk",
-        checkpoints=discover_checkpoints(bc_run),
-        dataset_root=dataset_root,
-        development_episodes=split.development,
-        environment_seeds=environment_seeds,
-        train_seed=train_seed,
-        code_commit=code_commit,
-    )
-    rows.extend(
-        _evaluate_run(
-            model_name="diffusion",
-            checkpoints=discover_checkpoints(diffusion_run),
-            dataset_root=dataset_root,
-            development_episodes=split.development,
-            environment_seeds=environment_seeds,
-            train_seed=train_seed,
-            code_commit=code_commit,
+    bc_checkpoints = discover_checkpoints(bc_run)
+    diffusion_checkpoints = discover_checkpoints(diffusion_run)
+    if num_gpus == 1:
+        total_rollouts = (len(bc_checkpoints) + len(diffusion_checkpoints)) * len(environment_seeds)
+        with tqdm(
+            total=total_rollouts,
+            desc="Checkpoint selection",
+            unit="rollout",
+            dynamic_ncols=True,
+        ) as progress:
+            rows = _evaluate_run(
+                model_name="bc_chunk",
+                checkpoints=bc_checkpoints,
+                dataset_root=dataset_root,
+                development_episodes=split.development,
+                environment_seeds=environment_seeds,
+                train_seed=train_seed,
+                code_commit=code_commit,
+                progress=progress,
+            )
+            rows.extend(
+                _evaluate_run(
+                    model_name="diffusion",
+                    checkpoints=diffusion_checkpoints,
+                    dataset_root=dataset_root,
+                    development_episodes=split.development,
+                    environment_seeds=environment_seeds,
+                    train_seed=train_seed,
+                    code_commit=code_commit,
+                    progress=progress,
+                )
+            )
+    else:
+        tasks = _checkpoint_tasks(bc_checkpoints, diffusion_checkpoints)
+        rows = _evaluate_parallel(
+            tasks=tasks,
+            config=WorkerConfig(
+                dataset_root=dataset_root,
+                development_episodes=tuple(split.development),
+                environment_seeds=tuple(environment_seeds),
+                train_seed=train_seed,
+                code_commit=code_commit,
+            ),
+            num_gpus=num_gpus,
         )
-    )
     selected = {model: _select(rows, model) for model in ("bc_chunk", "diffusion")}
     with AtomicOutputDirectory(output_dir, overwrite=overwrite) as temporary:
         write_records_parquet(temporary / "selection.parquet", rows)
@@ -327,6 +664,10 @@ def select_checkpoints(
                 "development_episodes": list(split.development),
                 "development_environment_seeds": list(environment_seeds),
                 "train_seed": train_seed,
+                "execution": {
+                    "num_gpus": num_gpus,
+                    "parallelism": ("checkpoint_process_pool" if num_gpus > 1 else "sequential"),
+                },
                 "runtime": runtime,
             },
         )
@@ -360,6 +701,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-root", type=Path, default=default_dataset_root())
     parser.add_argument("--num-development-seeds", type=int, default=20)
     parser.add_argument("--train-seed", type=int, default=DEFAULT_TRAIN_SEED)
+    parser.add_argument("--num-gpus", type=int, default=1)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -370,7 +712,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.num_gpus < 1:
+        parser.error("--num-gpus must be at least 1")
     result = select_checkpoints(
         bc_run=args.bc_run.expanduser().resolve(),
         diffusion_run=args.diffusion_run.expanduser().resolve(),
@@ -379,6 +724,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         num_development_seeds=args.num_development_seeds,
         train_seed=args.train_seed,
         overwrite=args.overwrite,
+        num_gpus=args.num_gpus,
     )
     print(f"Checkpoint selection output: {result}")
 

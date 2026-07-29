@@ -22,7 +22,11 @@ from robot_practice.experiments.pusht_diffusion.diversity_metrics import (
     trajectory_mode_distance,
 )
 from robot_practice.experiments.pusht_diffusion.fixed_observation_eval import (
+    _aggregate_e1_metrics,
     _observation_only,
+    _order_and_validate_candidates,
+    _validate_e1_rows,
+    evaluate_fixed_observations,
 )
 from robot_practice.experiments.pusht_diffusion.model_configs import (
     model_config_fingerprint,
@@ -34,11 +38,17 @@ from robot_practice.experiments.pusht_diffusion.model_configs.diffusion import (
     make_diffusion_config,
 )
 from robot_practice.experiments.pusht_diffusion.noise import (
+    fixed_observation_e1a_reverse_seed,
+    fixed_observation_e1b_reverse_seed,
+    fixed_observation_initial_noise_seed,
     initial_noise_seed,
     make_initial_noise,
     reverse_noise_seed,
 )
-from robot_practice.experiments.pusht_diffusion.output import AtomicOutputDirectory
+from robot_practice.experiments.pusht_diffusion.output import (
+    AtomicOutputDirectory,
+    write_metrics,
+)
 from robot_practice.experiments.pusht_diffusion.padding_stats import (
     padding_counts_for_episode,
 )
@@ -48,7 +58,11 @@ from robot_practice.experiments.pusht_diffusion.policy_loading import (
     replace_scheduler,
 )
 from robot_practice.experiments.pusht_diffusion.provenance import state_dict_hashes
-from robot_practice.experiments.pusht_diffusion.report import make_report
+from robot_practice.experiments.pusht_diffusion.report import (
+    _validate_e1_schema,
+    _validate_e3_schema,
+    make_report,
+)
 from robot_practice.experiments.pusht_diffusion.rollout import (
     ExplicitChunkExecutor,
     check_environment_replay,
@@ -122,7 +136,7 @@ def test_committed_split_is_deterministic_disjoint_and_complete() -> None:
     assert set(split.train).isdisjoint(split.audit)
     assert set(split.development).isdisjoint(split.audit)
     assert set(split.train + split.development + split.audit) == set(range(206))
-    assert split.e2_environment_seeds == tuple(range(2000, 2010))
+    assert split.e2_environment_seeds == tuple(range(2000, 2020))
 
 
 def test_subset_episode_sampler_emits_relative_indices_for_filtered_dataset() -> None:
@@ -242,6 +256,198 @@ def test_rng_derivation_changes_only_the_intended_stream() -> None:
     ) == reverse_noise_seed(environment_seed=2000, replan_index=4)
 
 
+def test_e1_seed_derivation_is_stable_and_uses_candidate_frame_key() -> None:
+    initial_zero = fixed_observation_initial_noise_seed(
+        episode_index=205,
+        frame_index=74,
+        sample_ordinal=0,
+    )
+    initial_nineteen = fixed_observation_initial_noise_seed(
+        episode_index=205,
+        frame_index=74,
+        sample_ordinal=19,
+    )
+    e1a_reverse = fixed_observation_e1a_reverse_seed(
+        episode_index=205,
+        frame_index=74,
+    )
+    e1b_reverse = [
+        fixed_observation_e1b_reverse_seed(
+            episode_index=205,
+            frame_index=74,
+            sample_ordinal=sample_ordinal,
+        )
+        for sample_ordinal in range(20)
+    ]
+
+    assert initial_zero == 2434392847
+    assert initial_nineteen == 410941779
+    assert e1a_reverse == 3761541897
+    assert e1b_reverse[0] == 435344550
+    assert e1b_reverse[-1] == 2816169923
+    assert len(set(e1b_reverse)) == 20
+    assert initial_zero != fixed_observation_initial_noise_seed(
+        episode_index=205,
+        frame_index=75,
+        sample_ordinal=0,
+    )
+
+
+def test_e1_aggregate_metrics_use_ratio_of_protocol_means_and_null_zero_ratio() -> None:
+    def row(protocol: str, trajectory: float, endpoint: float) -> dict[str, object]:
+        return {
+            "sampling_protocol": protocol,
+            "normalized_trajectory_pairwise_rms": trajectory,
+            "normalized_endpoint_pairwise_distance": endpoint,
+            "denormalized_trajectory_pairwise_rms": trajectory * 10,
+            "denormalized_endpoint_pairwise_distance": endpoint * 10,
+            "repeat_max_error": 0.0,
+        }
+
+    metrics = _aggregate_e1_metrics(
+        [
+            row("initial_noise_only", 0.0, 2.0),
+            row("initial_noise_only", 0.0, 4.0),
+            row("full_sampling_seed", 4.0, 6.0),
+            row("full_sampling_seed", 8.0, 12.0),
+        ],
+        num_candidates=2,
+        num_action_samples=20,
+        bc_repeat_max_error=0.0,
+    )
+
+    assert metrics["initial_noise_only_mean_normalized_endpoint_pairwise_distance"] == 3.0
+    assert metrics["full_sampling_seed_mean_normalized_endpoint_pairwise_distance"] == 9.0
+    assert (
+        metrics[
+            "full_sampling_seed_to_initial_noise_only_normalized_endpoint_pairwise_distance_ratio"
+        ]
+        == 3.0
+    )
+    assert (
+        metrics[
+            "full_sampling_seed_to_initial_noise_only_normalized_trajectory_pairwise_rms_ratio"
+        ]
+        is None
+    )
+
+
+def test_metric_markdown_renders_null_ratio_as_na(tmp_path: Path) -> None:
+    write_metrics(
+        tmp_path,
+        {"diversity_ratio": None},
+        comments={"diversity_ratio": "E1b divided by E1a"},
+    )
+
+    assert json.loads((tmp_path / "metrics.json").read_text())["diversity_ratio"] is None
+    assert "| `diversity_ratio` | N/A |" in (tmp_path / "metrics.md").read_text()
+
+
+def test_report_rejects_legacy_e1_schema_with_rerun_instruction(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="--overwrite"):
+        _validate_e1_schema(
+            tmp_path,
+            {"schema_version": 1, "experiment_schema": "legacy"},
+        )
+
+
+def test_report_rejects_legacy_e4_sampling_output(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="produce E3 evidence"):
+        _validate_e3_schema(
+            tmp_path,
+            {"schema_version": 1, "experiment": "E4"},
+        )
+
+
+def test_e1_schema_two_rows_enforce_paired_noise_and_reverse_seed_contract() -> None:
+    candidate = {
+        "candidate_id": "case",
+        "candidate_ordinal": 0,
+        "episode_index": 205,
+        "frame_index": 74,
+    }
+    action_rows: list[dict[str, object]] = []
+    for repeat in range(3):
+        for step in range(8):
+            action_rows.append(
+                {
+                    "candidate_id": "case",
+                    "sampling_protocol": "bc_deterministic",
+                    "sample_ordinal": repeat,
+                    "step": step,
+                }
+            )
+    e1a_reverse = fixed_observation_e1a_reverse_seed(
+        episode_index=205,
+        frame_index=74,
+    )
+    for sample in range(20):
+        initial_seed = fixed_observation_initial_noise_seed(
+            episode_index=205,
+            frame_index=74,
+            sample_ordinal=sample,
+        )
+        for protocol, reverse_seed in (
+            ("initial_noise_only", e1a_reverse),
+            (
+                "full_sampling_seed",
+                fixed_observation_e1b_reverse_seed(
+                    episode_index=205,
+                    frame_index=74,
+                    sample_ordinal=sample,
+                ),
+            ),
+        ):
+            for step in range(8):
+                action_rows.append(
+                    {
+                        "candidate_id": "case",
+                        "sampling_protocol": protocol,
+                        "sample_ordinal": sample,
+                        "step": step,
+                        "initial_noise_seed": initial_seed,
+                        "initial_noise_sha256": f"tensor-{sample}",
+                        "initial_noise_file_sha256": f"file-{sample}",
+                        "reverse_noise_seed": reverse_seed,
+                        "reverse_generator_state_sha256": f"generator-{reverse_seed}",
+                    }
+                )
+
+    _validate_e1_rows(
+        action_rows,
+        [
+            {"candidate_id": "case", "sampling_protocol": "initial_noise_only"},
+            {"candidate_id": "case", "sampling_protocol": "full_sampling_seed"},
+        ],
+        candidates=[candidate],
+        num_action_samples=20,
+        n_action_steps=8,
+        label="Offline",
+    )
+    assert len(action_rows) == 344
+
+    broken = [dict(row) for row in action_rows]
+    target = next(
+        row
+        for row in broken
+        if row["sampling_protocol"] == "full_sampling_seed"
+        and row["sample_ordinal"] == 1
+    )
+    target["initial_noise_sha256"] = "not-paired"
+    with pytest.raises(RuntimeError, match="not paired|inconsistent"):
+        _validate_e1_rows(
+            broken,
+            [
+                {"candidate_id": "case", "sampling_protocol": "initial_noise_only"},
+                {"candidate_id": "case", "sampling_protocol": "full_sampling_seed"},
+            ],
+            candidates=[candidate],
+            num_action_samples=20,
+            n_action_steps=8,
+            label="Offline",
+        )
+
+
 def test_explicit_noise_is_bit_reproducible() -> None:
     first = make_initial_noise(
         seed=123,
@@ -274,6 +480,53 @@ def test_fixed_observation_dataset_item_gets_an_explicit_batch_dimension() -> No
     assert result[OBS_STATE].shape == (1, 2, 2)
 
 
+def test_fixed_observation_candidates_are_ordered_by_validated_ordinal() -> None:
+    candidates = [
+        {"candidate_id": "second", "candidate_ordinal": 1},
+        {"candidate_id": "first", "candidate_ordinal": 0},
+    ]
+
+    ordered = _order_and_validate_candidates(candidates)
+
+    assert [candidate["candidate_id"] for candidate in ordered] == ["first", "second"]
+
+
+@pytest.mark.parametrize(
+    "ordinals",
+    [
+        [0, 0],
+        [0, 2],
+    ],
+)
+def test_fixed_observation_candidate_ordinals_reject_ambiguous_timelines(
+    ordinals: list[int],
+) -> None:
+    candidates = [
+        {"candidate_id": f"candidate_{index}", "candidate_ordinal": ordinal}
+        for index, ordinal in enumerate(ordinals)
+    ]
+
+    with pytest.raises(ValueError, match="candidate_ordinal"):
+        _order_and_validate_candidates(candidates)
+
+
+def test_formal_fixed_observation_eval_requires_twenty_diffusion_samples(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="exactly 20"):
+        evaluate_fixed_observations(
+            bc_policy_path=tmp_path / "bc",
+            diffusion_policy_path=tmp_path / "diffusion",
+            candidates_path=tmp_path / "candidates.json",
+            dataset_root=tmp_path / "dataset",
+            output_dir=tmp_path / "output",
+            num_action_samples=3,
+            train_seed=1000,
+            label="Offline",
+            overwrite=False,
+        )
+
+
 def test_controlled_ddpm_sampling_and_scheduler_replacement() -> None:
     torch.manual_seed(7)
     policy = DiffusionPolicy(_diffusion_config()).eval()
@@ -287,6 +540,7 @@ def test_controlled_ddpm_sampling_and_scheduler_replacement() -> None:
         device="cpu",
         dtype=torch.float32,
     )
+    canonical_noise = noise.tensor.clone()
     before = state_dict_hashes(policy.state_dict())
     first = controlled_sample(policy, batch, initial_noise=noise.tensor, reverse_seed=10)
     repeated = controlled_sample(policy, batch, initial_noise=noise.tensor, reverse_seed=10)
@@ -294,6 +548,7 @@ def test_controlled_ddpm_sampling_and_scheduler_replacement() -> None:
     assert first.full_horizon.shape == (1, 16, 2)
     assert first.actions.shape == (1, 8, 2)
     assert torch.equal(first.actions, repeated.actions)
+    assert torch.equal(noise.tensor, canonical_noise)
     assert torch.equal(first.actions, first.full_horizon[:, 1:9])
 
     replace_scheduler(policy, scheduler_name="DDIM", num_inference_steps=2)
@@ -460,10 +715,10 @@ def test_two_step_controlled_diffusion_rollout() -> None:
 
 
 def test_report_rejects_smoke_evidence(tmp_path: Path) -> None:
-    roots = {name: tmp_path / name for name in ("e0", "e1", "e2", "e4")}
+    roots = {name: tmp_path / name for name in ("e0", "e1", "e2", "e3")}
     for root in roots.values():
         root.mkdir()
-    labels = {"e0": "Offline", "e1": "Smoke", "e2": "Closed-loop", "e4": "Closed-loop"}
+    labels = {"e0": "Offline", "e1": "Smoke", "e2": "Closed-loop", "e3": "Closed-loop"}
     for name, root in roots.items():
         (root / "run_manifest.json").write_text(
             json.dumps({"label": labels[name]}),
@@ -475,7 +730,7 @@ def test_report_rejects_smoke_evidence(tmp_path: Path) -> None:
             e0_root=roots["e0"],
             e1_root=roots["e1"],
             e2_root=roots["e2"],
-            e4_root=roots["e4"],
+            e3_root=roots["e3"],
             output_dir=tmp_path / "report",
             overwrite=False,
         )

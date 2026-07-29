@@ -22,7 +22,13 @@ from lerobot.utils.constants import ACTION, OBS_IMAGES
 from lerobot.utils.io_utils import write_video
 from torch import Tensor
 
+from robot_practice.policies.mode_conditioning import (
+    PROTOTYPE_ID,
+    validate_and_latch_prototype,
+)
+
 from .noise import (
+    full_sampling_reverse_noise_seed,
     initial_noise_seed,
     make_initial_noise,
     reverse_noise_seed,
@@ -32,6 +38,30 @@ from .policy_loading import ControlledSample, controlled_sample
 
 class Processor(Protocol):
     def __call__(self, value: Any) -> Any: ...
+
+
+class EnvironmentFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        episode_length: int,
+        render: bool,
+    ) -> gym.Env: ...
+
+
+INITIAL_NOISE_SENSITIVITY = "initial-noise-sensitivity"
+FULL_DDPM_SAMPLING = "full-ddpm-sampling"
+DIFFUSION_SAMPLING_PROTOCOLS = frozenset(
+    {
+        INITIAL_NOISE_SENSITIVITY,
+        FULL_DDPM_SAMPLING,
+    }
+)
+DIFFUSION_POLICY_TYPES = frozenset({"diffusion", "mode_diffusion"})
+
+
+def is_diffusion_sampling_policy(policy: torch.nn.Module) -> bool:
+    return str(policy.config.type) in DIFFUSION_POLICY_TYPES
 
 
 @dataclass(frozen=True)
@@ -47,6 +77,7 @@ class ReplanRecord:
     num_inference_steps: int | None
     latency_ms: float
     normalized_chunk: np.ndarray
+    sampling_protocol: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +99,8 @@ class RolloutResult:
     condition_id: str = "reference"
     scheduler: str | None = None
     num_inference_steps: int | None = None
+    sampling_protocol: str | None = None
+    termination_reason: str = "unknown"
 
 
 def make_pusht_env(
@@ -112,26 +145,36 @@ class ExplicitChunkExecutor:
         *,
         environment_seed: int,
         policy_seed: int,
+        sampling_protocol: str = INITIAL_NOISE_SENSITIVITY,
     ) -> None:
+        if sampling_protocol not in DIFFUSION_SAMPLING_PROTOCOLS:
+            raise ValueError(
+                f"sampling_protocol must be one of {sorted(DIFFUSION_SAMPLING_PROTOCOLS)}"
+            )
         self.policy = policy
         self.environment_seed = environment_seed
         self.policy_seed = policy_seed
+        self.sampling_protocol = sampling_protocol
         self.replan_index = 0
         self.replans: list[ReplanRecord] = []
+        self._active_prototype_id: Tensor | None = None
         self.policy.reset()
 
     def _frozen_queue_batch(self, current_batch: dict[str, Tensor]) -> dict[str, Tensor]:
-        return {
+        frozen = {
             key: torch.stack(list(self.policy._queues[key]), dim=1)
             for key in current_batch
             if key in self.policy._queues
         }
+        if PROTOTYPE_ID in current_batch:
+            frozen[PROTOTYPE_ID] = current_batch[PROTOTYPE_ID]
+        return frozen
 
     def _query_chunk(
         self,
         current_batch: dict[str, Tensor],
     ) -> tuple[Tensor, dict[str, Any]]:
-        if self.policy.config.type != "diffusion":
+        if not is_diffusion_sampling_policy(self.policy):
             chunk = self.policy.predict_action_chunk(current_batch)
             return chunk, {
                 "initial_noise_seed": None,
@@ -149,10 +192,17 @@ class ExplicitChunkExecutor:
             policy_seed=self.policy_seed,
             replan_index=self.replan_index,
         )
-        second_seed = reverse_noise_seed(
-            environment_seed=self.environment_seed,
-            replan_index=self.replan_index,
-        )
+        if self.sampling_protocol == INITIAL_NOISE_SENSITIVITY:
+            second_seed = reverse_noise_seed(
+                environment_seed=self.environment_seed,
+                replan_index=self.replan_index,
+            )
+        else:
+            second_seed = full_sampling_reverse_noise_seed(
+                environment_seed=self.environment_seed,
+                policy_seed=self.policy_seed,
+                replan_index=self.replan_index,
+            )
         explicit = make_initial_noise(
             seed=first_seed,
             batch_size=1,
@@ -181,6 +231,12 @@ class ExplicitChunkExecutor:
         prepared = dict(batch)
         prepared.pop(ACTION, None)
         prepared = _stack_images_for_policy(self.policy, prepared)
+        if PROTOTYPE_ID in prepared:
+            self._active_prototype_id = validate_and_latch_prototype(
+                self._active_prototype_id,
+                prepared,
+                num_prototypes=int(self.policy.config.num_prototypes),
+            )
         self.policy._queues = populate_queues(self.policy._queues, prepared)
         action_queue: deque[Tensor] = self.policy._queues[ACTION]
         if len(action_queue) == 0:
@@ -202,6 +258,11 @@ class ExplicitChunkExecutor:
                     policy_seed=self.policy_seed,
                     latency_ms=latency_ms,
                     normalized_chunk=chunk[0].detach().cpu().numpy(),
+                    sampling_protocol=(
+                        self.sampling_protocol
+                        if is_diffusion_sampling_policy(self.policy)
+                        else None
+                    ),
                     **metadata,
                 )
             )
@@ -231,12 +292,16 @@ def run_rollout(
     record_frames: bool = True,
     episode_length: int = 300,
     condition_id: str = "reference",
+    sampling_protocol: str = INITIAL_NOISE_SENSITIVITY,
+    environment_factory: EnvironmentFactory | None = None,
 ) -> RolloutResult:
-    environment = make_pusht_env(episode_length=episode_length, render=record_frames)
+    factory = make_pusht_env if environment_factory is None else environment_factory
+    environment = factory(episode_length=episode_length, render=record_frames)
     executor = ExplicitChunkExecutor(
         policy,
         environment_seed=environment_seed,
         policy_seed=policy_seed,
+        sampling_protocol=sampling_protocol,
     )
     observation, info = environment.reset(seed=environment_seed)
     agent_path = [np.asarray(info["pos_agent"], dtype=np.float64)]
@@ -245,6 +310,7 @@ def run_rollout(
     actions: list[np.ndarray] = []
     rewards: list[float] = []
     success = False
+    termination_reason = "episode_limit"
     try:
         for _ in range(episode_length):
             policy_observation = preprocess_observation(observation)
@@ -260,6 +326,9 @@ def run_rollout(
                 frames.append(environment.render())
             success = success or bool(info.get("is_success", False))
             if terminated or truncated:
+                termination_reason = (
+                    "success" if success else ("terminated" if terminated else "timeout")
+                )
                 break
     finally:
         environment.close()
@@ -285,6 +354,8 @@ def run_rollout(
         condition_id=condition_id,
         scheduler=scheduler,
         num_inference_steps=num_inference_steps,
+        sampling_protocol=(sampling_protocol if is_diffusion_sampling_policy(policy) else None),
+        termination_reason=termination_reason,
     )
 
 

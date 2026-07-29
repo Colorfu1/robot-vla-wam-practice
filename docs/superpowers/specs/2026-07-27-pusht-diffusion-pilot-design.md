@@ -31,7 +31,6 @@ interface and reproducibility checks
     -> fixed-observation sampling
     -> repeated full rollouts
     -> sampling-step/latency benchmark
-    -> optional E3 decision
 ```
 
 Small-data runs exist only to verify code, data flow, saved outputs, and
@@ -104,13 +103,16 @@ environment and call that 20 rollouts.
 | E0-lite | Qualitatively inspect demonstrations and select held-out observation histories |
 | E1 | Generate multiple action chunks for frozen model input tensors |
 | E2 | Run multiple complete rollouts from the same episode initial states |
-| E4 | Compare DDIM/DDPM steps, success, and latency using one Diffusion checkpoint |
+| E3 | Compare DDIM/DDPM steps, success, and latency using one Diffusion checkpoint |
 
-### Optional
+### Follow-up experiment
 
-E3 is a fixed-middle-state local branching experiment. It is designed only after E1
-or E2 reveals a concrete case worth investigating. Prefix replay is the first
-restoration mechanism.
+E4 is a repository-local, center-aligned rotation-only PushT scene. Its current Phase 0
+validates only scene geometry and the inherited overlap-based success rule; it does not include
+controllers, data, training, or rollout claims. E5 is the planned Mode-Conditioned
+semantic-control experiment, specified separately in
+`reports/guides/pusht_diffusion/e5_mode_conditioned.md`. The previously proposed
+fixed-middle-state prefix-replay experiment is retired and is not part of the Pilot.
 
 ### Explicit Non-goals
 
@@ -137,7 +139,7 @@ configs/experiments/pusht_diffusion/
 ├── e0_lite.json
 ├── e1_sampling.json
 ├── e2_rollout.json
-└── e4_sampling_steps.json
+└── e3_sampling_steps.json
 
 scripts/experiments/pusht/
 ├── check_environment.sh
@@ -195,7 +197,7 @@ outputs/pusht_diffusion/
     ├── checkpoint_selection/
     ├── e1_fixed_observation/
     ├── e2_rollouts/
-    ├── e4_sampling_steps/
+    ├── e3_sampling_steps/
     └── report/
 ```
 
@@ -237,7 +239,7 @@ final Pilot environment seeds: 2000..2049
 ```
 
 The lists are inclusive and disjoint. Model conditions reuse the same ordered seed
-lists. E2 uses the first ten final seeds, `2000..2009`; E4 uses all 50 final seeds.
+lists. E2 uses the first ten final seeds, `2000..2009`; E3 uses all 50 final seeds.
 
 ## Phase 0: Interface and Reproducibility Checks
 
@@ -326,7 +328,7 @@ For one environment seed:
 
 Initial observations, agent paths, block paths, rewards, success, done state, and
 episode length must reproduce within explicit tolerances. Failure blocks paired E2
-and E4 evaluation.
+and E3 evaluation.
 
 Require exact equality for rendered integer images, booleans, and episode length.
 Require `rtol=0, atol=1e-8` for floating observations, paths, and rewards. These
@@ -397,7 +399,7 @@ Smoke checkpoints are not resumed into Pilot training. Smoke outputs carry
 
 ## E0-lite: Demonstration Inspection
 
-E0-lite is qualitative and never blocks training or E4.
+E0-lite is qualitative and never blocks training or E3.
 
 Inspect at least 50 demonstrations and record:
 
@@ -732,7 +734,7 @@ components. The pre-registered primary threshold is `0.05`. Within one environme
 seed, apply complete-linkage agglomerative clustering to successful rollouts with
 distance threshold `0.05`; two or more resulting clusters count as two or more
 operational success modes. A sensitivity table at `0.025` and `0.075` may be shown,
-but it cannot replace the primary threshold or control the E3 decision.
+but it cannot replace the primary threshold.
 
 First-contact side is not required for the Pilot's mode classifier. It may be shown
 as qualitative metadata only if a later implementation defines and tests a
@@ -742,31 +744,7 @@ Environment seed is the primary statistical unit. Policy seeds are repeated samp
 within one initial condition. Use Wilson intervals for binary success and
 environment-level cluster bootstrap for repeated-sampling summaries.
 
-## Optional E3: Prefix-replay Local Branching
-
-Do not implement E3 automatically. The final Pilot report first identifies whether a
-specific E1/E2 case warrants it.
-
-Preferred restoration:
-
-```text
-same environment seed
-+ same fixed action prefix
-= same intermediate state
-```
-
-Before branching, repeated prefix replay must reproduce observation state, rendered
-frame, agent pose, block pose, reward, elapsed steps, and the future trajectory under
-a fixed test action sequence.
-
-Only consider a complete Pymunk snapshot implementation if:
-
-1. a clear and important local case exists;
-2. prefix replay cannot reconstruct it;
-3. the stronger local claim materially affects the conclusion;
-4. the additional engineering cost is approved separately.
-
-## E4: DDIM/DDPM Steps and Latency
+## E3: DDIM/DDPM Steps and Latency
 
 Use the selected local Diffusion checkpoint for:
 
@@ -855,7 +833,7 @@ E1:
   action_chunks.parquet
   diversity_metrics.parquet
 
-E2/E4:
+E2/E3:
   rollouts.parquet
   replans.parquet
   videos/
@@ -908,7 +886,7 @@ E1 Rerun:
 - endpoint scatter;
 - sample/cluster table and diversity metrics.
 
-E2/E4 Rerun:
+E2/E3 Rerun:
 
 - rollout selector labeled by environment seed, policy seed, scheduler, and steps;
 - simulator playback;
@@ -928,7 +906,7 @@ latency_distribution.png
 success_latency_pareto.png
 ```
 
-E2 stores videos for all 50 Diffusion and ten BC rollouts. E4 stores all numeric
+E2 stores videos for all 50 Diffusion and ten BC rollouts. E3 stores all numeric
 trajectories and defaults to five representative videos per condition; a CLI option
 may increase that number.
 
@@ -1036,7 +1014,7 @@ bash scripts/experiments/pusht/benchmark_sampling_steps.sh \
   --ddpm-steps=100 \
   --n-episodes=50 \
   --latency-iterations=1000 \
-  --output-dir=outputs/pusht_diffusion/pilot/e4_sampling_steps
+  --output-dir=outputs/pusht_diffusion/pilot/e3_sampling_steps
 ```
 
 ```bash
@@ -1044,7 +1022,7 @@ bash scripts/experiments/pusht/make_report.sh \
   --e0=outputs/pusht_diffusion/data_inspection \
   --e1=outputs/pusht_diffusion/pilot/e1_fixed_observation \
   --e2=outputs/pusht_diffusion/pilot/e2_rollouts \
-  --e4=outputs/pusht_diffusion/pilot/e4_sampling_steps \
+  --e3=outputs/pusht_diffusion/pilot/e3_sampling_steps \
   --output-dir=outputs/pusht_diffusion/pilot/report
 ```
 
@@ -1060,11 +1038,11 @@ Fail before expensive work when:
 - fixed-seed environment replay does not reproduce;
 - train-only stats differ between models;
 - a scheduler evaluator changes parameter hashes;
-- E4 pairing metadata is incomplete;
+- E3 pairing metadata is incomplete;
 - a requested output exists without explicit overwrite permission.
 
 An E0-lite failure to find visually similar, different-action histories does not
-block E1, E2, or E4. E1 may use generic held-out histories, while the report states
+block E1, E2, or E3. E1 may use generic held-out histories, while the report states
 that the dataset inspection did not establish conditional multimodality.
 
 Use atomic output creation and an incomplete marker. A failed run must not look like
@@ -1084,7 +1062,7 @@ Test:
 6. BC clean-action MSE;
 7. shared initial parameter hashes;
 8. stable noise-seed derivation;
-9. condition-independent E4 initial/reverse seed derivation;
+9. condition-independent E3 initial/reverse seed derivation;
 10. DDPM same-initial-noise and same-reverse-seed reproducibility;
 11. DDPM different-initial-noise sensitivity with fixed reverse seed;
 12. fixed BC timestep equal to integer zero;
@@ -1167,7 +1145,6 @@ The Pilot is complete when:
 6. DDIM/DDPM conditions produce a paired success-latency curve;
 7. all results reproduce from recorded split, seeds, noise, checkpoint hashes, and
    configs;
-8. the report answers whether E3 is justified.
 
 The report must separately answer:
 
@@ -1177,7 +1154,5 @@ The report must separately answer:
 4. Does BCChunk show qualitative mode-averaging evidence in any held-out case?
 5. Does Diffusion diversity improve ordinary single-sample success?
 6. Which DDIM step setting offers the best observed success-latency trade-off?
-7. Is there a specific case worth a separately approved E3 prefix-replay study?
-
 No answer is required to favor Diffusion. A measured absence of useful multimodality
 or a failure of low-step DDIM is a valid Pilot result.

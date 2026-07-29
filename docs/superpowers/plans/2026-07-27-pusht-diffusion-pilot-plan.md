@@ -4,8 +4,7 @@
 
 ## Goal
 
-Implement the approved PushT Pilot infrastructure without running formal training or
-implementing optional E3 state restoration.
+Implement the approved PushT Pilot infrastructure without running formal training.
 
 ## Task 1: Dependency, split, and configuration foundation
 
@@ -74,7 +73,7 @@ Work:
 4. Record complete per-rollout/replan seed and noise metadata.
 5. Measure synchronized model-only and end-to-end latency.
 
-## Task 5: E0, E1, E2, E4 entrypoints and visualization
+## Task 5: E0, E1, E2, E3 entrypoints and visualization
 
 Files:
 
@@ -90,7 +89,7 @@ Work:
 1. Add qualitative demonstration inspection and candidate export.
 2. Freeze complete E1 inputs and sample 20 explicit noises.
 3. Execute independent same-seed E2 rollouts.
-4. Execute the paired DDIM/DDPM E4 matrix and latency benchmark.
+4. Execute the paired DDIM/DDPM E3 matrix and latency benchmark.
 5. Produce Rerun 2D recordings, static figures, JSON, Markdown, and Parquet outputs.
 
 ## Task 6: Direct launchers and experiment guide

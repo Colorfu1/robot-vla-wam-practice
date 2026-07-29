@@ -12,7 +12,7 @@
   33 个自动分类的全局策略组；这些全局分组不能证明严格条件多模态。
 - 完成 E1 双协议 `Offline / Formal` 评测：只改变初始 noise 时差异几乎为零，
   改变完整 DDPM sampling seed 后出现可复现的 action-chunk 多样性。
-- 正式 E2、E4 和最终报告尚未运行，因此还不能下独立泛化、成功多模态或
+- 正式 E2、E3 和最终报告尚未运行，因此还不能下独立泛化、成功多模态或
   success-latency Pareto 的最终结论。
 
 ## 实验协议
@@ -126,12 +126,12 @@ McNemar 检验得到 `p=0.125`：方向对 Diffusion 有利，但样本数不足
 
 | 指标 | E1a：只改变 initial noise | E1b：改变完整 sampling seed |
 |---|---:|---:|
-| Denormalized trajectory pairwise RMS | 0.00659 px | 1.94563 px |
-| Denormalized endpoint pairwise distance | 0.00750 px | 2.80300 px |
+| Denormalized trajectory pairwise RMS | 0.00163 px | 1.66488 px |
+| Denormalized endpoint pairwise distance | 0.00213 px | 2.41515 px |
 | 相同条件 repeat max error | 0 | 0 |
 
-BCChunk 三次调用的最大误差也是 0。E1b 相对 E1a 的 trajectory RMS 约为 295 倍，
-endpoint distance 约为 374 倍。
+BCChunk 三次调用的最大误差也是 0。E1b 相对 E1a 的 trajectory RMS 约为 1024 倍，
+endpoint distance 约为 1134 倍。
 
 这组结果把随机性的来源区分开了：
 
@@ -141,7 +141,7 @@ endpoint distance 约为 374 倍。
 - 因此不能把 Diffusion 的随机性简单归因于“初始 noise”，完整 reverse sampling
   stream 才是当前观察到的主要多样性来源。
 
-E1 仍是 teacher-forced offline 结果。约 2–3 像素的 action 差异是否足以形成不同且
+E1 仍是 teacher-forced offline 结果。约 1.7–2.4 像素的 action 差异是否足以形成不同且
 成功的闭环轨迹，必须由 E2 验证；这里不能直接声称存在多种成功行为。
 
 结果：
@@ -157,7 +157,7 @@ E1 仍是 teacher-forced offline 结果。约 2–3 像素的 action 差异是�
 | Train loss | 已测量；BCChunk 末值日志显示 0.000（三位小数），Diffusion 0.004；语义不同 |
 | Open-loop action error | 已测量；选中 BCChunk/DP 的 denormalized MSE 为 582.31/1169.87 |
 | Closed-loop success rate | development 为 55%/80%；不是独立 final 结果 |
-| Latency | 未测量；等待 E4 |
+| Latency | 未测量；等待 E3 |
 | Failure cases | development 中仅 BC 成功 1、仅 DP 成功 6、两者失败 3；失败机制尚未标注 |
 
 外部预训练参考得到 7/10 成功、mean max reward 0.9926，但其数据划分和 checkpoint
@@ -170,18 +170,19 @@ E1 仍是 teacher-forced offline 结果。约 2–3 像素的 action 差异是�
 2. **Diffusion-175k 在 development 上有明确方向性优势。** 它达到 80%，高于
    BCChunk-150k 的 55%，但 `p=0.125` 且复用了 selection set，尚不是最终证据。
 3. **完整 DDPM 随机流确实带来 action-chunk 多样性。** 仅改变 initial noise
-   几乎无效，改变完整 sampling seed 后差异扩大约两个数量级。
+   几乎无效，改变完整 sampling seed 后差异扩大约三个数量级。
 4. **当前不能把 success 优势归因于“成功多模态”。** E0 只显示全局轨迹多样性，
    E1 只显示离线动作多样性；是否产生多种成功闭环轨迹仍未验证。
 5. **当前不能比较部署效率。** DDPM-100 的延迟和减少采样步数后的成功率都未测量。
 
 ## 下一步
 
-1. 运行正式 E2：同一初始环境下比较 1 条 BCChunk 与 5 个 Diffusion policy seed，
-   分开统计 single-sample success、any@5 和成功/失败轨迹多样性。
-2. 运行正式 E4：比较 DDIM 5/10/20/50/100 与 DDPM-100，报告 p95 end-to-end
+1. 从头运行正式 E2a（2 环境 × 5 policy seed）和主实验 E2b（20 环境 × 10 policy
+   seed，另含 20 条 BCChunk baseline），分开统计 success variance、trajectory
+   diversity、successful mode count 和 any@10 oracle coverage。
+2. 运行正式 E3：比较 DDIM 5/10/20/50/100 与 DDPM-100，报告 p95 end-to-end
    action-chunk latency 和 success-latency Pareto。
-3. E2/E4 完成后生成最终报告，再决定“Diffusion 是否优于 BCChunk”以及优势来自
+3. E2/E3 完成后生成最终报告，再决定“Diffusion 是否优于 BCChunk”以及优势来自
    随机多样性、训练目标还是其他结构差异。
 
 ## 相关文档
@@ -190,4 +191,4 @@ E1 仍是 teacher-forced offline 结果。约 2–3 像素的 action 差异是�
 - [PushT Diffusion Pilot 指南](../guides/pusht_diffusion/README.md)
 - [E1 双协议指南](../guides/pusht_diffusion/e1_fixed_observation.md)
 - [E2 闭环多 seed 指南](../guides/pusht_diffusion/e2_multi_seed_rollout.md)
-- [E4 采样速度指南](../guides/pusht_diffusion/e4_sampling_speed.md)
+- [E3 采样速度指南](../guides/pusht_diffusion/e3_sampling_speed.md)

@@ -148,8 +148,8 @@ def load_split(path: str | Path | None = None) -> EpisodeSplit:
         raise ValueError("development_environment_seeds must be exactly 1000..1019")
     if final_seeds != tuple(range(2000, 2050)):
         raise ValueError("final_environment_seeds must be exactly 2000..2049")
-    if e2_seeds != final_seeds[:10]:
-        raise ValueError("e2_environment_seeds must be the first ten final seeds")
+    if e2_seeds != final_seeds[:20]:
+        raise ValueError("e2_environment_seeds must be the first twenty final seeds")
 
     return EpisodeSplit(
         source_path=resolved,

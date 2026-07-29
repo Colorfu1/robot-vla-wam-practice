@@ -31,7 +31,7 @@
 - `Formal`：用 165 条 train episode 分别训练 200,000 updates；
 - development：只用 20 个 environment seed 选择 checkpoint；
 - held-out audit：保留 21 条 episode，用于正式分析，不参与训练和模型选择；
-- E1/E2/E4：分别回答固定输入多 noise、相同初始状态多 rollout、去噪步数与延迟问题。
+- E1/E2/E3：分别回答固定输入多 noise、相同初始状态多 rollout、去噪步数与延迟问题。
 
 Smoke 只证明代码和数据流可以运行，不能作为模型性能或多模态结论。
 

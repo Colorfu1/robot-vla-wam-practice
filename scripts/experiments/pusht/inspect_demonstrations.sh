@@ -3,11 +3,11 @@
 # Entry point: python -m robot_practice.experiments.pusht_diffusion.data_inspection
 # Arguments: --num-episodes=N, --num-candidates=N, --dataset-root=DIR,
 # --output-dir=DIR, --overwrite, --print-command.
-# Example: bash scripts/experiments/pusht/inspect_demonstrations.sh --num-episodes=50 --num-candidates=10
+# Example: bash scripts/experiments/pusht/inspect_demonstrations.sh --num-episodes=206 --num-candidates=10
 
 set -euo pipefail
 usage() { echo "Usage: inspect_demonstrations.sh [--num-episodes=N] [--num-candidates=N] [--dataset-root=DIR] [--output-dir=DIR] [--overwrite] [--print-command]"; }
-num_episodes=50; num_candidates=10; dataset_root="datasets/lerobot/lerobot/pusht"
+num_episodes=206; num_candidates=10; dataset_root="datasets/lerobot/lerobot/pusht"
 output_dir="outputs/pusht_diffusion/data_inspection"; overwrite=false; print_command=false; seen=""
 for argument in "$@"; do
   key="${argument%%=*}"; [[ " ${seen} " != *" ${key} "* ]] || { echo "error: duplicate ${key}" >&2; exit 64; }

@@ -2,12 +2,14 @@
 
 ## 实验目标
 
-本实验回答三个问题：
+本实验回答四个问题：
 
 1. 完全相同的两帧 observation 下，仅改变 Diffusion 初始 noise，是否会产生不同的
    8-step action chunk？
 2. 完全相同的 PushT 初始状态下，不同 policy sampling seed 是否能产生多种成功闭环轨迹？
 3. 减少 DDIM 去噪步数后，成功率与 action-chunk 推理延迟如何变化？
+4. 从现有 demonstrations 提取的全局 trajectory prototype，能否作为离散 condition
+   显式控制动作和完整闭环行为；NULL 分支是否覆盖多个成功 prototype？
 
 主对照是确定性的 `BCChunkPolicy`。公开的 `lerobot/diffusion_pusht` 只作为外部兼容性
 参考，不与本地固定 split 做公平模型对比。
@@ -78,14 +80,16 @@ global batch size = --batch-size × --num-gpus
 
 例如双卡 `--batch-size=32` 的全局 batch 是 64；双卡
 `--batch-size=64` 的全局 batch 是 128。脚本不会自动缩放。现有单卡命令和所有
-E1/E2/E4 推理命令保持不变。
+E1/E2/E3 推理不使用这个训练 batch-size 语义；E2/E3 通过各自的 `--num-gpus`
+独立控制闭环评测 worker 数量。
 
 ## 固定实验约束
 
 - 数据共 206 条 episode：165 train / 20 development / 21 held-out audit。
 - Smoke 只使用 train 中固定的 8 条 episode，仅验证 pipeline。
 - `n_obs_steps=2`，内部 action horizon 为 16，执行切片为 `[1:9]`，每次执行 8 步。
-- BCChunk 与 Diffusion 使用相同输入、训练样本统计和逐 tensor 一致的 step-zero 初始化。
+- BCChunk 与 Diffusion 使用相同输入和训练样本统计；两者分别由 `train_seed` 直接随机
+  初始化，不要求初始参数逐 tensor 一致。
 - PushT action 是二维绝对目标位置，不是速度。
 - 当前 Pilot 不恢复 dataset 中间帧，也不实现完整 Pymunk snapshot。
 
@@ -101,15 +105,14 @@ E1/E2/E4 推理命令保持不变。
 
 1. **环境检查**：执行 [Smoke 指南](smoke.md) 的接口检查，确认 LeRobot、PushT、
    Pymunk、显式 noise 和环境 reset 可以复现。
-2. **数据与 step-zero 准备**：执行 `prepare_dataset.sh`。这一步下载/校验数据、创建
-   Smoke/Pilot 数据视图，并使用上述两个 Python model factory 创建成对初始化权重；
-   不进行训练。
+2. **数据准备**：执行 `prepare_dataset.sh`。这一步下载/校验数据，并创建
+   Smoke/Pilot 数据视图和 padding statistics；不生成模型权重。
 3. **E0-lite 数据检查**：执行下面的必需命令，生成后续 Smoke E1 和正式 E1 共用的
    `candidates.json`：
 
    ```bash
    bash scripts/experiments/pusht/inspect_demonstrations.sh \
-     --num-episodes=50 \
+     --num-episodes=206 \
      --num-candidates=10 \
      --output-dir=outputs/pusht_diffusion/data_inspection
    ```
@@ -122,27 +125,45 @@ E1/E2/E4 推理命令保持不变。
 5. **可选外部兼容性参考**：按
    [正式训练与 benchmark](benchmark.md) 运行公开预训练模型；该结果不进入本地 split
    的公平比较。
-6. **正式训练**：从 Pilot step-zero 权重分别训练 BCChunk 和 Diffusion 200,000 updates。
-   不得续训 Smoke checkpoint。
+6. **正式训练**：BCChunk 和 Diffusion 分别从 `train_seed` 控制的随机权重训练
+   200,000 updates，不读取 step-zero 或 Smoke checkpoint。
 7. **Development checkpoint 选择**：只使用 20 个 development environment seed，
-   按 [benchmark 指南](benchmark.md) 选出两个正式 checkpoint。
-8. **正式实验项**：依次执行
+   按 [benchmark 指南](benchmark.md) 选出两个正式 checkpoint。入口默认单卡，
+   可通过 `--num-gpus=N` 将不同 checkpoint 分发给 N 张可见 CUDA GPU 并行评测。
+8. **Development 逐 seed 对比**：按
+   [Development checkpoint 对比](development_comparison.md) 在同一张目标 GPU 上
+   复跑选中的两个模型，保存四类 seed、Parquet、视频，以及每个模型各 20 个独立的
+   `env_<seed>.rrd`。目录启动器会把同一模型的 RRD 一次加载到一个 Viewer，并通过
+   稳定的 `/rollout/*` Blueprint 切换。
+9. **正式实验项**：依次执行
    [E1 固定 observation 多 noise 采样](e1_fixed_observation.md)、
    [E2 相同初始环境多 seed rollout](e2_multi_seed_rollout.md) 和
-   [E4 去噪步数与延迟](e4_sampling_speed.md)。
-9. **生成总报告**：E0/E1/E2/E4 全部完成后，运行 `make_report.sh` 汇总正式结果。
+   [E3 去噪步数与延迟](e3_sampling_speed.md)。
+10. **生成总报告**：E0/E1/E2/E3 全部完成后，运行 `make_report.sh` 汇总正式结果。
+11. **E4 同中心纯旋转场景（Smoke）**：按
+    [E4 同中心纯旋转场景](e4_rotation_only.md) 验证初始 T 与 180° 目标 T 共用几何中心，
+    并确认原始重合度 success 判定正确。现有 DP-175000 已完成 5 条 OOD 诊断 rollout，
+    但仍不含 controller、配对数据或 E4 训练。
+12. **E5 Prototype-ID 条件控制**：按
+    [E5 Prototype-ID 条件控制](e5_mode_conditioned.md) 从现有 train demonstrations
+    提取 K-medoids prototypes，训练 Mode-BCChunk/Mode-Diffusion，并执行固定
+    observation 条件切换与完整闭环 Prototype/NULL 网格。实现与 Smoke 已完成，正式
+    训练和 880 条闭环 rollout 尚未执行。
 
 依赖关系可以简写为：
 
 ```text
 环境检查
-  → 数据与 step-zero 准备
+  → 数据准备
   → E0 candidates
   → Smoke 训练与评测
   → Pilot 正式训练
   → Development checkpoint 选择
-  → E1 / E2 / E4
+  → Development 逐 seed 对比
+  → E1 / E2 / E3
   → 正式总报告
+  → E4 同中心纯旋转场景 Smoke
+  → E5 Prototype-ID 条件控制
 ```
 
 ## 统一实验字段
@@ -155,11 +176,20 @@ E1/E2/E4 推理命令保持不变。
 - Control frequency：10 Hz
 - Train loss：正式训练后记录
 - Open-loop action error/diversity：checkpoint selection 与 E1 后记录
-- Closed-loop success rate：E2/E4 后记录
-- Latency：E4 后记录
+- Closed-loop success rate：E2/E3 后记录
+- Latency：E3 后记录
 - Failure cases：闭环 rollout 后按 environment seed、policy seed 和轨迹记录
 
 ## 当前状态
 
-代码、配置和启动入口已经准备完成，尚未运行 Smoke 或正式训练，因此当前没有可登记的
-PushT 实验结论。首次执行从 [Smoke 指南](smoke.md) 第 1 步开始。
+E1 已以 `Offline / Formal / Stage complete` 结束：完整 DDPM sampling stream 会稳定
+改变 action chunk，但平均轨迹差异约 1.946 px。E2a/E2b 已从空目录完成正式闭环执行；
+E2b 使用 20 个环境 × 10 个 policy seed，并把每条完整 rollout 保存为可独立切换的
+Rerun Recording。主阈值 0.05 下有 14/20 个环境出现至少两个成功 mode。E3
+采样步数与延迟实验也已完成；E4 已完成场景 Smoke 和 5 条 DP OOD 诊断。E5 已完成
+K=3 prototype fit、条件模型与评测入口，并通过 1-step/一帧 Smoke；尚无正式训练或
+能力结论。
+E3 已支持通过 `--num-gpus=N` 按 environment seed 并行执行；每个场景输出一个包含六个
+同步采样条件的 active-Blueprint Recording。E3 的 300/300 条正式闭环 rollout 和
+latency benchmark 均已完成：DDIM-5 以 58% 成功率和 47.7 ms end-to-end p95 获得
+相对 DDPM-100 的 12.57× 加速，是当前最佳 success-latency 配置。

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Purpose: E1 fixed-observation BCChunk plus explicit-noise Diffusion sampling.
+# Purpose: generate paired E1a initial-noise-only and E1b full-sampling-seed results.
 # Entry point: python -m robot_practice.experiments.pusht_diffusion.fixed_observation_eval
 # Required: --bc-policy=DIR and --diffusion-policy=DIR.
-# Optional: --candidates=FILE, --dataset-root=DIR, --num-action-samples=N,
+# Optional: --candidates=FILE, --dataset-root=DIR, --num-action-samples=20,
 # --train-seed=N, --output-dir=DIR, --overwrite, --print-command.
+# One invocation shares observations/noises and writes two protocol-specific RRD files.
+# This launcher runs label=Offline, whose formal E1 protocol requires 20 samples per protocol.
 
 set -euo pipefail
 usage() { echo "Usage: eval_fixed_observations.sh --bc-policy=DIR --diffusion-policy=DIR [--candidates=FILE] [--dataset-root=DIR] [--num-action-samples=N] [--train-seed=N] [--output-dir=DIR] [--overwrite] [--print-command]"; }
@@ -28,7 +30,7 @@ for argument in "$@"; do
 done
 [[ -n "${bc_policy}" && -n "${diffusion_policy}" ]] || { echo "error: both policy paths are required" >&2; exit 64; }
 [[ "${samples}" =~ ^[0-9]+$ ]] || { echo "error: --num-action-samples must be numeric" >&2; exit 64; }
-(( samples >= 2 )) || { echo "error: --num-action-samples must be >=2" >&2; exit 64; }
+(( samples == 20 )) || { echo "error: formal E1 requires --num-action-samples=20" >&2; exit 64; }
 [[ "${train_seed}" =~ ^[0-9]+$ ]] || { echo "error: --train-seed must be numeric" >&2; exit 64; }
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"; practice_root="$(cd -- "${script_dir}/../../.." && pwd)"
 for variable in bc_policy diffusion_policy candidates dataset_root output_dir; do

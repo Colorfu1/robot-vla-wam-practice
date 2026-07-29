@@ -1,4 +1,4 @@
-lerobot[libero,pusht]==0.4.4
+lerobot[libero,pusht,smolvla,peft]==0.4.4
 diffusers==0.35.2
 gym-pusht>=0.1.5,<0.2
 torch

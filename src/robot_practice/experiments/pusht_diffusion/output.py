@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import shutil
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
@@ -38,10 +39,35 @@ class AtomicOutputDirectory(AbstractContextManager[Path]):
     def commit(self) -> Path:
         if not self.temporary.is_dir():
             raise RuntimeError("Atomic output directory is not active")
-        (self.temporary / ".incomplete").unlink()
-        self.temporary.rename(self.final)
+        try:
+            self.temporary.rename(self.final)
+        except OSError as error:
+            if error.errno != errno.EXDEV:
+                raise
+            self._commit_by_copy()
+        else:
+            (self.final / ".incomplete").unlink()
         self._committed = True
         return self.final
+
+    def _commit_by_copy(self) -> None:
+        self.final.mkdir()
+        final_marker = self.final / ".incomplete"
+        try:
+            final_marker.write_text(INCOMPLETE_TEXT, encoding="utf-8")
+        except OSError:
+            try:
+                final_marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                self.final.rmdir()
+            except OSError:
+                pass
+            raise
+        shutil.copytree(self.temporary, self.final, dirs_exist_ok=True)
+        shutil.rmtree(self.temporary)
+        final_marker.unlink()
 
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
         if exc_type is None and not self._committed:
@@ -79,7 +105,9 @@ def write_metrics(
         "|---|---:|---|",
     ]
     for key, value in metrics.items():
-        if isinstance(value, float):
+        if value is None:
+            rendered = "N/A"
+        elif isinstance(value, float):
             rendered = f"{value:.6g}"
         else:
             rendered = str(value)
