@@ -45,8 +45,8 @@ is not implemented as part of this work.
 The PushT block is the union of two rectangles in block-local coordinates:
 
 ```text
-crossbar: width=120, height=30, area=3600, centroid_y=15
-stem:     width=30,  height=90, area=2700, centroid_y=75
+crossbar: [-60, 60] x [0, 30],   area=3600, centroid=(0, 15)
+stem:     [-15, 15] x [30, 120], area=2700, centroid=(0, 75)
 ```
 
 The geometric area centroid is:
@@ -82,9 +82,11 @@ start body origin = (256, 256 - 285/7)
 goal body origin  = (256, 256 + 285/7)
 ```
 
-Both rendered T area centroids must equal `(256, 256)`. The block angle must be assigned before
-the body position so Pymunk rotation around a nonzero center of gravity does not shift the
-requested world-space center.
+Both rendered T area centroids must equal `(256, 256)`. The actual Pymunk
+`block.center_of_gravity` must equal `(0, 285/7)`, and its world-space position must remain
+`(256, 256)` at the start and goal orientations. The block angle must be assigned before the
+body position so Pymunk rotation around a nonzero center of gravity does not shift the requested
+world-space center.
 
 ## Initial Agent Pose
 
@@ -183,16 +185,19 @@ The output directory is generated and ignored. Neither artifact is committed.
 Tests must cover:
 
 1. The area-centroid calculation equals `285/7`.
-2. Start and goal T geometric centroids both equal `(256, 256)`.
-3. Reset is deterministic across different seeds.
-4. The block is a free rigid body and no pivot constraint is added.
-5. The initial agent has a 1-pixel block clearance and no reset contact.
-6. Initial coverage, reward, and success match the registered invariants.
-7. Placing the block at the exact target pose makes the inherited `step()` path return reward
+2. The actual Pymunk `block.center_of_gravity` equals `(0, 285/7)`.
+3. Start and goal T geometric centroids both equal `(256, 256)`, and the Pymunk center of
+   gravity maps to that same world-space point at both orientations.
+4. Reset is deterministic across different seeds.
+5. A conflicting caller-supplied `reset_to_state` is rejected.
+6. The block is a free rigid body and no pivot constraint is added.
+7. The initial agent has a 1-pixel block clearance and no reset contact.
+8. Initial coverage, reward, and success match the registered invariants.
+9. Placing the block at the exact target pose makes the inherited `step()` path return reward
    `1.0`, success metadata, and `terminated=True`.
-8. The policy observation and two-dimensional absolute-position action interface remain
+10. The policy observation and two-dimensional absolute-position action interface remain
    compatible with the existing PushT environment.
-9. Rendering produces a nonempty image at the configured dimensions.
+11. Rendering produces a nonempty image at the configured dimensions.
 
 Targeted verification runs inside the project environment:
 
