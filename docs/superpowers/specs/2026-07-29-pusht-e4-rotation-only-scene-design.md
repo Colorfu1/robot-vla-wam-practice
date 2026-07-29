@@ -1,7 +1,7 @@
 # PushT E4 Rotation-Only Scene Design
 
 **Date:** 2026-07-29
-**Status:** Draft; awaiting spec review
+**Status:** Spec review approved; awaiting user review
 
 ## Purpose
 
