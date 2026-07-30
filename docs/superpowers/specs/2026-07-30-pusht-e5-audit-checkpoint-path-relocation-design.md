@@ -38,6 +38,11 @@ Resolve each selected model independently.
 
 1. Read `model`, `step`, `checkpoint_path`, and `checkpoint_id` from
    `selected_checkpoints.json`.
+   - The top-level key and row `model` must match and be exactly one of
+     `mode_bc_chunk` or `mode_diffusion`.
+   - `step` must be a non-boolean positive integer and is rendered as a six-digit numeric
+     checkpoint directory.
+   - `checkpoint_id` must be a lowercase 64-character SHA256 digest.
 2. Construct two bounded candidates in order:
    - `recorded`: the original `checkpoint_path`;
    - `repository_relative`: the current repository's
@@ -53,6 +58,10 @@ Resolve each selected model independently.
 
 The repository-relative candidate is derived from validated `model` and integer `step`;
 no suffix from the untrusted recorded absolute path is copied.
+
+"Current repository" means the path returned by the existing `config.practice_root()`
+helper, which derives the root from the installed module's `__file__`. Resolution must not
+depend on the process working directory.
 
 ## Output Provenance
 
@@ -89,8 +98,14 @@ Add regression coverage at the real selection-loading seam:
    `repository_relative`.
 3. Recorded path is absent and fallback hash mismatches: fail.
 4. Neither candidate exists: fail.
-5. Both models must be present and resolved.
-6. Existing completed/incomplete selection validation continues to pass.
+5. Recorded path exists with the wrong hash while fallback matches: use the fallback and
+   report `repository_relative`.
+6. Invalid model names, mismatched top-level/row model names, non-integer steps, and invalid
+   digest formats fail before candidate construction.
+7. Launching from a working directory outside the repository still resolves through
+   `practice_root()`.
+8. Both models must be present and resolved.
+9. Existing completed/incomplete selection validation continues to pass.
 
 Re-run the original completed selection directory through `_selected_rows()` and verify that
 both models resolve to current repository paths with their recorded SHA256 values.
