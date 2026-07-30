@@ -52,8 +52,8 @@ states 上运行闭环评测。它衡量 37 任务域适配带来的任务迁移
 
 ### C1/C2/C3：目标任务平行对照
 
-三者必须从同一个 B0 checkpoint 开始，并使用完全相同的 target Train、Validation 和
-Test init states：
+三者必须从同一个 B0 checkpoint 开始，并使用完全相同的 target demonstration split、
+closed-loop Validation 和 Test init states：
 
 | 配置 | PEFT | Instruction | 目的 |
 | --- | --- | --- | --- |
@@ -96,9 +96,8 @@ commit；后续运行只允许使用该 commit。
 原始 HDF5 不直接参与 B0/C1/C2/C3 训练。它只用于：
 
 - 将目标任务的 combined LeRobot episode 映射回原始 demonstration；
-- 读取原始 simulator initial state；
-- 将 demonstration 映射到 installed LIBERO 的官方 `.pruned_init`；
-- 证明 target Train、Validation 和 Test 没有 init-state 泄漏。
+- 验证目标 demonstration 的来源和去重关系；
+- 记录没有进入 combined dataset 的 replay failure。
 
 完整下载的另外七个 LIBERO-Goal HDF5 只做版本与 checksum 冻结，本轮不生成正式 split。
 
@@ -117,19 +116,32 @@ init-state provenance。
 依据 background Validation offline loss 选择；不得依据三个目标任务的 Z0、Validation
 或 Test 成功率反向选择 B0。
 
+所有 split 使用固定 RNG contract `pcg64_seedsequence_v1`：
+
+- BitGenerator 固定为 `PCG64`；
+- B0 task 使用 `SeedSequence([seed, 0, task_index])`；
+- Target demonstration 使用 `SeedSequence([seed, 1, task_id])`；
+- Target closed-loop 使用 `SeedSequence([seed, 2, task_id])`；
+- 选择操作固定为 `Generator(PCG64(seed_sequence)).permutation(sorted_ids)`。
+
+purpose namespace `0/1/2` 防止三个划分因 ID 数值碰巧相同而复用同一随机流。
+`background_split.json` 和 `target_split.json` 都必须记录 RNG contract、seed 和 namespace。
+
+B0 对排序后的 task episode IDs 生成 permutation，取
+`permutation[:validation_count]` 为 Validation，其余为 Train；两个列表均在持久化前按
+episode index 升序排序。
+
 输出 `background_split.json`，记录每个 task 的 train/validation episode indices、帧数和
 确定性 seed。
 
 ## Target provenance
 
-目标任务需要建立以下双重映射：
+目标任务只建立可由现有数据证明的映射：
 
 ```text
 combined LeRobot episode
         ↓ trajectory fingerprint
 raw HDF5 demonstration
-        ↓ simulator initial state
-official LIBERO init_state_id
 ```
 
 ### Combined episode 到 raw demonstration
@@ -158,55 +170,93 @@ identity fingerprint 由以下字段组成：
 仍逐元素比较完整 action 序列，最大绝对误差不得超过 `1e-6`。不做额外降采样、不尝试
 offset、不改变 gripper 符号或范围，也不依靠 episode/demo 顺序。
 
-每个 combined episode 必须只有一个满足 contract 的 raw demonstration；零匹配或多匹配
-均记为 provenance failure。raw 中没有进入 combined dataset 的失败 replay 可以保持
-unmatched，但必须记录；它不能被错误地配给现有 episode。
+映射必须是全局单射：每个 combined episode 必须只有一个满足 contract 的 raw
+demonstration，而且同一个 raw demo identity 最多只能被一个 combined episode 使用。
+episode 零匹配、多匹配或多个 episodes 复用同一 raw demo 均记为 provenance failure。
+raw 中没有进入 combined dataset 的失败 replay 可以保持 unmatched，但必须记录；它不能
+被错误地配给现有 episode。
 
 8 维 LeRobot state 只做 shape、finite 和 episode length sanity check，不参与 identity
 fingerprint。原始 HDF5 的 observation 是 replay/regeneration 之前的记录，不能在不重新
 运行 simulator 的情况下据此重建当前 8 维序列。图像同样不参与映射，因为存在重新渲染、
 编码和方向处理。
 
-### Raw demonstration 到 official init state
+### 为什么不再建立 raw demonstration 到 official init state 的映射
 
-读取 raw HDF5 中每个 demonstration 的首个完整 simulator state，并与该任务的官方
-`.pruned_init` 数组逐项比较：
+真实数据验收否定了“训练 demonstration 来自官方 `.pruned_init`”这一前提：
 
-- state shape 必须一致；
-- 记录最近 init state、最大绝对误差和 L2 误差；
-- 最近项必须唯一；
-- 最大绝对误差不得超过 `1e-6`。
+- raw demonstration 的首个 simulator state 已经过采集环境的稳定步骤，不能与
+  `.pruned_init` 逐项相等；
+- 重放相同稳定步骤后仍不能形成 50 对 50 的唯一映射；
+- 只比较场景物体平面位姿时，每任务 50 条 raw demonstrations 的最近邻也只覆盖约
+  29～30 个官方 state，同编号对应几乎不存在。
 
-如果 raw 文件保存的 state 与 installed LIBERO 版本无法在阈值内匹配，整个 target split
-构建失败，不允许退化为只比较 8 维 robot state。
+这与 LIBERO 将 `.pruned_init` 用作固定 benchmark 初始状态的定位一致。训练
+demonstrations 与官方 closed-loop states 是两个独立集合，不能通过放宽阈值、demo 序号
+或最近邻强行关联。目标数据因此拆成两个互不冒充 provenance 的 split：
 
-## Target Train/Validation/Test 划分
+1. demonstration split，以已证明的 LeRobot episode ↔ raw demo 映射为主键；
+2. closed-loop split，以 installed LIBERO 的官方 `init_state_id` 为主键。
 
-每个目标任务独立划分，主键为 official `init_state_id`：
+## Target demonstration 划分
 
-| Split | 每任务 unique init states | 三任务合计 |
-| --- | ---: | ---: |
-| Train | 30 | 90 |
-| Validation | 10 | 30 |
-| Test | 10 | 30 |
+每个任务先通过完整 action trajectory 建立全部唯一映射，再从 mapped demonstrations 中
+固定选取 10 条 Offline Validation，其余全部进入 Train：
+
+| LIBERO-Goal task ID | Train demos | Offline Validation demos |
+| ---: | ---: | ---: |
+| 1 | 38 | 10 |
+| 4 | 36 | 10 |
+| 8 | 39 | 10 |
+| 合计 | 113 | 30 |
 
 算法如下：
 
-1. 收集能够唯一映射到 official init state 的 combined demonstrations；
-2. 按 init state 分组，同一 state 的所有 demonstrations 保持在同一 split；
-3. 要求至少存在 40 个具有 demonstration 的 unique states；
-4. 使用由 `seed=1000` 和 task ID 派生的独立 RNG，确定性选择 30 个 Train states；
-5. 从剩余 mapped states 中确定性选择 10 个 Validation states；
-6. 该任务官方 50 个 init states 中未进入 Train/Validation 的 10 个 state 全部作为 Test；
-7. Test 对应的 demonstration 即使存在，也不得进入任何训练或 offline validation 输入。
+1. 按 episode index 排序所有唯一映射；
+2. 按 `pcg64_seedsequence_v1` 使用 purpose namespace `1` 派生 demonstration RNG；
+3. 取 `permutation[:10]` 为 Offline Validation；
+4. 取 `permutation[10:]` 为 Train；
+5. Train 与 Offline Validation 的 episode 和 raw demo identity 必须分别无交集；
+6. 两组记录均在持久化前按 episode index 升序排序。
 
-如果 installed LIBERO 的某个任务不是恰好 50 个 init states，或无法得到 30/10/10
-互斥划分，构建过程失败。不得用 simulator seed 代替 init state，也不得移动 Test state
-来掩盖 provenance failure。
+本实验没有额外 offline Test demonstrations。正式结论来自独立的 closed-loop Test。
+C1/C2/C3 使用同一组 113 条 Train 和 30 条 Offline Validation。训练采样采用
+task-balanced sampling，先均匀选择 task，再在该 task 内选择 episode，避免
+`38/36/39` 的轻微数量差异改变任务权重。
+
+## Target closed-loop 划分
+
+每个任务的 50 个官方 `.pruned_init` 独立划分：
+
+| Split | 每任务 official init states | 三任务合计 |
+| --- | ---: | ---: |
+| Validation | 20 | 60 |
+| Test | 30 | 90 |
+
+算法如下：
+
+1. 要求 installed LIBERO 的每个目标任务恰好提供 50 个官方 init states；
+2. 按 `pcg64_seedsequence_v1` 使用 purpose namespace `2` 派生独立的 closed-loop RNG；
+3. 取 `permutation[:20]` 为 Validation；
+4. 取 `permutation[20:]` 的 30 个 states 全部冻结为 Test；
+5. 两组 state IDs 必须互斥且并集覆盖 50 个官方 states；
+6. 两组 state IDs 均在持久化前按数值升序排序。
+
+Z0、C1、C2、C3 的 smoke、调试、checkpoint selection 只能消费 Validation states。
+Test 在训练配置和 checkpoint 冻结后才运行，不能参与超参数调整、checkpoint selection
+或失败案例驱动的修改。
 
 C1/C2/C3 共用同一个 `target_split.json`。训练入口消费 Train episode indices；offline
-validation 消费 Validation episode indices；闭环 Validation/Test 消费对应的
-`init_state_id`。
+validation 消费 Offline Validation episode indices；闭环 Validation/Test 消费对应的
+官方 `init_state_id`。
+
+所有 Z0/C1/C2/C3 Offline Validation、closed-loop Validation、checkpoint selection 和
+主 Test 指标都固定使用 canonical instruction。C3 的 train paraphrases 只允许出现在
+C3 Train 输入，不得进入任何 Validation/Test 路径。
+
+Held-out paraphrase 和 Prompt Swap 是 checkpoint 与全部配置冻结后，在同一组 frozen
+Test states 上运行的辅助语言协议。它们不参与 checkpoint selection，也不得用于修改
+模型、超参数、paraphrase 集或数据 split；其结果与 canonical 主 Test 指标分开报告。
 
 ## Paraphrase 冻结
 
@@ -255,7 +305,12 @@ scaffold 阶段只生成结构和 canonical instruction，不自动生成可直�
 - canonical/train/test 之间标准化后无字符串重复；
 - 每项均为非空字符串；
 - 每个 task 的 semantic review status/checks/date 完整有效；
-- 文件内容 hash 被写入 target manifest。
+- 文件内容 hash 被写入 `target_split.json` 和 ignored audit `manifest.json`。
+
+这里的 hash 落点明确为 `target_split.json.paraphrases_sha256` 和
+`manifest.json.inputs.paraphrases_sha256`，`build-splits` 必须保证两处记录一致。训练与
+评测入口加载 `target_split.json` 时，必须重新计算当前 `paraphrases.json` 的 SHA-256
+并与 tracked target split 中的记录一致；不一致时 fail closed。
 
 C3 每次取样以 `0.25` 概率使用 canonical，以 `0.75` 概率均匀选择 train paraphrase。
 随机选择由 train seed、epoch/step 和 sample index 派生，不使用多 worker 共享的全局
@@ -281,7 +336,7 @@ Python 模块提供三个独立、可重入 stage：
 ### `fetch-sources`
 
 - 解析并冻结 upstream commit；
-- 下载完整 `libero_goal/`，支持 Hugging Face Hub 自带的断点续传；
+- 下载完整 `libero_goal/`，复用已完成且 checksum 正确的文件；
 - 计算并验证全部 HDF5 SHA-256；
 - 计算三个 installed init-state 文件 SHA-256；
 - 写入 `source_manifest.json`；
@@ -297,7 +352,8 @@ Python 模块提供三个独立、可重入 stage：
 
 - 验证 source manifest 与所有 checksum；
 - 生成 B0 background split；
-- 完成目标任务双重 provenance；
+- 完成目标 demonstration action provenance；
+- 独立生成 demonstration split 与 official closed-loop split；
 - 审计人工填写的 paraphrases；
 - 原子写入两个 tracked split config；
 - 将详细 provenance、错误和统计写入 ignored output directory。
@@ -329,10 +385,11 @@ outputs/smolvla_libero/data_audit/
 `metrics.json` 记录：
 
 - B0 每个 task/split 的 episodes 和 frames；
-- target 每个 task/split 的 unique states、episodes 和 frames；
-- raw、combined 和 official init-state 的匹配数量；
+- target demonstration Train/Offline Validation 的 episodes 和 frames；
+- official closed-loop Validation/Test 的 init-state 数量；
+- raw 与 combined demonstration 的匹配数量；
 - unmatched/ambiguous demonstrations；
-- 所有 state/action 匹配最大误差；
+- 所有 action 匹配最大误差；
 - canonical/train/test instruction 数量及重复审计结果。
 
 `manifest.json` 记录输入文件 hash、resolved revisions、CLI 参数、split seed 和输出 config
@@ -341,9 +398,10 @@ hash。不得记录缓存路径或其他机器特定信息。
 三个 tracked config 均使用 `schema_version=1`：
 
 - `background_split.json`：suite/task identity、split seed、每个 task 的 train/validation
-  episode indices 和 frame counts；
+  episode indices 和 frame counts，以及 `pcg64_seedsequence_v1` RNG contract；
 - `target_split.json`：source manifest hash、mapping contract version、每个 task 的
-  Train/Validation/Test init-state IDs，以及 Train/Validation 对应 episode/demo identity；
+  Train/Offline Validation episode/demo identity，以及独立的 closed-loop
+  Validation/Test init-state IDs、RNG contract 和 `paraphrases_sha256`；
 - `paraphrases.json`：上述 canonical、train、held-out 和人工审核 attestation。
 
 所有列表按数值 ID 或 canonical name 排序，使相同输入产生 byte-for-byte 相同输出。
@@ -357,14 +415,16 @@ hash。不得记录缓存路径或其他机器特定信息。
 - raw HDF5 schema 缺少 provenance 所需字段；
 - combined task/episode/frame 统计与 metadata 不一致；
 - trajectory fingerprint 无匹配或多匹配；
-- raw initial state 无法唯一对应 official init state；
-- target mapped unique states 少于 40；
-- Train/Validation/Test init states 有交集；
-- Test state 的 episode 出现在训练或 offline validation；
+- 多个 combined episodes 复用同一个 raw demo identity；
+- 每任务 mapped demonstrations 少于 11 条；
+- Train 与 Offline Validation 的 episode 或 raw demo identity 有交集；
+- installed LIBERO 的官方 init states 不是每任务 50 条；
+- closed-loop Validation/Test init states 有交集或没有覆盖全部 50 条；
 - paraphrase 数量、重复或人工语义审核 attestation 不合格。
 
-下载中断只保留 Hugging Face Hub 的可恢复临时状态，不写成功 manifest。配置文件使用同
-目录临时文件写完并验证后原子替换。
+下载中断保留 Hugging Face Hub 临时状态，但未完成分片能否按字节续传取决于客户端和
+网络代理；无论如何不得写成功 manifest。配置文件使用同目录临时文件写完并验证后原子
+替换。
 
 ## 测试与验收
 
@@ -374,23 +434,28 @@ hash。不得记录缓存路径或其他机器特定信息。
 - 90/10 划分确定、每任务至少一个 Validation episode；
 - `raw_action_noop_v1` 正确处理首个静止动作、重复 gripper 静止动作和 gripper 切换；
 - trajectory fingerprint 对唯一、缺失和歧义匹配分别给出正确结果；
-- init-state 最近邻在唯一、超阈值和并列情况下正确处理；
-- target split 精确得到每任务 30/10/10 unique states；
-- 同一 init state 的多条 demonstrations 不会跨 split；
-- Test episode 不会被训练入口消费；
+- 多个 combined episodes 复用同一 raw demo 时 fail closed；
+- demonstration split 固定保留每任务 10 条 Offline Validation，其余全部 Train；
+- `pcg64_seedsequence_v1` 的三个 purpose namespaces 产生确定且隔离的 permutation；
+- closed-loop split 精确得到每任务 20 Validation / 30 Test；
+- Train/Offline Validation demos 互斥，closed-loop Validation/Test states 互斥；
 - paraphrase 归一化重复、错误数量和不完整人工审核 attestation 被拒绝；
+- paraphrase hash 不一致、train paraphrase 进入 Validation/Test，或 held-out paraphrase
+  进入 Train/checkpoint-selection 路径时被拒绝；
 - manifest/config 原子写入和 checksum 验证可重复。
 
 ### 本地真实验收
 
 1. `fetch-sources` 下载 10 个 LIBERO-Goal HDF5，并冻结非 `main` 的 resolved commit；
 2. 第二次运行不重复下载已校验文件；
-3. 三个目标任务所有进入 Train/Validation 的 LeRobot episodes 都有唯一 provenance；
-4. 每任务得到 30 Train、10 Validation、10 Test unique init states；
-5. B0 split 只包含 37 个非目标任务；
-6. 两次使用相同 seed 构建的 tracked configs byte-for-byte 一致；
-7. 修改任一输入 checksum 或制造重复 paraphrase 时构建失败；
-8. C1/C2/C3 能读取同一 target split，且 C3 只改变 instruction 采样。
+3. 三个目标任务所有 Train/Offline Validation LeRobot episodes 都有唯一 action
+   provenance；
+4. demonstration Train 数量为 `38/36/39`，每任务 Offline Validation 为 10；
+5. 每任务得到 20 closed-loop Validation 和 30 frozen Test init states；
+6. B0 split 只包含 37 个非目标任务；
+7. 两次使用相同 seed 构建的 tracked configs byte-for-byte 一致；
+8. 修改任一输入 checksum 或制造重复 paraphrase 时构建失败；
+9. C1/C2/C3 能读取同一 target split，且 C3 只改变 instruction 采样。
 
 验收通过后才能启动 B0 正式训练。B0 完成并冻结 checkpoint 后，才能启动 Z0 和
 C1/C2/C3。
