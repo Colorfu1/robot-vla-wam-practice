@@ -27,4 +27,4 @@
 - [2026-07-29 PushT Benchmark 阶段性结论](daily/2026-07-29-PushT-Benchmark阶段性结论.md)
 - [2026-07-29 PushT 实验进展总结](daily/2026-07-29-PushT实验进展总结.md)
 - [2026-07-29 PushT E2 闭环采样结果](daily/2026-07-29-PushT-E2闭环采样结果.md)
-- [2026-07-30 PushT E5 原型条件实验实现](daily/2026-07-30-PushT-E5原型条件实验实现.md)
+- [2026-07-30 PushT E5 原型条件实验阶段性成果](daily/2026-07-30-PushT-E5原型条件实验实现.md)
