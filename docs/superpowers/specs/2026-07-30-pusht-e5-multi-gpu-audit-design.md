@@ -2,8 +2,9 @@
 
 ## Status
 
-Approved by the user for implementation on 2026-07-30. Independent specification review
-is pending.
+Approved by the user for implementation on 2026-07-30. The first independent
+specification review found three blocking ambiguities; the document now includes their
+resolutions and is pending re-review.
 
 ## Problem
 
@@ -109,6 +110,10 @@ The Python entry point and `scripts/experiments/pusht/eval_e5_oracle_audit.sh` a
 The launcher defaults to `--num-gpus=1`, validates the argument before starting Python, and
 forwards it in `--print-command` output.
 
+For `N=1`, `--device` may still be `cpu` for development and test compatibility. In that
+case `num_gpus` represents the requested single execution slot rather than a claim that a
+CUDA device was used. Runtime provenance records the actual device explicitly.
+
 ## Worker Allocation
 
 For `N>=2`:
@@ -143,7 +148,14 @@ Before spawning workers, the parent:
 7. opens the one atomic output directory.
 
 The parent starts workers with the multiprocessing `spawn` context. It consumes structured
-progress, result, and error events. It never receives rendered frames or policy objects.
+ready, progress, result, and error events. It never receives rendered frames or policy
+objects.
+
+The parent also owns a shared start event. Every worker must load and validate its assigned
+policy, report `ready`, and wait without inference. The parent sets the start event only
+after all workers have reported ready. If any worker reports an error or exits before the
+barrier completes, the parent terminates the remaining workers and no worker begins
+open-loop or closed-loop inference.
 
 After all workers exit successfully, the parent validates and sorts the result set, writes
 all canonical outputs, and atomically publishes the final directory.
@@ -156,12 +168,13 @@ Each worker:
 2. loads its one selected policy and processors;
 3. validates model type and prototype capacity;
 4. applies the fixed DDPM scheduler protocol for Mode-Diffusion;
-5. if designated leader, computes the complete model open-loop result;
-6. runs its assigned closed-loop episodes;
-7. classifies every rollout and writes each recording directly to its unique model/episode
+5. reports `ready` and waits for the parent start event;
+6. if designated leader, computes the complete model open-loop result;
+7. runs its assigned closed-loop episodes;
+8. classifies every rollout and writes each recording directly to its unique model/episode
    path under the parent's temporary output directory;
-8. sends metric rows and progress events to the parent;
-9. releases the policy and CUDA cache before exit.
+9. sends metric rows and progress events to the parent;
+10. releases the policy and CUDA cache before exit.
 
 ## Determinism
 
@@ -220,20 +233,26 @@ The run manifest keeps the selected checkpoint path-resolution provenance and ad
 - `execution.parallelism`: `single_device_sequential` or
   `multi_gpu_model_episode_shards`;
 - `execution.num_gpus`;
-- one worker-plan record per GPU containing GPU index, model, worker index within that
-  model, whether it is the open-loop leader, and assigned audit episode indices;
+- `execution.device`: the requested device for the single-device path, otherwise `null`;
+- `execution.worker_plan`: for multi-GPU execution, one record per GPU containing GPU
+  index, model, worker index within that model, whether it is the open-loop leader, and
+  assigned audit episode indices; for the single-device sequential path this is an empty
+  list because no worker process exists;
 - the requested open-loop batch size.
 
 Worker failures are reported with GPU index, model, phase, and episode index when available.
 
 ## Failure and Atomicity Policy
 
-- Any validation failure occurs before policy inference.
+- Parent preflight validation failures occur before opening the atomic staging directory
+  and therefore create no audit output.
+- Multi-GPU model validation is protected by the ready barrier, so all workers validate
+  successfully before any worker starts policy inference.
 - Any worker exception is serialized with its traceback to the parent.
 - On the first worker error or unexpected worker exit, the parent terminates and joins the
   remaining workers.
-- A failed run retains the atomic `.incomplete` directory and marker. It never publishes a
-  complete run manifest or final audit directory.
+- A failure after the atomic staging directory opens retains the `.incomplete` directory
+  and marker. It never publishes a complete run manifest or final audit directory.
 - A new run does not resume a partial audit. The existing overwrite behavior remains
   explicit.
 - Recordings are written only to deterministic, non-overlapping paths owned by a single
@@ -253,10 +272,13 @@ Regression and orchestration coverage will include:
    once;
 7. zero, excessive, unavailable, and conflicting GPU requests fail before worker spawn;
 8. aggregation rejects missing, duplicate, and unexpected closed-loop or open-loop rows;
-9. worker errors and unexpected exits propagate to the parent and prevent publication;
-10. launcher `--num-gpus` parsing, forwarding, duplicate rejection, and
+9. workers cannot pass the ready barrier until every worker validates;
+10. worker validation errors, runtime errors, and unexpected exits propagate to the parent
+    and prevent publication;
+11. single-device provenance uses the actual `device` and an empty worker plan;
+12. launcher `--num-gpus` parsing, forwarding, duplicate rejection, and
     `--print-command` behavior;
-11. existing checkpoint relocation, prototype SHA256, single-device audit, open-loop metric,
+13. existing checkpoint relocation, prototype SHA256, single-device audit, open-loop metric,
     and launcher tests continue to pass.
 
 Verification uses unit tests, mocked workers, static shell checks, and command rendering.
