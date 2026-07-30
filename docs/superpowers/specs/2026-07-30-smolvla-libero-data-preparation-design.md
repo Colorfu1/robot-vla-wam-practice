@@ -134,20 +134,38 @@ official LIBERO init_state_id
 
 ### Combined episode 到 raw demonstration
 
-每个候选匹配至少使用：
+映射使用固定的 `raw_action_noop_v1` contract，复现 LIBERO 256×256/no-noop
+regeneration 的动作保留规则。对 raw HDF5 的 `/data/demo_N/actions` 按原始顺序执行：
 
-- task identity；
-- trajectory length，以及已确认的原始频率到 10 Hz 的采样关系；
-- 完整 action 序列；
-- 由 raw end-effector/gripper observation 构造的 8 维 state 序列。
+```python
+kept = []
+for action in raw_actions:
+    previous_kept = kept[-1] if kept else None
+    near_zero_motion = np.linalg.norm(action[:-1]) < 1e-4
+    same_gripper = previous_kept is not None and action[-1] == previous_kept[-1]
+    is_noop = near_zero_motion if previous_kept is None else near_zero_motion and same_gripper
+    if not is_noop:
+        kept.append(action)
+```
 
-匹配允许处理固定的降采样 offset，但不得依靠 episode 顺序。数值比较以 float32 误差为
-边界，action 最大绝对误差不得超过 `1e-5`，state 最大绝对误差不得超过 `1e-4`。
-每个 combined episode 必须只有一个满足阈值的 raw demonstration；零匹配或多匹配均记为
-provenance failure。
+identity fingerprint 由以下字段组成：
 
-图像不作为主匹配键，因为当前 LeRobot 数据存在视频编码和图像方向处理。可使用抽样图像
-感知 hash 作为诊断证据，但它不能覆盖数值匹配结果。
+- canonical task instruction；
+- retained action 数量；
+- 将 retained actions 转为 C-contiguous little-endian float32 后得到的 SHA-256。
+
+当前 LeRobot episode 的 action 使用同一 dtype/layout 计算 fingerprint。fingerprint 命中后
+仍逐元素比较完整 action 序列，最大绝对误差不得超过 `1e-6`。不做额外降采样、不尝试
+offset、不改变 gripper 符号或范围，也不依靠 episode/demo 顺序。
+
+每个 combined episode 必须只有一个满足 contract 的 raw demonstration；零匹配或多匹配
+均记为 provenance failure。raw 中没有进入 combined dataset 的失败 replay 可以保持
+unmatched，但必须记录；它不能被错误地配给现有 episode。
+
+8 维 LeRobot state 只做 shape、finite 和 episode length sanity check，不参与 identity
+fingerprint。原始 HDF5 的 observation 是 replay/regeneration 之前的记录，不能在不重新
+运行 simulator 的情况下据此重建当前 8 维序列。图像同样不参与映射，因为存在重新渲染、
+编码和方向处理。
 
 ### Raw demonstration 到 official init state
 
@@ -199,11 +217,44 @@ validation 消费 Validation episode indices；闭环 Validation/Test 消费对�
 - 5 条 held-out test paraphrases。
 
 scaffold 阶段只生成结构和 canonical instruction，不自动生成可直接进入实验的语言内容。
-人工填写后，审计器要求：
+`paraphrases.json` 使用以下 versioned contract；每个 task 的 scaffold 初始状态均为
+`pending`：
+
+```json
+{
+  "schema_version": 1,
+  "suite": "libero_goal",
+  "canonical_probability": 0.25,
+  "tasks": {
+    "1": {
+      "canonical": "put the bowl on the stove",
+      "train_paraphrases": [],
+      "held_out_paraphrases": [],
+      "semantic_review": {
+        "status": "pending",
+        "reviewed_at": null,
+        "checks": {
+          "object_preserved": false,
+          "target_preserved": false,
+          "completion_condition_preserved": false,
+          "train_test_separated": false
+        }
+      }
+    }
+  }
+}
+```
+
+人工填写后，审核者必须为每个 task 将四个 checks 设为 `true`，将 status 设为
+`approved`，并填写 `YYYY-MM-DD` 格式的 `reviewed_at`。不记录审核者姓名或其他个人标识。
+该字段是人工语义审核的机器可读 attestation；程序不声称能够自动证明自然语言语义。
+
+审计器要求：
 
 - 每个列表数量准确；
 - canonical/train/test 之间标准化后无字符串重复；
-- 三个任务的对象、目标位置和完成条件没有互换；
+- 每项均为非空字符串；
+- 每个 task 的 semantic review status/checks/date 完整有效；
 - 文件内容 hash 被写入 target manifest。
 
 C3 每次取样以 `0.25` 概率使用 canonical，以 `0.75` 概率均匀选择 train paraphrase。
@@ -287,6 +338,16 @@ outputs/smolvla_libero/data_audit/
 `manifest.json` 记录输入文件 hash、resolved revisions、CLI 参数、split seed 和输出 config
 hash。不得记录缓存路径或其他机器特定信息。
 
+三个 tracked config 均使用 `schema_version=1`：
+
+- `background_split.json`：suite/task identity、split seed、每个 task 的 train/validation
+  episode indices 和 frame counts；
+- `target_split.json`：source manifest hash、mapping contract version、每个 task 的
+  Train/Validation/Test init-state IDs，以及 Train/Validation 对应 episode/demo identity；
+- `paraphrases.json`：上述 canonical、train、held-out 和人工审核 attestation。
+
+所有列表按数值 ID 或 canonical name 排序，使相同输入产生 byte-for-byte 相同输出。
+
 ## 错误处理
 
 以下情况必须 fail closed，且不得发布部分 `background_split.json` 或
@@ -300,7 +361,7 @@ hash。不得记录缓存路径或其他机器特定信息。
 - target mapped unique states 少于 40；
 - Train/Validation/Test init states 有交集；
 - Test state 的 episode 出现在训练或 offline validation；
-- paraphrase 数量、重复或语义审核标记不合格。
+- paraphrase 数量、重复或人工语义审核 attestation 不合格。
 
 下载中断只保留 Hugging Face Hub 的可恢复临时状态，不写成功 manifest。配置文件使用同
 目录临时文件写完并验证后原子替换。
@@ -311,12 +372,13 @@ hash。不得记录缓存路径或其他机器特定信息。
 
 - B0 永远排除 combined task indices `10,17,18`；
 - 90/10 划分确定、每任务至少一个 Validation episode；
+- `raw_action_noop_v1` 正确处理首个静止动作、重复 gripper 静止动作和 gripper 切换；
 - trajectory fingerprint 对唯一、缺失和歧义匹配分别给出正确结果；
 - init-state 最近邻在唯一、超阈值和并列情况下正确处理；
 - target split 精确得到每任务 30/10/10 unique states；
 - 同一 init state 的多条 demonstrations 不会跨 split；
 - Test episode 不会被训练入口消费；
-- paraphrase 归一化重复和错误数量被拒绝；
+- paraphrase 归一化重复、错误数量和不完整人工审核 attestation 被拒绝；
 - manifest/config 原子写入和 checksum 验证可重复。
 
 ### 本地真实验收
