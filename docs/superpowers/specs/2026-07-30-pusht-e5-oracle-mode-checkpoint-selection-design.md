@@ -16,7 +16,8 @@ preflight 结果写成正式实验结论。
    demonstration 的首帧重建 PushT 初始状态。
 3. 选模只比较 oracle-mode conditioned closed-loop task success；GT action 不进入闭环。
 4. 冻结 checkpoint 后，在 audit demonstrations 上执行一次正式开环与闭环评测。
-5. checkpoint selection 和 audit evaluation 均支持显式多 GPU。
+5. checkpoint selection 支持显式多 GPU；audit evaluation 本阶段使用单 GPU
+   顺序执行。
 
 ## 非目标
 
@@ -212,6 +213,11 @@ strategy，保持原 BCChunk/Diffusion 默认行为与现有 CLI 向后兼容。
 只有 development selection 成功写出并验证 `selected_checkpoints.json` 后才能
 开始 audit。final evaluator 从 selection 文件解析两个冻结 checkpoint，不接受手工
 替换其中一个路径而不更新 manifest。
+
+Audit 本阶段固定为单 GPU 顺序执行两个 selected checkpoints。它只有 42 条 primary
+rollouts，不新增第二套多 GPU 分片或调度协议；`--num-gpus` 只属于 development
+checkpoint-selection 入口。未来若 audit 运行时间成为实际瓶颈，再通过单独设计扩展，
+不能在实现阶段临时改变 episode/RNG 顺序。
 
 对 21 个 audit episodes：
 
