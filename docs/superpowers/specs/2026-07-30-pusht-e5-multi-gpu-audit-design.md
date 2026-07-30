@@ -4,7 +4,7 @@
 
 Approved by the user for implementation on 2026-07-30. The first independent
 specification review found three blocking ambiguities; the document now includes their
-resolutions and is pending re-review.
+resolutions and passed independent re-review.
 
 ## Problem
 
