@@ -32,7 +32,14 @@ selection、Z0 闭环评测或 C1/C2/C3 训练。
 | GPU/world size | 8 |
 | Global batch | 64 |
 | Mixed precision | BF16 |
+| Optimizer | AdamW |
 | Optimizer LR | `1e-4` |
+| AdamW betas / eps | `(0.9,0.95)` / `1e-8` |
+| Weight decay | `1e-10` |
+| Gradient clipping | global norm `10` |
+| Scheduler | cosine decay with warmup |
+| Warmup / decay steps | 1,000 / 30,000 |
+| Final LR | `2.5e-6` |
 | Optimizer updates | 30,000 |
 | Checkpoint cadence | 每 5,000 steps |
 | Train seed | 1000 |
@@ -43,6 +50,10 @@ selection、Z0 闭环评测或 C1/C2/C3 训练。
 Normalization 保持 LeRobot 默认行为：图像使用 ImageNet stats，state/action 使用完整
 `lerobot/libero` metadata 中的默认 stats。本工作不重新计算 B0 Train-only stats。
 `run_config.json` 必须明确记录该 scope，避免以后将其误解为 train-only normalization。
+
+Optimizer、scheduler 和 gradient clipping 使用并显式复核 SmolVLA 0.4.4 的上述完整
+training preset，`use_policy_training_preset=true`。不能只依赖将来可能变化的默认值；
+resolved config 必须把所有数值持久化，fresh 和 resume 均按这些值 fail closed。
 
 ## 方案选择
 
@@ -70,8 +81,10 @@ Shell 入口负责：
 
 - 解析容器内可直接执行的参数；
 - 从仓库根目录解析相对输入和输出路径；
-- fresh run 时调用 `accelerate launch --mixed_precision=bf16`；
-- 将 `--num-processes` 传给 Accelerate；
+- fresh 和 resume 都调用 `accelerate launch`；
+- fresh 将显式的 `--num-processes` 与 BF16 传给 Accelerate；
+- resume 从原 run 的 `run_config.json` 读取并重建相同的 process count、mixed precision
+  和 rendezvous 参数，不接受这些字段的 CLI override；
 - `--print-command` 时打印完整、可复制的最终命令；
 - 保持退出码和信号语义，不在后台吞掉训练错误。
 
@@ -96,6 +109,24 @@ Python 入口负责：
 可复用的 split/config/runtime 辅助代码留在
 `src/robot_practice/experiments/smolvla_libero/` 内，不与 PushT 实验模块耦合。
 
+### 指标截获边界
+
+LeRobot 0.4.4 没有训练 callback。为了在不复制训练循环的前提下生成逐 step JSONL，
+本地 runtime adapter 在调用训练函数前临时包装模块级
+`lerobot_train.update_policy`：
+
+1. wrapper 使用完全相同的参数调用并返回原始 `update_policy`；
+2. 原调用成功返回后，只由 rank 0 从返回的 `MetricsTracker` 读取本 step 的 loss、
+   grad norm、LR、update time 和调用前已设置的 dataloading time；
+3. wrapper 不修改 batch、loss、gradient、optimizer、scheduler、tracker 或返回值；
+4. step 从 fresh 的 0 或 resume training state 的 saved step 初始化；
+5. 训练退出后恢复原始函数对象。
+
+该 adapter 是进程内观测包装，不修改 site-packages，也不解析不稳定的控制台文本。
+LeRobot 自身 `log_freq` 固定为 100；`train_metrics.jsonl` 仍由 adapter 每个成功
+optimizer update 写一条。测试必须证明包装前后原函数调用次数、参数、返回值和更新结果
+一致。
+
 ## Fresh 训练流程
 
 正式入口为：
@@ -119,12 +150,15 @@ bash scripts/experiments/smolvla_libero/train_b0.sh \
 1. 输出目录存在时立即拒绝，避免覆盖已有 run；
 2. 校验 split schema、聚合计数、任务排除和 episode 唯一性；
 3. 用 dataset metadata 复核每个 selected episode 的 task 与帧范围；
-4. 加载 base config，并确认最终 policy 是 Non-PEFT、默认冻结边界；
-5. 构造只含 B0 Train episodes 的 `DatasetConfig`；
-6. Accelerate 初始化 8 个进程，并确认 mixed precision 为 BF16；
-7. 调用 LeRobot 原生训练循环；
-8. 每 5,000 steps 保存完整 policy、processor 和 training state；
-9. 正常完成后发布运行记录，失败时保留诊断日志。
+4. 将 Hub base policy 解析到不可变 revision，保存 repo ID、resolved revision 和关键
+   config/weight 文件 SHA-256；本地 base policy 则保存内容 SHA-256；
+5. 加载 base config，并确认最终 policy 是 Non-PEFT、默认冻结边界；
+6. 构造只含 B0 Train episodes 的 `DatasetConfig`；
+7. 显式复核完整 optimizer、scheduler 和 gradient clipping preset；
+8. Accelerate 初始化 8 个进程，并确认 mixed precision 为 BF16；
+9. 安装只读指标 adapter 并调用 LeRobot 原生训练循环；
+10. 每 5,000 steps 保存完整 policy、processor 和 training state；
+11. 正常完成后发布运行记录，失败时保留诊断日志。
 
 相机键继续使用已验证的映射：
 
@@ -148,19 +182,38 @@ bash scripts/experiments/smolvla_libero/train_b0.sh \
   --resume-from=outputs/smolvla_libero/pilot/b0_domain_adaptation/checkpoints/005000
 ```
 
-不自动猜测“最新 checkpoint”。Resume 前必须验证：
+Shell 仍以 8 进程、BF16 方式启动同一个 Python 入口；这些启动参数从原
+`run_config.json` 重建，而不是依赖当前 Accelerate 默认配置。
+
+不自动猜测“最新 checkpoint”。`--resume-from` 必须精确指向 step checkpoint 根目录，
+并映射为：
+
+```text
+config_path = <resume-from>/pretrained_model/train_config.json
+checkpoint_path = <resume-from>
+training_state = <resume-from>/training_state
+```
+
+Resume 前必须验证：
 
 - checkpoint 同时具有完整的 `pretrained_model/` 和 `training_state/`；
 - saved train config 指向原 B0 output directory；
-- split SHA-256、episode 列表、base policy identity、world size、per-GPU/global batch、
-  LR、scheduler、seed 和 mixed precision 与原 run contract 一致；
+- 它是该 run 当前 step 最大的完整 checkpoint；显式选择更旧 checkpoint 会被拒绝；
+- split SHA-256、episode 列表、resolved base revision/内容 hash、world size、
+  per-GPU/global batch、完整 optimizer/scheduler/gradient clipping、seed 和 mixed
+  precision 与原 run contract 一致；
 - 当前 split 文件及 dataset metadata 仍与 saved run config 一致；
 - resume step 是合法的已保存 step，且小于 30,000。
 
 通过后使用 LeRobot 原生 resume 路径恢复 model、optimizer、scheduler、RNG 和 training
 step。Resume 不接受 output directory、batch、LR、seed、steps 或 scheduler override。
-训练日志和 JSONL 指标以 append 方式继续，写入明确的 resume event；已有历史记录不得
-截断或重复伪造。
+
+每次 fresh/resume 都分配单调递增的 `attempt_id`。训练日志和 JSONL 指标以 append
+方式继续，并先写入包含 `attempt_id`、`resume_from_step` 和原 metrics tail step 的
+resume event。任务可能在 checkpoint 之后又完成若干未保存 updates，因此 resume 后允许
+不同 attempt 出现相同 training step；记录的唯一键是 `(attempt_id, step)`，历史记录不
+截断。后续汇总必须按 attempt 明确处理这些真实重跑 step，不能把它们伪装成一次连续
+运行。
 
 ## 输出与记录
 
@@ -171,9 +224,9 @@ outputs/smolvla_libero/pilot/b0_domain_adaptation/
 ├── run_config.json
 ├── train_metrics.jsonl
 ├── train.log
-├── runtime_rank_0.json
+├── runtime_attempt_000_rank_0.json
 ├── ...
-├── runtime_rank_7.json
+├── runtime_attempt_000_rank_7.json
 └── checkpoints/
     ├── 005000/
     ├── 010000/
@@ -187,17 +240,21 @@ outputs/smolvla_libero/pilot/b0_domain_adaptation/
 
 - split 路径和 SHA-256；
 - selected task/episode/frame 数；
-- base policy reference；
+- base policy reference、resolved revision 和内容 SHA-256；
 - resolved SmolVLA 冻结边界；
 - sampler 和 normalization scope；
-- per-GPU/global batch、world size、BF16、LR、scheduler、steps、seed；
+- per-GPU/global batch、world size、BF16、完整 optimizer/scheduler/gradient clipping、
+  steps、seed；
+- 完整 resolved `TrainPipelineConfig`；
 - LeRobot、Torch、CUDA 和 Accelerate 版本。
 
 `train_metrics.jsonl` 使用一个对象一行，至少记录 step、loss、grad norm、LR、
-dataloading time、update time 和 wall-clock time。Resume event 使用独立 record type。
+dataloading time、update time、wall-clock time 和 `attempt_id`。Fresh/resume event
+使用独立 record type。
 
-每个 `runtime_rank_*.json` 至少记录 rank、device、peak allocated/reserved VRAM、
-开始/结束时间、完成状态和总耗时。聚合吞吐只能基于所有 rank 均成功完成的数据计算。
+每个 `runtime_attempt_<id>_rank_<rank>.json` 至少记录 attempt、rank、device、peak
+allocated/reserved VRAM、开始/结束时间、完成状态和总耗时。聚合吞吐只能基于同一
+attempt 的所有 rank 均成功完成的数据计算，resume 不覆盖早期 attempt。
 
 运行记录先写到输出目录旁的临时文件。LeRobot 创建正式输出目录后再移动进去。失败时
 保留临时日志并明确标记失败，不发布“完成”的 runtime summary。
@@ -211,6 +268,7 @@ dataloading time、update time 和 wall-clock time。Resume event 使用独立 r
 - dataset feature/action contract 不是两路图像、8D state、7D action；
 - base policy 不是 SmolVLA；
 - PEFT 被启用，或冻结边界、chunk/action horizon 漂移；
+- optimizer、scheduler 或 gradient clipping 与冻结 preset 不一致；
 - formal world size 不是 8、per-GPU batch 不是 8、global batch 不是 64；
 - formal mixed precision 不是 BF16；
 - fresh output 已存在；
@@ -233,17 +291,23 @@ reports/guides/smolvla_libero/02_b0_domain_adaptation.md
 - 正确 split 得到 37 tasks、1,412 episodes、236,470 frames；
 - 目标 task、重复 episode、错误帧数和 schema 漂移被拒绝；
 - resolved config 保持原生 frame shuffle 和默认 normalization；
-- Non-PEFT、冻结边界、camera rename、batch、scheduler 和 checkpoint cadence 正确；
+- Non-PEFT、冻结边界、camera rename、batch、完整 optimizer/scheduler/gradient
+  clipping 和 checkpoint cadence 正确；
+- 指标 wrapper 不改变原 `update_policy` 的参数、调用次数、返回值或更新结果；
 - formal 参数漂移被拒绝；
 - fresh 和 resume 的完整命令生成；
-- 已有输出、缺失 training state、错误 resume step 和 contract 不一致被拒绝；
-- JSONL/runtime 记录可恢复追加且不会截断历史。
+- resume 重建相同的 8 进程 BF16 Accelerate 命令，并把 checkpoint 映射到准确的
+  config/training-state 路径；
+- 已有输出、缺失 training state、非最新完整 checkpoint、错误 resume step 和 contract
+  不一致被拒绝；
+- JSONL/runtime 按 attempt 追加，允许可解释的重跑 step 且不会截断历史。
 
 真实 Smoke 使用 Docker 内单卡 BF16、batch 1、2 steps，要求：
 
 - loss、grad norm 和 LR 均有限；
 - step 2 checkpoint 的 policy、processor 和 training state 完整；
-- `run_config.json`、`train_metrics.jsonl`、`train.log` 和 rank runtime 文件存在；
+- `run_config.json`、逐 step `train_metrics.jsonl`、`train.log` 和 attempt/rank runtime
+  文件存在；
 - 从 step 2 resume 的受限 Smoke 能恢复 step、optimizer、scheduler 和 RNG；
 - Smoke 与 Formal 标签明确区分。
 
