@@ -42,12 +42,15 @@ prototype 产物。
    右图固定 `xlim=(0,512)`、`ylim=(512,0)`，绘制工作区边界，但不伪造源数据
    未记录的环境背景或目标 T 轮廓。
 
-普通 episode 使用低透明度细线；超出 rejection radius 的两个 P0 cluster
-成员使用淡紫色虚线。medoid episode 16 最后绘制，使用更粗、更醒目的颜色和
-更高层级。左图只为 medoid 添加起点、终点和方向标记，避免 57 组标记遮挡；
-右图分别使用蓝色实线表示 agent、绿色虚线表示 T，并同样只标记 medoid 的
-起终点和方向。图例只包含语义样式，不为每个 episode 生成条目。两图使用等
-比例坐标并保持图像坐标的 Y 向下显示。标题注明
+颜色只编码对象类型：agent 为蓝色，T 为绿色。普通 episode 使用低透明度
+细线；右图中 agent 为实线、T 为虚线。超出 rejection radius 的两个 P0
+cluster 成员保留相同对象颜色，使用较高透明度，并分别将 agent 改为点划线、
+T 改为点线；左图只有 agent-local 路径，因此也使用蓝色点划线标识这两条。
+medoid episode 16 最后绘制；右图仍保留蓝色 agent/绿色 T，以更大线宽和更高
+层级突出，左图则使用醒目的深蓝粗线。左图只为 medoid 添加起点、终点和方向
+标记，避免 57 组标记遮挡；右图同样只标记 medoid 的起终点和方向。图例只包含
+对象类型、out-of-radius 和 medoid 这几种语义样式，不为每个 episode 生成
+条目。两图使用等比例坐标并保持图像坐标的 Y 向下显示。标题注明
 `P0 · 57 train demonstrations · medoid episode 16`，图注说明 medoid 是 E5
 八事件 token 加权距离下的中心，不保证在逐帧稠密轨迹图中视觉最居中，也不把
 P0 命名成固定的 approach-side 策略。
