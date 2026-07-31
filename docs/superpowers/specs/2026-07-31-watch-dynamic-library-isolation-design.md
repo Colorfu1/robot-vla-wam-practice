@@ -18,10 +18,13 @@ binary with `LD_LIBRARY_PATH` and `LD_PRELOAD` removed succeeds.
 
 Add a small executable wrapper at `docker/training/watch` and install it as
 `/usr/local/bin/watch` in the base image. The wrapper removes only
-`LD_LIBRARY_PATH` and `LD_PRELOAD`, then executes `/usr/bin/watch` with the
-original arguments and exit behavior.
+`LD_LIBRARY_PATH` and `LD_PRELOAD`, then uses
+`exec /usr/bin/watch "$@"`. Installing it with mode `0755` and replacing the
+wrapper process preserves the original PID, signal delivery, arguments, and
+signal-derived exit status.
 
-Both the normal image and `Dockerfile.volc-mlp` inherit `/usr/local/bin/watch`.
+The Volc image inherits `/usr/local/bin/watch` only when its `BASE_IMAGE` is the
+newly built base image, so its build and verification must use that exact base.
 No Conda, CUDA, TorchCodec, or training environment variable is changed for
 other processes. The wrapper is intentionally limited to `watch`; broader
 dynamic-library isolation requires separate H20 compatibility testing.
@@ -31,10 +34,13 @@ dynamic-library isolation requires separate H20 compatibility testing.
 Extend the image verifier with two checks:
 
 1. `command -v watch` resolves to `/usr/local/bin/watch`;
-2. a short pseudo-terminal `watch -n 0.1 true` probe runs until an external
-   timeout instead of terminating with a segmentation fault.
+2. `watch --help` succeeds and an invalid option fails, covering normal error
+   and exit-code forwarding;
+3. under a pseudo-terminal with fixed `TERM=xterm`, run `watch -n 0.1 true`
+   behind a bounded timeout with a kill grace period. The process must remain
+   alive until the deadline, and the timeout status is the expected result. Any
+   early exit, including status 139, fails.
 
 Retain all existing TorchCodec, CUDA, NCCL, LIBERO, and ManiSkill checks. The
-change is accepted only when the new `watch` probe and the existing image
-verification suite pass.
-
+change is accepted only when the new `watch` probes and the existing image
+verification suite pass independently for both the base and Volc image variants.
