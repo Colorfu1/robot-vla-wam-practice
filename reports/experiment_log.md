@@ -446,38 +446,86 @@ Use one section per run. Record incomplete or failed runs too.
   - `outputs/pusht_diffusion/pilot/e4_contact_offset_probe/*/videos/`
 - Modes: Closed-loop / OOD diagnostic; reference screening is Offline / diagnostic
 
-## 2026-07-30 — PushT E5 Prototype-ID Conditioning Implementation
+## 2026-07-30 — PushT E5 Prototype-ID Conditioning Formal Evaluation
 
 - Date: 2026-07-30
 - Task suite: PushT
-- Dataset size: 206 episodes total；prototype fit and training sidecar use 165 train
-  episodes
+- Dataset size: 206 episodes；165 train / 20 development / 21 audit
 - Observation keys: 96×96 RGB and 2D agent position；two-step history
 - Action space: 2D absolute target position
 - Action horizon: internal horizon 16；closed loop executes `[1:9]`, 8 actions per replan
 - Control frequency: 10 Hz
-- Policy: Mode-BCChunk and Mode-Diffusion；`nn.Embedding(K+1, 32)`；20% train-only
-  NULL dropout
-- Train loss: 1-step Smoke only；Mode-BCChunk approximately 0.221，Mode-Diffusion
-  approximately 1.189；formal training not run
-- Open-loop action error: not formally measured；fixed-observation one-seed Smoke wrote
-  640 action rows and four recordings
-- Closed-loop success rate: not formally measured；one-frame 8-rollout Smoke is a pipeline
-  check and is not a performance estimate
-- Latency: runtime recording path verified；formal DDPM100 latency not measured
-- Failure cases: one-frame Smoke cannot form stable contact or a classifiable complete
-  trajectory sketch
-- Notes: Offline K-medoids selected K=3 with cluster sizes 57/70/38, silhouette
-  0.278858, initialization ARI median 1.0, and 80% subsample ARI median 0.829350.
-  Formal mode training, fixed-observation sampling, and the 880-rollout closed-loop grid
-  remain pending. No controllability or NULL multimode capability conclusion is claimed.
+- Policy: selected Mode-BCChunk-175000 and Mode-Diffusion-125000；
+  `nn.Embedding(K+1, 32)`；20% train-only NULL dropout；DP uses DDPM-100
+- Train loss: selected-step logs report BC `0.000` at displayed precision；DP approximately
+  `0.007–0.009`
+- Open-loop action error: held-out normalized/denormalized MSE is 0.01333/804.90 for BC and
+  0.01315/793.59 for DP
+- Closed-loop success rate: oracle subset BC 7/21 (33.3%), DP 12/21 (57.1%). Across all
+  tasks, BC P0/P1/P2/NULL is 23.8%/38.1%/38.1%/52.4%; DP is
+  47.6%/52.4%/33.3%/52.4%
+- Latency: closed-loop replan p95 is 10.22 ms for BC and 608.93 ms for DP DDPM-100
+- Failure cases: requested and achieved prototypes frequently disagree；15/17 of BC and
+  12/15 of DP unclassifiable conditional rollouts have valid sketches but fall outside all
+  prototype radii；the remaining cases have ineligible sketches
+- Notes: development selection and the 168-rollout held-out all-condition audit are
+  complete. DP P0/P1/P2 adherence is only 14.3%/28.6%/19.0%; BC is
+  19.0%/23.8%/19.0%. Fixed-noise diagnostics verify that condition IDs enter the model and
+  change action chunks, but requested→achieved matrices are not diagonal. The formal
+  conclusion is that current E5 preserves task ability but does not establish semantic
+  prototype controllability. Training data contain one demonstration/prototype per initial
+  state and no paired counterfactual supervision.
 - Result artifacts:
   - `outputs/pusht_diffusion/pilot/e5_mode_conditioned/prototypes/metrics.json`
   - `outputs/pusht_diffusion/pilot/e5_mode_conditioned/prototypes/prototype_manifest.json`
   - `outputs/pusht_diffusion/pilot/e5_mode_conditioned/prototypes/leakage_audit.json`
-  - `outputs/pusht_diffusion/smoke/e5_fixed_observation_one_seed/`
-  - `outputs/pusht_diffusion/smoke/e5_closed_loop_one_frame/`
-- Modes: Offline / Formal prototype audit；training/evaluation pipeline Smoke
+  - `outputs/pusht_diffusion/pilot/e5_oracle_checkpoint_selection/`
+  - `outputs/pusht_diffusion/pilot/e5_oracle_audit/`
+- Pretrain / Provenance: random initialization with `train_seed=1000`, no external
+  pretrained checkpoint (`verified=true`); dataset/prototype/weight identity verified
+  across artifacts；runtime source commit unavailable (`verified=false`)
+- Modes: Offline / Formal prototype audit；Closed-loop / Formal held-out evaluation；
+  fixed-noise condition-response diagnostic
+
+## 2026-07-31 — PushT E6 7×7 Route Field Training Pipeline Smoke
+
+- Date: 2026-07-31
+- Task suite: PushT
+- Dataset size: 206 episodes total；RF7 train-only route mining yields 113 canonical
+  macro-route families；all 165 train episodes、20,610 frames and 20,610 sampleable indices
+  remain available；fixed Smoke uses all 8 configured episodes and 793 frames
+- Observation keys: 96×96 RGB and 2D agent position；two-step history；additional
+  `[4,7,7]` route field
+- Action space: 2D absolute target position
+- Action horizon: internal horizon 16；closed-loop execution contract remains `[1:9]`,
+  8 actions per replan
+- Control frequency: 10 Hz
+- Policy: RouteField-BCChunk and RouteField-Diffusion；7×7 occupancy/progress/dx/dy
+  field encoded to a 64D global condition；no NULL or condition dropout
+- Train loss: one-step pipeline Smoke reports BC `0.855` and DP epsilon loss `0.916`;
+  neither is a convergence result
+- Open-loop action error: not measured；checkpoint selection and route-switch evaluation
+  have not run
+- Closed-loop success rate: not measured
+- Latency: not measured；single optimizer updates took approximately 3.0 seconds in the
+  local Smoke and are not inference benchmarks
+- Failure cases: the first RF7 real Smoke launch exposed a stale schema-v1 assertion in
+  the shared training validator；the validator now uses the RF7 schema constant and a
+  regression test covers the real call path. The data remain unpaired: Route A/B are not
+  demonstrations from exactly the same initial state, so controllability is unverified
+- Notes: single-cell and singleton-family routes remain trainable；exact-route support
+  never controls eligibility. To make the fixed field representable, immediate backtracks
+  and residual closed loops are simplified only in the condition: 44/165 train episodes
+  are affected and 110 route cells are removed, while no episode、frame or sampleable index
+  is removed. The primary A/B diagnostic pair is `16→17→24` (support 3) versus
+  `16→23→24` (support 2). Both saved Smoke checkpoints were reloaded successfully and then
+  deleted as temporary generated artifacts. This is pipeline validation, not a formal
+  E6 result.
+- Result artifacts:
+  - `outputs/pusht_diffusion/pilot/route_field_7x7/sidecar/route_manifest.json`
+  - `outputs/pusht_diffusion/pilot/route_field_7x7/sidecar/episode_assignments.parquet`
+  - `outputs/pusht_diffusion/pilot/route_field_7x7/sidecar/route_fields.npz`
+- Modes: Offline route mining / Smoke training pipeline
 
 ## 2026-07-30 — SmolVLA LIBERO Native LoRA Two-step Smoke
 

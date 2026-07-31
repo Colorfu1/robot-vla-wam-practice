@@ -20,9 +20,13 @@ from .provenance import sha256_file
 @dataclass(frozen=True)
 class PrototypeAssignment:
     episode_index: int
+    split: str
     prototype_id: int | None
     training_condition_id: int | None
+    distance_to_medoid: float | None
+    classifiable: bool
     eligible: bool
+    exclusion_reason: str | None
     num_frames: int
 
 
@@ -105,9 +109,17 @@ def load_prototype_sidecar(path: str | Path) -> PrototypeSidecar:
         training_condition = row["training_condition_id"]
         assignment = PrototypeAssignment(
             episode_index=episode,
+            split=str(row.get("split", "unknown")),
             prototype_id=None if prototype is None else int(prototype),
             training_condition_id=(None if training_condition is None else int(training_condition)),
+            distance_to_medoid=(
+                None if row.get("distance_to_medoid") is None else float(row["distance_to_medoid"])
+            ),
+            classifiable=bool(row.get("classifiable", row["eligible"])),
             eligible=bool(row["eligible"]),
+            exclusion_reason=(
+                None if row.get("exclusion_reason") is None else str(row["exclusion_reason"])
+            ),
             num_frames=int(row["num_frames"]),
         )
         if assignment.eligible and assignment.prototype_id is None:

@@ -202,6 +202,7 @@ COPY docker/training/robot-practice-init /usr/local/bin/robot-practice-init
 COPY docker/training/verify_environment.py /usr/local/lib/robot-practice/verify_environment.py
 COPY docker/training/nccl_probe.py /usr/local/lib/robot-practice/nccl_probe.py
 COPY docker/training/robot-practice-verify /usr/local/bin/robot-practice-verify
+COPY docker/training/watch /usr/local/bin/watch
 COPY docker/training/nvidia_icd.json /usr/share/vulkan/icd.d/nvidia_icd.json
 COPY docker/training/10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
@@ -231,6 +232,7 @@ RUN groupadd --gid "${ROBOT_PRACTICE_GID}" robot-practice \
         /usr/local/bin/robot-practice-entrypoint \
         /usr/local/bin/robot-practice-init \
         /usr/local/bin/robot-practice-verify \
+        /usr/local/bin/watch \
     && dpkg-query -W -f='${Package}\t${Version}\n' \
         > /opt/robot-practice/environment/system-packages.tsv
 

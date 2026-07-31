@@ -23,8 +23,11 @@ Add a small executable wrapper at `docker/training/watch` and install it as
 wrapper process preserves the original PID, signal delivery, arguments, and
 signal-derived exit status.
 
-The Volc image inherits `/usr/local/bin/watch` only when its `BASE_IMAGE` is the
-newly built base image, so its build and verification must use that exact base.
+The Volc image also copies the same wrapper explicitly. Its `BASE_IMAGE` must
+either be the newly built base image or an existing base whose three lock-hash
+labels exactly match the current lock files. This permits a wrapper-only Volc
+rebuild when the pinned CUDA registry is temporarily unavailable without
+silently changing the Python environment.
 No Conda, CUDA, TorchCodec, or training environment variable is changed for
 other processes. The wrapper is intentionally limited to `watch`; broader
 dynamic-library isolation requires separate H20 compatibility testing.

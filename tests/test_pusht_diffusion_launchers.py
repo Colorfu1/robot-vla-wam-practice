@@ -13,6 +13,25 @@ SCRIPT_ROOT = PRACTICE_ROOT / "scripts" / "experiments" / "pusht"
 MODULE_ROOT = PRACTICE_ROOT / "src" / "robot_practice" / "experiments" / "pusht_diffusion"
 
 
+def test_all_vscode_debug_launches_pin_the_project_interpreter() -> None:
+    vscode_root = PRACTICE_ROOT / ".vscode"
+    launch = json.loads((vscode_root / "launch.json").read_text(encoding="utf-8"))
+    settings = json.loads((vscode_root / "settings.json").read_text(encoding="utf-8"))
+    expected = settings["python.defaultInterpreterPath"]
+    debug_launches = [
+        configuration
+        for configuration in launch["configurations"]
+        if configuration["type"] == "debugpy"
+    ]
+
+    assert debug_launches
+    assert {
+        configuration["name"]
+        for configuration in debug_launches
+        if configuration.get("python") != expected
+    } == set()
+
+
 def _run(name: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(SCRIPT_ROOT / name), *arguments],
@@ -100,6 +119,16 @@ def _training_plan(result: subprocess.CompletedProcess[str]) -> tuple[list[str],
                 "--num-inference-steps=1",
             ),
             "e5_rollout_eval",
+        ),
+        (
+            "select_e5_checkpoints.sh",
+            ("--num-gpus=2",),
+            "e5_checkpoint_selection",
+        ),
+        (
+            "eval_e5_oracle_audit.sh",
+            (),
+            "e5_oracle_audit",
         ),
         (
             "make_report.sh",
@@ -234,6 +263,37 @@ def test_e5_viewers_keep_same_scene_and_conditions_adjacent(tmp_path: Path) -> N
     assert shlex.split(rollout_result.stdout)[-6:] == expected
 
 
+def test_e5_rollout_viewer_supports_held_out_condition_sweep(tmp_path: Path) -> None:
+    recordings = tmp_path / "audit_recordings"
+    for model in ("mode_bc_chunk", "mode_diffusion"):
+        for condition in ("P0", "P1", "P2", "NULL"):
+            directory = recordings / model / f"condition_{condition}"
+            directory.mkdir(parents=True)
+            for episode_index in (16, 108):
+                (directory / f"episode_{episode_index:06d}.rrd").write_bytes(b"rrd")
+
+    result = _run(
+        "view_e5_rollouts.sh",
+        f"--recordings-dir={recordings}",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    expected = []
+    for episode_index in (16, 108):
+        for condition in ("P0", "P1", "P2", "NULL"):
+            for model in ("mode_bc_chunk", "mode_diffusion"):
+                expected.append(
+                    str(
+                        recordings
+                        / model
+                        / f"condition_{condition}"
+                        / f"episode_{episode_index:06d}.rrd"
+                    )
+                )
+    assert shlex.split(result.stdout)[-16:] == expected
+
+
 def test_report_launcher_forwards_e3_input() -> None:
     result = _run(
         "make_report.sh",
@@ -274,6 +334,54 @@ def test_checkpoint_selection_launcher_rejects_zero_gpus() -> None:
 
     assert result.returncode == 64
     assert "invalid numeric argument" in result.stderr
+
+
+def test_e5_oracle_audit_launcher_forwards_num_gpus() -> None:
+    result = _run(
+        "eval_e5_oracle_audit.sh",
+        "--num-gpus=8",
+        "--print-command",
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert "--num-gpus=8" in command
+    assert not any(argument.startswith("--device=") for argument in command)
+
+
+def test_e5_oracle_audit_launcher_rejects_zero_gpus() -> None:
+    result = _run(
+        "eval_e5_oracle_audit.sh",
+        "--num-gpus=0",
+        "--print-command",
+    )
+
+    assert result.returncode == 64
+    assert "--num-gpus must be a positive integer" in result.stderr
+
+
+def test_e5_oracle_audit_launcher_rejects_multi_gpu_device_override() -> None:
+    result = _run(
+        "eval_e5_oracle_audit.sh",
+        "--num-gpus=2",
+        "--device=cuda:3",
+        "--print-command",
+    )
+
+    assert result.returncode == 64
+    assert "--device cannot be set with --num-gpus>1" in result.stderr
+
+
+def test_e5_oracle_audit_launcher_rejects_duplicate_num_gpus() -> None:
+    result = _run(
+        "eval_e5_oracle_audit.sh",
+        "--num-gpus=2",
+        "--num-gpus=8",
+        "--print-command",
+    )
+
+    assert result.returncode == 64
+    assert "duplicate --num-gpus" in result.stderr
 
 
 def test_development_comparison_launcher_forwards_inputs() -> None:

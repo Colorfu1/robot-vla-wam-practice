@@ -1,19 +1,19 @@
 {
   "counts": {
     "conda": 148,
-    "pypi_source_distributions": 6,
-    "pypi_wheels": 253
+    "pypi_source_distributions": 7,
+    "pypi_wheels": 255
   },
   "excluded_project": {
     "name": "robot-practice",
     "reason": "installed from the runtime repository path",
     "version": "0.1.0"
   },
-  "generated_at": "2026-07-27T15:50:06.169251+00:00",
+  "generated_at": "2026-07-30T11:36:32.434661+00:00",
   "lock_sha256": {
     "conda-linux-64.lock": "a6ce06384d37893fbe584e07b7f3505874dfecadddcb72cd179b62d7dffd800c",
-    "requirements-linux-64.lock": "b31707f72d8a6604d60de372805c9533173fd1c288d9bc9e6897920987472a7d",
-    "source-requirements-linux-64.lock": "7bea9e4ea7a0a35f59e9df50c1c2744554ab6482d9b98a37690c647fca592891"
+    "requirements-linux-64.lock": "029c19b433582c6e94afb0201f0a2e4fc2857ae30c2977f907c4166c7852534f",
+    "source-requirements-linux-64.lock": "476eb9054fa94f943b4162501b58ceb13cfcd79cd3a355205aef7049dc88310f"
   },
   "platform": "linux-64",
   "public_conda_channels": [
@@ -300,6 +300,13 @@
       "sha256": "1e1ce33e978ae97fcfcff5638477032b801c46c7c65cf717f95fbc2248f79a9d",
       "url": "https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl",
       "version": "0.4.1"
+    },
+    {
+      "artifact_type": "sdist",
+      "name": "docopt",
+      "sha256": "49b3a825280bd66b3aa83585ef59c4a8c82f2c8a522dbe754a8bc8d08c85c491",
+      "url": "https://files.pythonhosted.org/packages/a2/55/8f8cab2afd404cf578136ef2cc5dfb50baa1761b68c9da1fb1e4eed343c9/docopt-0.6.2.tar.gz",
+      "version": "0.6.2"
     },
     {
       "artifact_type": "wheel",
@@ -933,6 +940,13 @@
     },
     {
       "artifact_type": "wheel",
+      "name": "num2words",
+      "sha256": "1c8e5b00142fc2966fd8d685001e36c4a9911e070d1b120e1beb721fa1edb33d",
+      "url": "https://files.pythonhosted.org/packages/d6/5b/545e9267a1cc080c8a1be2746113a063e34bcdd0f5173fd665a5c13cb234/num2words-0.5.14-py3-none-any.whl",
+      "version": "0.5.14"
+    },
+    {
+      "artifact_type": "wheel",
       "name": "numba",
       "sha256": "cc408c54b450f41582f4be1608f8981c1dcc44c7f40355cc150dd93015753407",
       "url": "https://files.pythonhosted.org/packages/36/e4/b780bfa9191410da50ba249cb3248a75014e17f611e72709cbddcb21f42d/numba-0.66.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
@@ -1119,6 +1133,13 @@
       "sha256": "a8926eb2a1b915486941fdbd31e86a4baf88fe8c210f25f2f35ecec5b574ca1c",
       "url": "https://files.pythonhosted.org/packages/99/5d/8268b644392ee874ee82a635cd0df1773de230bde356c38de28e298392cc/parso-0.8.7-py2.py3-none-any.whl",
       "version": "0.8.7"
+    },
+    {
+      "artifact_type": "wheel",
+      "name": "peft",
+      "sha256": "0fbba16ffebfad3de96e06f2da6860fd860292324b85b6141909fa1e26ea9233",
+      "url": "https://files.pythonhosted.org/packages/28/79/13bcabb8048126422d5c4b880575d40886c726f354db88cfeed4325525bb/peft-0.20.0-py3-none-any.whl",
+      "version": "0.20.0"
     },
     {
       "artifact_type": "wheel",

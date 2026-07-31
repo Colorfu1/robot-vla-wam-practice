@@ -9,6 +9,7 @@ Options:
   --image=IMAGE_REF   Required local image tag.
   --repo=PATH         Repository to mount read-only (default: current repo).
   --require-gpus=N    Expected visible GPU count (default: nvidia-smi count).
+  --require-bf16      Require BF16 support and a BF16 autocast matmul on every GPU.
   --skip-headless     Skip PushT, MuJoCo, LIBERO, and ManiSkill checks.
   --nccl              Run NCCL when at least two GPUs are required.
 EOF
@@ -20,12 +21,14 @@ repo_path="$repo_root"
 required_gpus=""
 headless=true
 run_nccl=false
+require_bf16=false
 
 for argument in "$@"; do
   case "$argument" in
     --image=*) image_ref="${argument#*=}" ;;
     --repo=*) repo_path="${argument#*=}" ;;
     --require-gpus=*) required_gpus="${argument#*=}" ;;
+    --require-bf16) require_bf16=true ;;
     --skip-headless) headless=false ;;
     --nccl) run_nccl=true ;;
     -h|--help)
@@ -71,6 +74,9 @@ verify_arguments=(
 )
 if [[ "$headless" == true ]]; then
   verify_arguments+=(--headless)
+fi
+if [[ "$require_bf16" == true ]]; then
+  verify_arguments+=(--require-bf16)
 fi
 if [[ "$run_nccl" == true ]]; then
   if [[ "$required_gpus" -lt 2 ]]; then

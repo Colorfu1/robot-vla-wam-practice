@@ -32,8 +32,16 @@ from .config import (
 from .dataset_split import EpisodeSplit, load_split
 from .model_configs import model_config_fingerprint
 from .provenance import sha256_file
+from .route_field_data import ROUTE_FIELD_SCHEMA_VERSION
 
-_POLICY_TYPES = {"bc_chunk", "diffusion", "mode_bc_chunk", "mode_diffusion"}
+_POLICY_TYPES = {
+    "bc_chunk",
+    "diffusion",
+    "mode_bc_chunk",
+    "mode_diffusion",
+    "route_field_bc_chunk",
+    "route_field_diffusion",
+}
 _REQUIRED_INITIALIZATION_FILES = {
     "config.json",
     "model.safetensors",
@@ -120,6 +128,7 @@ class ResolvedTraining:
     output_dir: Path
     config: TrainPipelineConfig
     prototype_manifest: Path | None = None
+    route_manifest: Path | None = None
 
     def summary(
         self,
@@ -182,6 +191,13 @@ class ResolvedTraining:
                     None,
                 ),
                 "null_prototype_id": getattr(policy, "num_prototypes", None),
+            }
+        if self.route_manifest is not None:
+            summary["route_field_conditioning"] = {
+                "manifest": str(self.route_manifest),
+                "grid_size": getattr(policy, "route_grid_size", None),
+                "field_channels": getattr(policy, "route_field_channels", None),
+                "embedding_dim": getattr(policy, "route_embedding_dim", None),
             }
         return summary
 
@@ -310,6 +326,8 @@ def build_train_pipeline_config(
     entry_module: str,
     model_config_module: str,
     prototype_manifest: Path | None = None,
+    route_manifest: Path | None = None,
+    episodes_override: Sequence[int] | None = None,
     random_initialization: bool = False,
 ) -> ResolvedTraining:
     """Resolve experiment paths and construct LeRobot's official config object."""
@@ -319,7 +337,21 @@ def build_train_pipeline_config(
     if policy.type != policy_type:
         raise TypeError(f"Expected policy.type={policy_type!r}, got {policy.type!r}")
     split = load_split(arguments.split_file)
-    episodes = split.episodes_for_mode(arguments.mode)
+    mode_episodes = split.episodes_for_mode(arguments.mode)
+    episodes = (
+        mode_episodes
+        if episodes_override is None
+        else tuple(int(episode) for episode in episodes_override)
+    )
+    if not episodes:
+        raise ValueError(f"No episodes remain for {policy_type} {arguments.mode} training")
+    if len(episodes) != len(set(episodes)):
+        raise ValueError("Training episode override contains duplicates")
+    invalid_episodes = sorted(set(episodes) - set(mode_episodes))
+    if invalid_episodes:
+        raise ValueError(
+            f"Training episode override is outside the {arguments.mode} split: {invalid_episodes}"
+        )
     output_dir = resolve_training_output_dir(arguments, policy_type)
     _reject_mode_mixing(output_dir, arguments.mode)
     dataset_root = (default_output_root() / "dataset_views" / arguments.mode).resolve()
@@ -335,6 +367,8 @@ def build_train_pipeline_config(
         )
         if policy_type in {"mode_bc_chunk", "mode_diffusion"}:
             initialization_parent /= "e5_mode_conditioned"
+        elif policy_type in {"route_field_bc_chunk", "route_field_diffusion"}:
+            initialization_parent /= "route_field_7x7"
         initialization_root = (initialization_parent / policy_type).resolve()
         policy.pretrained_path = initialization_root
     fingerprint = model_config_fingerprint(policy)
@@ -373,6 +407,7 @@ def build_train_pipeline_config(
         output_dir=output_dir,
         config=config,
         prototype_manifest=prototype_manifest,
+        route_manifest=route_manifest,
     )
 
 
@@ -403,6 +438,14 @@ def validate_training_inputs(
     is_mode_policy = resolved.policy_type in {"mode_bc_chunk", "mode_diffusion"}
     if is_mode_policy != (resolved.prototype_manifest is not None):
         raise ValueError("Mode-conditioned policies require exactly one prototype manifest")
+    is_route_policy = resolved.policy_type in {
+        "route_field_bc_chunk",
+        "route_field_diffusion",
+    }
+    if is_route_policy != (resolved.route_manifest is not None):
+        raise ValueError("Route-field policies require exactly one route manifest")
+    if resolved.prototype_manifest is not None and resolved.route_manifest is not None:
+        raise ValueError("A policy cannot use prototype and route-field manifests together")
     prototype: dict[str, Any] | None = None
     if resolved.prototype_manifest is not None:
         prototype = load_json_object(resolved.prototype_manifest)
@@ -430,6 +473,48 @@ def validate_training_inputs(
             resolved.config.policy.num_prototypes,
             source=resolved.prototype_manifest,
         )
+    if resolved.route_manifest is not None:
+        route = load_json_object(resolved.route_manifest)
+        _require_equal(
+            route,
+            "schema_version",
+            ROUTE_FIELD_SCHEMA_VERSION,
+            source=resolved.route_manifest,
+        )
+        _require_equal(route, "status", "complete", source=resolved.route_manifest)
+        _require_equal(
+            route,
+            "split_manifest_sha256",
+            resolved.split.manifest_sha256,
+            source=resolved.route_manifest,
+        )
+        grid = route.get("grid")
+        field = route.get("field")
+        if not isinstance(grid, dict) or not isinstance(field, dict):
+            raise TypeError(f"{resolved.route_manifest}: grid and field must be objects")
+        _require_equal(
+            grid,
+            "size",
+            resolved.config.policy.route_grid_size,
+            source=resolved.route_manifest,
+        )
+        channels = field.get("channels")
+        if not isinstance(channels, list):
+            raise TypeError(f"{resolved.route_manifest}: field.channels must be an array")
+        if len(channels) != resolved.config.policy.route_field_channels:
+            raise ValueError(
+                f"{resolved.route_manifest}: expected "
+                f"{resolved.config.policy.route_field_channels} channels, got {channels}"
+            )
+        training = route.get("training")
+        if not isinstance(training, dict):
+            raise TypeError(f"{resolved.route_manifest}: training must be an object")
+        eligible_episodes = {int(value) for value in training.get("episode_ids", ())}
+        invalid = sorted(set(resolved.episodes) - eligible_episodes)
+        if invalid:
+            raise ValueError(
+                f"Resolved training includes episodes without route fields: {invalid}"
+            )
     if resolved.initialization_root is None:
         if resolved.config.policy.pretrained_path is not None:
             raise ValueError(
@@ -513,6 +598,8 @@ def training_worker_arguments(resolved: ResolvedTraining) -> list[str]:
     ]
     if resolved.prototype_manifest is not None:
         arguments.append(f"--prototype-manifest={resolved.prototype_manifest}")
+    if resolved.route_manifest is not None:
+        arguments.append(f"--route-manifest={resolved.route_manifest}")
     return arguments
 
 

@@ -174,17 +174,26 @@ def test_libero_recording_cleanup_flushes_all_before_disconnect(
         (
             True,
             "success",
-            "Episode 003 | seed=1003 | init=3 | success",
+            (
+                "libero_goal/task_7/turn_on_the_stove | "
+                "Episode 003 | seed=1003 | init=3 | success"
+            ),
         ),
         (
             False,
             "time_limit",
-            "Episode 003 | seed=1003 | init=3 | failure:time_limit",
+            (
+                "libero_goal/task_7/turn_on_the_stove | "
+                "Episode 003 | seed=1003 | init=3 | failure:time_limit"
+            ),
         ),
         (
             False,
             "environment_done",
-            "Episode 003 | seed=1003 | init=3 | failure:environment_done",
+            (
+                "libero_goal/task_7/turn_on_the_stove | "
+                "Episode 003 | seed=1003 | init=3 | failure:environment_done"
+            ),
         ),
     ],
 )
@@ -195,6 +204,9 @@ def test_libero_recording_name_is_exact(
 ) -> None:
     assert (
         libero.libero_episode_recording_name(
+            suite="libero_goal",
+            task_id=7,
+            task_name="turn_on_the_stove",
             episode_index=3,
             seed=1003,
             init_state_id=3,
@@ -202,6 +214,17 @@ def test_libero_recording_name_is_exact(
             termination_reason=termination_reason,
         )
         == expected
+    )
+
+
+def test_libero_summary_recording_name_is_task_aware() -> None:
+    assert (
+        libero.libero_summary_recording_name(
+            suite="libero_goal",
+            task_id=7,
+            task_name="turn_on_the_stove",
+        )
+        == "libero_goal/task_7/turn_on_the_stove | Summary"
     )
 
 
@@ -532,6 +555,64 @@ def test_libero_environment_config_uses_resolved_task() -> None:
     assert goal.episode_length == 300
 
 
+def test_libero_explicit_init_states_and_policy_seed_validate() -> None:
+    config = libero.LiberoEvaluationConfig(
+        policy_path=Path("checkpoint"),
+        suite="libero_goal",
+        task_id=0,
+        n_episodes=3,
+        init_state_ids=(7, 2, 49),
+        policy_seed=2000,
+    )
+    libero.validate_config(config)
+
+    with pytest.raises(ValueError, match="exactly --n-episodes"):
+        libero.validate_config(
+            libero.LiberoEvaluationConfig(
+                policy_path=Path("checkpoint"),
+                suite="libero_goal",
+                task_id=0,
+                n_episodes=2,
+                init_state_ids=(7,),
+            )
+        )
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        libero.validate_config(
+            libero.LiberoEvaluationConfig(
+                policy_path=Path("checkpoint"),
+                suite="libero_goal",
+                task_id=0,
+                n_episodes=2,
+                init_state_ids=(7, 7),
+            )
+        )
+    with pytest.raises(ValueError, match="in 0..49"):
+        libero.validate_config(
+            libero.LiberoEvaluationConfig(
+                policy_path=Path("checkpoint"),
+                suite="libero_goal",
+                task_id=0,
+                n_episodes=1,
+                init_state_ids=(50,),
+            )
+        )
+
+
+def test_libero_cli_parses_explicit_init_states() -> None:
+    parsed = libero.build_argument_parser().parse_args(
+        [
+            "--policy-path=checkpoint",
+            "--suite=libero_goal",
+            "--task-id=0",
+            "--n-episodes=3",
+            "--init-state-ids=7,2,49",
+            "--policy-seed=2000",
+        ]
+    )
+    assert parsed.init_state_ids == (7, 2, 49)
+    assert parsed.policy_seed == 2000
+
+
 def test_extract_terminal_success_requires_vectorized_final_info() -> None:
     info = {
         "_final_info": np.array([True]),
@@ -544,6 +625,21 @@ def test_extract_terminal_success_requires_vectorized_final_info() -> None:
     assert libero.extract_terminal_success({}, terminal=False) is False
     with pytest.raises(RuntimeError, match="_final_info"):
         libero.extract_terminal_success({}, terminal=True)
+
+
+def test_rollout_progress_protocol_is_printed_independently_of_logging(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    libero.emit_rollout_progress(
+        completed=8,
+        total=30,
+        init_state_id=12,
+        success=True,
+    )
+
+    assert capsys.readouterr().out == (
+        "[RolloutProgress] completed=8 total=30 init_state_id=12 success=True\n"
+    )
 
 
 def test_set_init_state_id_controls_underlying_serial_env() -> None:

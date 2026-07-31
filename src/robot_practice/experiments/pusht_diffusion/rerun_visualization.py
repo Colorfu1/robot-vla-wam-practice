@@ -63,31 +63,47 @@ FIXED_OBSERVATION_PROTOCOLS = {
 }
 
 
-def build_development_rollout_blueprint() -> rrb.Blueprint:
+def build_development_rollout_blueprint(
+    *,
+    show_metadata: bool = False,
+) -> rrb.Blueprint:
     """Build the seed-independent layout shared by development task Recordings."""
 
     root = DEVELOPMENT_ROLLOUT_ROOT
+    views: list[Any] = [
+        rrb.Spatial2DView(
+            name="PushT rollout",
+            origin=root,
+            contents=[
+                f"{root}/simulator",
+                f"{root}/complete_agent_path",
+                f"{root}/complete_block_path",
+                f"{root}/complete_action_targets",
+                f"{root}/current_agent",
+                f"{root}/current_block",
+                f"{root}/current_action_target",
+            ],
+        ),
+        rrb.TimeSeriesView(
+            name="Reward",
+            origin=f"{root}/reward",
+            contents=[f"{root}/reward"],
+        ),
+    ]
+    column_shares = [3.0, 1.0]
+    if show_metadata:
+        views.append(
+            rrb.TextDocumentView(
+                name="Rollout identity",
+                origin=f"{root}/metadata",
+                contents=[f"{root}/metadata"],
+            )
+        )
+        column_shares.append(1.25)
     return rrb.Blueprint(
         rrb.Horizontal(
-            rrb.Spatial2DView(
-                name="PushT rollout",
-                origin=root,
-                contents=[
-                    f"{root}/simulator",
-                    f"{root}/complete_agent_path",
-                    f"{root}/complete_block_path",
-                    f"{root}/complete_action_targets",
-                    f"{root}/current_agent",
-                    f"{root}/current_block",
-                    f"{root}/current_action_target",
-                ],
-            ),
-            rrb.TimeSeriesView(
-                name="Reward",
-                origin=f"{root}/reward",
-                contents=[f"{root}/reward"],
-            ),
-            column_shares=[3.0, 1.0],
+            *views,
+            column_shares=column_shares,
         ),
         auto_layout=False,
         auto_views=False,
@@ -705,6 +721,8 @@ def record_single_rollout(
     rollout: RolloutResult,
     recording_id: str,
     recording_name: str,
+    metadata: Mapping[str, object] | None = None,
+    show_metadata: bool = False,
 ) -> Path:
     """Write one independently selectable complete closed-loop rollout."""
 
@@ -719,8 +737,13 @@ def record_single_rollout(
     try:
         recording.save(destination)
         recording.send_recording_name(recording_name)
+        blueprint = (
+            build_development_rollout_blueprint(show_metadata=True)
+            if show_metadata
+            else build_development_rollout_blueprint()
+        )
         rr.send_blueprint(
-            build_development_rollout_blueprint(),
+            blueprint,
             make_active=True,
             make_default=True,
             recording=recording,
@@ -731,6 +754,7 @@ def record_single_rollout(
             global_frame_start=0,
             rollout_index=0,
             entity_root=DEVELOPMENT_ROLLOUT_ROOT,
+            metadata=metadata,
         )
         if next_frame != rollout.agent_path.shape[0]:
             raise RuntimeError("Rollout Recording timeline length is inconsistent")
@@ -759,6 +783,7 @@ def log_rollout_to_stream(
     global_frame_start: int,
     rollout_index: int,
     entity_root: str | None = None,
+    metadata: Mapping[str, object] | None = None,
 ) -> int:
     """Log one rollout and return the next unused ``global_frame`` value."""
 
@@ -864,19 +889,18 @@ def log_rollout_to_stream(
         rr.Scalars(rollout_index),
         static=True,
     )
+    metadata_values: dict[str, object] = {
+        "model": rollout.model,
+        "condition": rollout.condition_id,
+        "scheduler": rollout.scheduler,
+        "num_inference_steps": rollout.num_inference_steps,
+        "success": rollout.success,
+        "max_reward": f"{rollout.max_reward:.6f}",
+    }
+    metadata_values.update(metadata or {})
     recording.log(
         f"{root}/metadata",
-        rr.TextDocument(
-            "\n".join(
-                [
-                    f"condition: {rollout.condition_id}",
-                    f"scheduler: {rollout.scheduler}",
-                    f"num_inference_steps: {rollout.num_inference_steps}",
-                    f"success: {rollout.success}",
-                    f"max_reward: {rollout.max_reward:.6f}",
-                ]
-            )
-        ),
+        rr.TextDocument("\n".join(f"{key}: {value}" for key, value in metadata_values.items())),
         static=True,
     )
     return global_frame

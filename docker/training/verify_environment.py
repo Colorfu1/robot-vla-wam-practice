@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pty
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,8 @@ def _basic_facts() -> dict[str, Any]:
         "lerobot",
         "mani-skill",
         "mujoco",
+        "num2words",
+        "peft",
         "rerun-sdk",
         "torch",
         "torchvision",
@@ -69,7 +72,88 @@ def _nvidia_smi_driver() -> str | None:
     return ",".join(drivers) or None
 
 
-def _verify_gpu(required_count: int) -> None:
+def _verify_watch() -> None:
+    wrapper = shutil.which("watch")
+    expected = Path("/usr/local/bin/watch")
+    if wrapper is None or Path(wrapper) != expected:
+        raise RuntimeError(f"Expected watch wrapper at {expected}, found {wrapper}")
+
+    help_result = subprocess.run(
+        [wrapper, "--help"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if help_result.returncode != 0:
+        raise RuntimeError(
+            f"watch --help failed with status {help_result.returncode}: {help_result.stdout}"
+        )
+
+    invalid_option = "--robot-practice-invalid-option"
+    wrapper_invalid = subprocess.run(
+        [wrapper, invalid_option],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    clean_environment = os.environ.copy()
+    clean_environment.pop("LD_LIBRARY_PATH", None)
+    clean_environment.pop("LD_PRELOAD", None)
+    system_invalid = subprocess.run(
+        ["/usr/bin/watch", invalid_option],
+        check=False,
+        env=clean_environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if wrapper_invalid.returncode == 0:
+        raise RuntimeError("watch unexpectedly accepted an invalid option")
+    if wrapper_invalid.returncode != system_invalid.returncode:
+        raise RuntimeError(
+            "watch wrapper did not preserve the invalid-option exit status: "
+            f"wrapper={wrapper_invalid.returncode} system={system_invalid.returncode}"
+        )
+
+    timeout = shutil.which("timeout")
+    if timeout is None:
+        raise RuntimeError("GNU timeout is required for the watch PTY probe")
+    pty_environment = os.environ.copy()
+    pty_environment["TERM"] = "xterm"
+    master_fd, slave_fd = pty.openpty()
+    try:
+        probe = subprocess.run(
+            [
+                timeout,
+                "--signal=TERM",
+                "--kill-after=1s",
+                "1s",
+                wrapper,
+                "-n",
+                "0.1",
+                "true",
+            ],
+            check=False,
+            env=pty_environment,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            timeout=3,
+        )
+    finally:
+        os.close(slave_fd)
+        os.close(master_fd)
+    if probe.returncode != 124:
+        raise RuntimeError(
+            "watch exited before the PTY probe deadline; "
+            f"expected timeout status 124, got {probe.returncode}"
+        )
+    print("watch wrapper: path, exit forwarding, and PTY refresh passed")
+
+
+def _verify_gpu(required_count: int, *, require_bf16: bool) -> None:
     import torch
 
     if not torch.cuda.is_available():
@@ -80,12 +164,54 @@ def _verify_gpu(required_count: int) -> None:
     if actual_count != required_count:
         raise RuntimeError(f"Expected exactly {required_count} CUDA GPUs, found {actual_count}")
     for index in range(actual_count):
-        left = torch.arange(1024, device=f"cuda:{index}", dtype=torch.float32)
-        result = (left * 2).sum().item()
-        expected = float((1023 * 1024 // 2) * 2)
-        if result != expected:
-            raise RuntimeError(f"CUDA computation mismatch on device {index}")
-        print(f"CUDA device {index}: {torch.cuda.get_device_name(index)}")
+        with torch.cuda.device(index):
+            left = torch.arange(1024, device=f"cuda:{index}", dtype=torch.float32)
+            result = (left * 2).sum().item()
+            expected = float((1023 * 1024 // 2) * 2)
+            if result != expected:
+                raise RuntimeError(f"CUDA computation mismatch on device {index}")
+            if require_bf16:
+                if not torch.cuda.is_bf16_supported():
+                    raise RuntimeError(f"CUDA device {index} does not support BF16")
+                matrix = torch.ones((16, 16), device=f"cuda:{index}", dtype=torch.float32)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    bf16_result = matrix @ matrix
+                if bf16_result.dtype != torch.bfloat16:
+                    raise RuntimeError(
+                        f"CUDA BF16 autocast produced {bf16_result.dtype} on device {index}"
+                    )
+        suffix = " (BF16 autocast passed)" if require_bf16 else ""
+        print(f"CUDA device {index}: {torch.cuda.get_device_name(index)}{suffix}")
+
+
+def _verify_smolvla() -> None:
+    from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
+    from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+    from num2words import num2words
+    from peft import LoraConfig
+
+    config = SmolVLAConfig(
+        device="cpu",
+        use_peft=True,
+        push_to_hub=False,
+    )
+    lora_config = LoraConfig(
+        r=32,
+        lora_alpha=32,
+        target_modules=["q_proj"],
+    )
+    if config.type != "smolvla":
+        raise RuntimeError(f"Unexpected SmolVLA policy type: {config.type}")
+    if not config.use_peft:
+        raise RuntimeError("SmolVLA PEFT configuration was not retained")
+    if lora_config.r != 32 or lora_config.lora_alpha != 32:
+        raise RuntimeError("LoRA configuration round-trip failed")
+    if num2words(32) != "thirty-two":
+        raise RuntimeError("num2words functional check failed")
+    print(
+        "SmolVLA/PEFT imports: "
+        f"policy={SmolVLAPolicy.__name__} lora_rank={lora_config.r}"
+    )
 
 
 def _verify_pusht() -> None:
@@ -349,6 +475,7 @@ def _verify_nccl(world_size: int) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-gpus", type=int, default=0)
+    parser.add_argument("--require-bf16", action="store_true")
     parser.add_argument("--nccl-world-size", type=int, default=0)
     parser.add_argument("--repo", type=Path)
     parser.add_argument("--headless", action="store_true")
@@ -358,13 +485,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     arguments = parse_args(argv)
     os.environ.pop("DISPLAY", None)
+    _verify_watch()
     facts = _basic_facts()
     print(json.dumps(facts, indent=2, sort_keys=True))
     _run([sys.executable, "-m", "pip", "check"])
     _verify_torchcodec()
+    _verify_smolvla()
 
+    if arguments.require_bf16 and not arguments.require_gpus:
+        raise RuntimeError("--require-bf16 requires --require-gpus")
     if arguments.require_gpus:
-        _verify_gpu(arguments.require_gpus)
+        _verify_gpu(arguments.require_gpus, require_bf16=arguments.require_bf16)
     if arguments.headless:
         _verify_pusht()
         _verify_mujoco()

@@ -53,4 +53,3 @@ language prompt。
 - 运行相关评测测试，确认合并 RRD 的 Recording 数量和名称校验仍通过。
 - 用一个训练内任务和一个 target 任务生成 RRD，同时载入 Rerun，确认列表无需打开
   内容即可辨认任务。
-

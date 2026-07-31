@@ -2,32 +2,32 @@
 
 ## 先说结论
 
-E5 第一阶段已经实现并通过本地 Smoke，正式训练与正式闭环评测尚未执行。
+E5 正式训练、development checkpoint selection 和 21-episode held-out 全条件 audit
+均已完成。最终结论是：
 
-- 现有 165 条 train demonstrations 可稳定提取 3 个全局 trajectory prototypes；
-  K=3 是满足预注册门槛的最小 K。
-- Mode-BCChunk 和 Mode-Diffusion 均只接收离散 Prototype ID，不接收未来 trajectory
-  sketch。输入使用 `nn.Embedding(K+1, 32)`，其中 ID `K` 是 trainable NULL。
-- 两个模型均从 `train_seed` 控制的随机权重直接开始训练，不需要生成或同步 E5
-  step-zero checkpoint。
-- 训练时每个条件样本有 20% 概率替换为 NULL；一个 rollout 内 ID 固定，环境不会代替
-  用户切换 condition。
-- 固定 observation 实验会固定 observation、initial noise 和完整 DDPM reverse stream，
-  只切换 P0/P1/P2/NULL。
-- 所有 E5 rollout 都是闭环；正式主网格是 20 个环境、每个 prototype 10 个
-  Mode-Diffusion seeds，另含完整 NULL 网格和确定性 Mode-BCChunk reference。
+- Mode-BCChunk 选中 step 175000；Mode-Diffusion 选中 step 125000。
+- held-out audit 完成 `2 models × 21 episodes × 4 conditions = 168` 条闭环
+  rollout；21/21 dataset-first-frame reconstruction 通过。
+- Mode-Diffusion 保留了任务能力：oracle success 为 12/21（57.1%），P1 与 NULL
+  success 都为 11/21（52.4%）。
+- 但显式控制没有成立：Mode-Diffusion 的 P0/P1/P2 adherence 只有
+  14.3%/28.6%/19.0%，Mode-BCChunk 为 19.0%/23.8%/19.0%；两个
+  requested→achieved 矩阵都没有形成对角线。
+- condition ID 确实进入模型且固定噪声下会改变 action chunk，因此这不是评测传参或
+  NULL 回退错误；问题是 action 差异没有稳定映射为指定完整轨迹 prototype。
+- 当前 165 条训练 demonstration 每个初始状态只有一个 prototype，没有同状态
+  P0/P1/P2 配对监督。P0/P1/P2 是事后完整轨迹聚类标签，尚未被证明是任意可切换的
+  控制命令。
 
-目前不能宣称 E5 已证明“Diffusion Policy 的无条件分布完整覆盖多个成功模式”。只有
-正式训练后同时满足：
+因此，当前 E5 可以说明“离散 condition 会影响动作”，但不能说明“离散 condition
+可以控制闭环模态”。raw success rate 不能替代 adherence/controlled success，也不能
+用来宣称 NULL 覆盖多个稳定成功模式。
+
+正式结论与完整矩阵见：
 
 ```text
-指定 Prototype ID → 对应 prototype adherence + task success
-NULL + 不同 seed → 同一环境至少两个可分类的成功 prototype
+reports/2026-07-30-E5 Prototype条件控制正式评测结论.md
 ```
-
-才能分别支持“显式可控性”和“该 E5 checkpoint 的 NULL 分支覆盖多个成功模式”。
-现有 demonstrations 也不是严格的相同初始状态配对数据，因此即使 E5 成功，仍不能把
-结果提升为严格的训练数据同状态多解证明，更不能反向替代原 E2 checkpoint 的结论。
 
 ## 实验目标
 
@@ -76,6 +76,64 @@ outputs/pusht_diffusion/pilot/e5_mode_conditioned/prototypes/
 ├── leakage_audit.json
 └── visualizations/
 ```
+
+## 已完成的正式模型结果（Closed-loop / Formal）
+
+development selection 使用 20 条 oracle-mode episodes，选出：
+
+| 模型 | Step | Development success | Mean max reward |
+|---|---:|---:|---:|
+| Mode-BCChunk | 175000 | 10/20（50.0%） | 0.8506 |
+| Mode-Diffusion | 125000 | 14/20（70.0%） | 0.9563 |
+
+held-out audit 在相同 21 条 episodes 上枚举 P0/P1/P2/NULL，得到：
+
+| 模型 | P0 success / adherence | P1 success / adherence | P2 success / adherence | NULL success |
+|---|---:|---:|---:|---:|
+| Mode-BCChunk | 23.8% / 19.0% | 38.1% / 23.8% | 38.1% / 19.0% | 52.4% |
+| Mode-Diffusion | 47.6% / 14.3% | 52.4% / 28.6% | 33.3% / 19.0% | 52.4% |
+
+oracle 子集上 BC/DP success 为 33.3%/57.1%，open-loop normalized MSE 为
+0.01333/0.01315。DP 的任务成功点估计更高，但 adherence 没有随之提高。
+
+对显式 P0/P1/P2，成功且可分类的 requested→achieved 计数为：
+
+Mode-BCChunk：
+
+| Requested \ Achieved | P0 | P1 | P2 | Other/Failed |
+|---|---:|---:|---:|---:|
+| P0 | 1 | 1 | 3 | 16 |
+| P1 | 1 | 4 | 3 | 13 |
+| P2 | 2 | 2 | 3 | 14 |
+
+Mode-Diffusion：
+
+| Requested \ Achieved | P0 | P1 | P2 | Other/Failed |
+|---|---:|---:|---:|---:|
+| P0 | 2 | 4 | 3 | 12 |
+| P1 | 3 | 4 | 3 | 11 |
+| P2 | 3 | 1 | 3 | 14 |
+
+两个矩阵均未形成明显对角线。显式 condition 与 NULL 都可分类时，BC 35/36、DP
+34/38 产生相同 achieved prototype；DP 有 achieved P1 偏置，但没有完全坍缩到单一
+mode。
+
+固定噪声诊断已经排除 condition 传参失效：四行 embedding 不同，P0/P1/P2/NULL
+使用相同 initial/reverse noise stream，切换 condition 会改变 action chunk。当前失败
+应表述为“semantic controllability 未建立”，而不是“condition 输入没有生效”。
+
+三组完整 train GT 轨迹图位于：
+
+```text
+outputs/pusht_diffusion/pilot/e5_mode_conditioned/prototypes/visualizations/
+├── p0_train_gt_trajectories.png
+├── p1_train_gt_trajectories.png
+└── p2_train_gt_trajectories.png
+```
+
+P0/P1/P2 分别为 57/70/38 条，radius 内为 55/67/37 条。dense trajectories 显示
+cluster 内离散且跨 cluster 重叠，因此不能把 P0/P1/P2 简化为固定 left/right/top
+命令，也不能假设同一初始状态下三个 prototype 都物理可行。
 
 ## K=3 是如何聚类出来的
 
@@ -297,8 +355,129 @@ manifest、train seed、steps 和 global batch size；训练配置中的
 
 ## 正式评测
 
-以下命令假设使用 200000-step checkpoint。如果最终 checkpoint selection 选择了不同
-step，只替换两个 `--*-policy` 路径，并在实验记录中写明。
+### Oracle-mode development checkpoint selection
+
+主选择协议同时处理 Mode-BCChunk 与 Mode-Diffusion 的所有 numeric checkpoints。
+对每个 checkpoint：
+
+- 使用固定 20 条 development episodes，每条 episode 只运行一次；
+- Prototype ID 来自该 demonstration 完整 GT 轨迹到 train medoid 的最近分配；
+- simulator 只从 dataset 第一帧的 agent position 和图像提取的 T pose 重建；
+- rollout 开始后不再读取 GT observation、action 或未来轨迹；
+- Mode-Diffusion 固定 `policy_seed=0` 和完整 DDPM-100；
+- 按 closed-loop success rate、mean max reward、更早 training step 的顺序选取。
+
+首帧重建在加载 checkpoint 前对 20 条 development episodes 全量做硬门槛预检：
+T-block mask IoU 至少 0.75、中心误差不超过 2 observation pixels、角度误差不超过
+5°、agent position 误差不超过 `1e-6`。任何 episode 失败都会终止，不会静默排除。
+
+`--num-gpus=N` 把 checkpoint 任务分发到 N 张可见 GPU；一个 checkpoint 的全部 20 条
+episodes 始终由同一个 worker 顺序执行。
+
+```bash
+bash scripts/experiments/pusht/select_e5_checkpoints.sh \
+  --num-gpus=8
+```
+
+如训练目录不同，可显式传入：
+
+```bash
+bash scripts/experiments/pusht/select_e5_checkpoints.sh \
+  --bc-run=outputs/pusht_diffusion/pilot/e5_mode_conditioned/training/mode_bc_chunk \
+  --diffusion-run=outputs/pusht_diffusion/pilot/e5_mode_conditioned/training/mode_diffusion \
+  --prototype-manifest=outputs/pusht_diffusion/pilot/e5_mode_conditioned/prototypes/prototype_manifest.json \
+  --num-gpus=8 \
+  --overwrite
+```
+
+只检查最终命令、不启动正式进程：
+
+```bash
+bash scripts/experiments/pusht/select_e5_checkpoints.sh \
+  --num-gpus=8 \
+  --print-command
+```
+
+输出：
+
+```text
+outputs/pusht_diffusion/pilot/e5_oracle_checkpoint_selection/
+├── selected_checkpoints.json
+├── selection.parquet
+├── rollouts.parquet
+├── reconstruction_metrics.parquet
+├── rng_manifest.json
+├── run_manifest.json
+├── metrics.json
+├── metrics.md
+└── recording.rrd
+```
+
+`selected_checkpoints.json` 必须同时包含 `mode_bc_chunk` 与 `mode_diffusion`，并记录选中
+权重的 SHA256。任意一类 run/checkpoint 缺失时 selection 直接失败。
+
+### Held-out 全条件 audit
+
+selection 完成后，audit 入口读取上述 JSON 并重新校验两份权重 SHA256。它在单张 GPU
+或多张 GPU 上评测两种选中模型：
+
+- 对全部 21 条 held-out audit episodes 分别固定输入 P0、P1、P2、NULL，
+  合计 `2 models × 21 episodes × 4 conditions = 168` 条闭环 rollouts；
+- 对全部 audit frames/chunks 计算带 padding mask 的 open-loop normalized 和
+  denormalized action MSE；
+- 分别报告 P0/P1/P2/NULL 在全部 21 个任务上的 success rate 与 Wilson 95%
+  interval，并输出 GT mode × commanded condition 成功率矩阵；
+- 从 `commanded condition == GT mode` 的 42 条子集中派生原有 oracle 指标；
+- 同样先执行 21/21 首帧重建硬门槛预检。
+
+```bash
+bash scripts/experiments/pusht/eval_e5_oracle_audit.sh \
+  --num-gpus=8 \
+  --overwrite
+```
+
+只打印命令：
+
+```bash
+bash scripts/experiments/pusht/eval_e5_oracle_audit.sh \
+  --print-command
+```
+
+这里 GT action 的用途分为两类：open-loop 中作为误差 target；closed-loop 中通过完整
+demonstration 得到 GT Prototype ID，用于标记 oracle 子集和 GT×commanded 分组。
+每次闭环执行只把当前被扫描的固定 condition 输入模型，因此实际 rollout 可以偏离 GT
+和 commanded prototype。NULL 的 nearest-prototype/classifiability 仍保留用于诊断，
+但 adherence 与 controlled success 记为未定义。
+
+输出：
+
+```text
+outputs/pusht_diffusion/pilot/e5_oracle_audit/
+├── closed_loop_rollouts.parquet
+├── condition_metrics.parquet
+├── gt_commanded_metrics.parquet
+├── open_loop_metrics.parquet
+├── open_loop_episode_metrics.parquet
+├── reconstruction_metrics.parquet
+├── selected_checkpoints.json
+├── rng_manifest.json
+├── run_manifest.json
+├── metrics.json
+├── metrics.md
+└── recordings/
+    ├── mode_bc_chunk/condition_{P0,P1,P2,NULL}/episode_*.rrd
+    └── mode_diffusion/condition_{P0,P1,P2,NULL}/episode_*.rrd
+```
+
+每条 recording 的名称与默认 metadata 面板都会显示 BC/DP、commanded condition、
+GT mode、episode 和 success。批量查看：
+
+```bash
+bash scripts/experiments/pusht/view_e5_rollouts.sh \
+  --recordings-dir=outputs/pusht_diffusion/pilot/e5_oracle_audit/recordings
+```
+
+下面的固定 observation 网格用于补充分析显式条件响应，不参与上述 checkpoint 排序。
 
 ### 固定 observation 条件切换
 
@@ -341,7 +520,11 @@ bash scripts/experiments/pusht/view_e5_fixed_observations.sh \
 各 prototype 内不同 seeds 的 pairwise RMS。它只能证明 condition 是否改变动作，不能
 单独报告 prototype adherence。
 
-### 完整闭环 Prototype/NULL rollout
+### 补充多-seed Prototype/NULL 网格（未执行）
+
+下面的 880-rollout 网格是用于 NULL 多样性与跨 seed 稳定性的补充实验，不是已经完成的
+168-rollout held-out audit。当前 E5 语义控制的负面结论来自正式 held-out audit，不应
+把这个补充网格写成已完成结果。
 
 ```bash
 bash scripts/experiments/pusht/eval_e5_rollouts.sh \
@@ -419,31 +602,45 @@ NULL 网格中，同一环境的某个 prototype 至少要有 2 个成功、可�
 supported NULL mode；同一环境至少有 2 个 supported modes 才记为
 `multi_mode_success=true`。单个离群 seed 不算模式覆盖。
 
-## 已完成的验证（Smoke）
+## 已完成的验证
 
-Smoke 只证明实现链路可执行，不是模型能力结果：
-
-- Mode-BCChunk 和 Mode-Diffusion 分别完成 1 update；最后记录 loss 约为 0.221 和
-  1.189。
-- 两个模型均为约 264M 参数；checkpoint 保存/加载、条件 dropout、固定 ID 与显式
-  DDPM RNG 测试通过。
-- 10 candidates × P0/P1/P2/NULL × 单 seed 的固定 observation Smoke 完成，输出
-  640 action rows 和 4 个 Rerun recordings。
-- 1 environment × P0/P1/P2/NULL × 两种模型的一帧闭环 Smoke 完成 8/8 rollouts，
-  输出 8 个独立 Rerun recordings。
-- 一帧 rollout 不足以形成稳定接触或完整 sketch，因此其 0 success/adherence 不得作为
-  E5 负面结论；正式 open-loop error、closed-loop success 和 DDPM100 latency 仍未测量。
+- 正式 Mode-BCChunk/Mode-Diffusion 训练均完成 200000 steps；selection 分别选中
+  175000/125000。
+- checkpoint selection 使用 8 GPU 完成，两个模型的 selection artifact 均为
+  `complete`。
+- held-out audit 使用 8 GPU 完成 168/168 rollouts，artifact schema version 2，
+  protocol 为 `held_out_all_condition_sweep`。
+- 20/20 development 和 21/21 audit dataset-first-frame reconstruction 通过。
+- checkpoint 保存/加载、condition dropout、rollout-persistent ID、显式 initial/reverse
+  DDPM RNG 的聚焦测试通过。
+- 固定噪声最小复现确认 condition 会改变 action chunk；混淆矩阵确认这种差异没有形成
+  可靠的 requested→achieved 对应。
+- 早期 1-step/一帧 Smoke 只保留为实现历史，不参与正式能力结论。
 
 ## 必填实验字段
 
 - Task suite：PushT
-- Dataset size：206 episodes；prototype fit/train 只用 165 train episodes
+- Dataset size：206 episodes；165 train / 20 development / 21 audit
 - Observation keys：96×96 RGB、二维 agent position；历史长度 2
 - Action space：二维绝对 action target
 - Action horizon：内部 16；闭环每次执行 `[1:9]` 共 8 actions
 - Control frequency：10 Hz
-- Train loss：从正式训练日志记录；当前只有 1-step Smoke
-- Open-loop action error：正式 fixed-observation/checkpoint evaluation 后记录
-- Closed-loop success rate：正式 880-rollout 汇总后记录
-- Latency：正式 DDPM100 replan latency 后记录
-- Failure cases：按 environment、condition、policy seed、classifiability 和终止原因记录
+- Train loss：选中 step 附近日志中 BC 为 `0.000`（显示精度舍入），DP 约
+  `0.007–0.009`
+- Open-loop action error：BC normalized/denormalized MSE 为 0.01333/804.90；
+  DP 为 0.01315/793.59
+- Closed-loop success rate：oracle BC 7/21（33.3%），DP 12/21（57.1%）；
+  全条件 success/adherence 见正式结果表
+- Latency：BC replan p95 10.22 ms；DP DDPM-100 replan p95 608.93 ms
+- Failure cases：timeout、requested/achieved prototype 不一致、超出所有 rejection
+  radius、少数 rollout sketch 不可提取
+
+## Pretrain / Provenance
+
+- 两种模型均从 `train_seed=1000` 控制的随机初始化训练，没有外部 pretrained
+  checkpoint；`verified=true`。
+- dataset revision、prototype manifest 与选中权重标识在 selection/audit 间完成校验；
+  `verified=true`。
+- 正式 runtime manifest 的 repository `commit=null`，无法绑定唯一源码 commit；
+  code provenance `verified=false`。
+- 初始环境来自 dataset 第一帧重建，不是完整 Pymunk snapshot replay。

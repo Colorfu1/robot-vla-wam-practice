@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Open E5 recordings ordered by environment, condition, model, then policy seed.
+# Open E5 recordings ordered by environment/episode, condition, model, then policy seed.
 
 set -euo pipefail
 
@@ -33,20 +33,36 @@ practice_root="$(cd -- "${script_dir}/../../.." && pwd)"
 }
 shopt -s nullglob
 all_rrds=("${recordings_dir}"/mode_*/*/*.rrd "${recordings_dir}"/mode_*/*/*/*.rrd)
+audit_rrds=("${recordings_dir}"/mode_*/condition_*/episode_*.rrd)
 shopt -u nullglob
 ((${#all_rrds[@]} > 0)) || { echo "error: no E5 recordings found" >&2; exit 66; }
 
 rrd_paths=()
-for environment_seed in {2000..2019}; do
-  for condition in P0 P1 P2 P3 NULL; do
-    bc="${recordings_dir}/mode_bc_chunk/condition_${condition}/env_${environment_seed}.rrd"
-    [[ -s "${bc}" ]] && rrd_paths+=("${bc}")
-    for policy_seed in {00..09}; do
-      dp="${recordings_dir}/mode_diffusion/condition_${condition}/policy_seed_${policy_seed}/env_${environment_seed}.rrd"
-      [[ -s "${dp}" ]] && rrd_paths+=("${dp}")
+if ((${#audit_rrds[@]} > 0)); then
+  shopt -s nullglob
+  audit_episodes=("${recordings_dir}/mode_bc_chunk/condition_P0"/episode_*.rrd)
+  shopt -u nullglob
+  for episode_path in "${audit_episodes[@]}"; do
+    episode_file="${episode_path##*/}"
+    for condition in P0 P1 P2 NULL; do
+      for model in mode_bc_chunk mode_diffusion; do
+        recording="${recordings_dir}/${model}/condition_${condition}/${episode_file}"
+        [[ -s "${recording}" ]] && rrd_paths+=("${recording}")
+      done
     done
   done
-done
+else
+  for environment_seed in {2000..2019}; do
+    for condition in P0 P1 P2 P3 NULL; do
+      bc="${recordings_dir}/mode_bc_chunk/condition_${condition}/env_${environment_seed}.rrd"
+      [[ -s "${bc}" ]] && rrd_paths+=("${bc}")
+      for policy_seed in {00..09}; do
+        dp="${recordings_dir}/mode_diffusion/condition_${condition}/policy_seed_${policy_seed}/env_${environment_seed}.rrd"
+        [[ -s "${dp}" ]] && rrd_paths+=("${dp}")
+      done
+    done
+  done
+fi
 ((${#rrd_paths[@]} == ${#all_rrds[@]})) || {
   echo "error: one or more E5 recordings do not follow the registered layout" >&2
   exit 66

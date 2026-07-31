@@ -11,8 +11,8 @@
 
 先补齐 SmolVLA/PEFT 依赖，再用三个目标任务各一条 demonstration 执行两步 LoRA
 训练。原生命令只验证 loss 和 checkpoint；随后由 instrumented wrapper 记录 trainable
-parameters、LoRA target 和 peak VRAM。最后使用 LIBERO dataset stats 运行一条 300-step
-C0 闭环 rollout。
+parameters、LoRA target 和 peak VRAM。闭环接口先用公共 SmolVLA-LIBERO checkpoint
+跑完整 episode，再用本地两步 LoRA adapter 跑一条受限步数兼容性 Smoke。
 
 ## 环境审计
 
@@ -28,11 +28,11 @@ C0 闭环 rollout。
 | SmolVLA extra | 已就绪 | `num2words==0.5.14`，已通过 `lerobot[smolvla]` 持久化 |
 | PEFT/LoRA | 已就绪 | `peft==0.20.0`，SmolVLAPolicy 与 LoraConfig 导入通过 |
 | SmolVLA base | 已缓存 | 两步 LoRA Smoke 已完成首次下载 |
-| 本地闭环 evaluator | 未实现 | 当前 evaluator 只支持 ACT checkpoint |
+| 单任务闭环 evaluator | 已就绪 | 支持 Hub、本地普通和本地 PEFT checkpoint，并输出 Rerun |
 
 依赖安装后，`doctor.sh`、`quickstart_info.sh`、SmolVLA/PEFT import、CUDA 和 BF16
-检查均已通过。当前仍不能直接执行完整实验；阻塞项是首次下载 SmolVLA base，以及
-SmolVLA 专用训练/评测胶水。
+检查均已通过。SmolVLA 单任务闭环训练/评测链路已连通；当前 Phase 0 的剩余阻塞项是
+instrumented LoRA Smoke，而不是模型下载或闭环 evaluator。
 
 ## 目标数据快照
 
@@ -46,8 +46,9 @@ SmolVLA 专用训练/评测胶水。
 | 8 | `put the bowl on the plate` | 10 | 49 | 4,563 | 456.3 秒 |
 | 合计 | — | — | 143 | 13,991 | 1,399.1 秒 |
 
-这里统计的是 demonstrations，不代表已经证明存在同样数量的 unique init states。
-正式 split 仍需按照[数据准备](01_data_preparation.md)完成 provenance 映射。
+这里统计的是 demonstrations。它们通过 action provenance 划分 Train/Offline
+Validation；官方 benchmark init states 使用另一套独立 closed-loop split，详见
+[数据准备](01_data_preparation.md)。
 
 ## Feature 与 Processor Contract
 
@@ -71,8 +72,10 @@ SmolVLA base 使用三路 camera 名称和 6 维 state/action。本实验统一 
 第三路 camera 不提供。模型可以使用实际存在的两路图像。
 
 训练入口必须使用 LIBERO dataset features/stats 覆盖 action feature 和 normalization
-stats。C0 不能直接使用 base checkpoint 自带的 6 维 normalization stats，否则动作
-反归一化不是有效的 LIBERO action contract。
+stats。C0 不直接使用 base checkpoint 自带的 6 维 normalization stats，否则动作
+反归一化不是有效的 LIBERO action contract。公共 `HuggingFaceVLA/smolvla_libero`
+checkpoint 用于闭环 contract Smoke；本地 LoRA checkpoint 则恢复训练时保存的
+rename map 和 processor state。
 
 ## 准备命令
 
@@ -139,8 +142,9 @@ conda run --no-capture-output -n robot-practice \
     --output_dir="outputs/smolvla_libero/smoke/lora_${RUN_ID}"
 ```
 
-Episodes `379/392/398` 属于 development-used 数据。后续 provenance 映射必须找到它们
-对应的初始状态，并将这些状态排除在正式 test split 之外。
+Episodes `379/392/398` 只用于 Smoke，不能作为正式训练或实验结果。训练 demonstrations
+与官方 benchmark init states 是独立集合，因此不通过 episode 反推或修改 closed-loop
+Test states。
 
 这里显式使用 `--mixed_precision=bf16` 是本实验为了降低显存、提高吞吐并保持 C1/C2/C3
 精度配置一致而作出的固定选择，不是 SmolVLA 或 LeRobot 的功能性硬要求。正式训练前
@@ -180,28 +184,68 @@ bash scripts/experiments/smolvla_libero/smoke_train.sh \
 LeRobot 0.4.4 当前训练入口没有可配置的 gradient accumulation。不得把 batch 1 描述成
 effective batch 32；如需 accumulation，必须先实现并测试。
 
-## C0 Base 闭环 Smoke
+## C0 公共 checkpoint 完整闭环 Smoke
 
-以下入口同样属于 `Planned / CLI 未实现 / 当前不可运行`：
+以下命令执行一个无人工截断的 LIBERO-Goal episode，并保存数值、视频和 Rerun：
 
 ```bash
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 
-bash scripts/experiments/smolvla_libero/smoke_eval.sh \
-  --policy-path=lerobot/smolvla_base \
-  --dataset-root=datasets/lerobot/lerobot/libero \
+bash scripts/experiments/smolvla_libero/eval_libero.sh \
+  --policy-path=HuggingFaceVLA/smolvla_libero \
   --suite=libero_goal \
   --task-id=1 \
-  --init-state-id=0 \
-  --policy-seed=2000 \
-    --episode-length=300 \
-    --output-dir="outputs/smolvla_libero/smoke/base_closed_loop_${RUN_ID}"
+  --n-episodes=1 \
+  --num-visualized-episodes=1 \
+  --n-action-steps=1 \
+  --seed=1000 \
+  --output-dir="outputs/smolvla_libero/smoke/public_closed_loop_${RUN_ID}" \
+  --no-open-viewer
 ```
 
-`task_id=1, init_state_id=0` 同样属于 development-used 状态，不得进入正式 test split。
-以后新增 Smoke episode 或 init state 时，必须同步加入数据准备阶段的排除列表。
+这条命令没有 `--max-steps`，成功时保存到权威成功终止帧，失败时执行到 suite 上限。
+虽然覆盖完整 episode，但只有一个开发状态，因此仍标为 `Smoke / Closed-loop`，不能用来
+报告模型总体成功率。该运行对应 `task_id=1, init_state_id=0, seed=1000`；
+`init_state_id=0` 必须排除在正式 test split 之外。
 
-该 evaluator 必须显式加载 LIBERO stats，不能继续使用 base 的 6 维 processor stats。
+已验证运行 `outputs/smolvla_libero/smoke/hf_libero_goal_task1_rerun_20260730`：
+
+- 第 94 个 transition 成功终止，共保存 94 条 Parquet transition；
+- Rerun 两路相机、实测关节、8 维 state 和 done/success 时间线均为 0–94；
+- MP4 为 95 帧，包含 reset observation 和成功终止 observation；
+- 每次实际发送的 action 与同次模型查询 chunk 的第 0 步完全一致。
+
+## 本地 PEFT 加载 Smoke
+
+两步 LoRA 训练完成后，可自动选择最近的 step-2 adapter 运行 1 步兼容性检查：
+
+```bash
+PEFT_POLICY="$(
+  find outputs/smolvla_libero/smoke \
+    -path '*/checkpoints/000002/pretrained_model' \
+    -type d \
+    -print |
+    sort |
+    tail -n 1
+)"
+test -n "${PEFT_POLICY}"
+
+bash scripts/experiments/smolvla_libero/eval_libero.sh \
+  --policy-path="${PEFT_POLICY}" \
+  --suite=libero_goal \
+  --task-id=1 \
+  --n-episodes=1 \
+  --num-visualized-episodes=1 \
+  --n-action-steps=1 \
+  --seed=1000 \
+  --max-steps=1 \
+  --output-dir=outputs/smolvla_libero/smoke/local_peft_rerun_1step \
+  --overwrite \
+  --no-open-viewer
+```
+
+该命令结果类别为 `Smoke`。它只验证本地 adapter、保存的 camera rename map、
+processor、7D action 和 Rerun 链路，不提供任务成功率。
 
 ## 结果落点
 
@@ -209,7 +253,8 @@ bash scripts/experiments/smolvla_libero/smoke_eval.sh \
 outputs/smolvla_libero/smoke/
 ├── lora_<timestamp>/
 ├── instrumented_lora_<timestamp>/
-└── base_closed_loop_<timestamp>/
+├── public_closed_loop_<timestamp>/
+└── local_peft_rerun_1step/
 ```
 
 原生 `lora_<timestamp>/` 只要求保存 LeRobot 原生 train config、step-2 adapter
@@ -225,7 +270,14 @@ checkpoint 和逐 step 控制台日志。它是 bootstrap 检查，不承担完�
 - peak allocated/reserved VRAM
 - 错误日志
 
-`base_closed_loop_<timestamp>/` 必须保存 `run_config.json`、`metrics.json`、视频和失败原因。
+两个闭环目录保存：
+
+- `run_config.json`
+- `metrics.json` 与 `metrics.md`
+- `eval_info.json`
+- `rollouts.parquet`
+- `rollout.rrd`
+- `videos/episode_000.mp4`
 
 ## 判断标准
 
@@ -235,9 +287,12 @@ checkpoint 和逐 step 控制台日志。它是 bootstrap 检查，不承担完�
 - 实际 target 与预期 action expert/projections 相符
 - 未意外训练冻结的 VLM/vision 参数
 - 没有 OOM、feature mismatch 或 state/action normalization 错误
-- C0 能完成一条 300-step 闭环 rollout，不要求成功
+- C0 能完成一条未人工截断的闭环 rollout，不要求成功
+- 本地 PEFT 能恢复 adapter、rename map 和 processor，并在发出首个 action 前通过 shape/
+  finite 检查
 
-只有 instrumented LoRA Smoke 和 C0 都通过，Phase 0 才算完成。原生两步命令单独成功
-不能替代完整验收。任一条件失败时，停止后续数据准备和 30,000-step 训练。
+C0 和本地 PEFT 加载已通过；instrumented LoRA Smoke 尚未完成，所以 Phase 0 仍为
+进行中。原生两步命令单独成功不能替代完整验收。任一条件失败时，停止后续数据准备和
+30,000-step 训练。
 
 下一步：[数据、Split 与 Paraphrase 准备](01_data_preparation.md)。

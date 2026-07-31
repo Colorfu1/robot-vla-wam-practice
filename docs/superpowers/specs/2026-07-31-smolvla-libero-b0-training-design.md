@@ -302,13 +302,14 @@ reports/guides/smolvla_libero/02_b0_domain_adaptation.md
   不一致被拒绝；
 - JSONL/runtime 按 attempt 追加，允许可解释的重跑 step 且不会截断历史。
 
-真实 Smoke 使用 Docker 内单卡 BF16、batch 1、2 steps，要求：
+Fresh Smoke 使用单卡 BF16、batch 1、2 steps；另用 total steps 3、save frequency 2
+的受限运行在 step 2 完整发布后终止并续训到 step 3。要求：
 
 - loss、grad norm 和 LR 均有限；
 - step 2 checkpoint 的 policy、processor 和 training state 完整；
 - `run_config.json`、逐 step `train_metrics.jsonl`、`train.log` 和 attempt/rank runtime
   文件存在；
-- 从 step 2 resume 的受限 Smoke 能恢复 step、optimizer、scheduler 和 RNG；
+- 中断续训 Smoke 能从 step 2 恢复 step、optimizer、scheduler 和 RNG，并完成 step 3；
 - Smoke 与 Formal 标签明确区分。
 
 最终代码还必须通过相关 pytest、Ruff、Shell 语法检查和 `git diff --check`。8 卡正式运行

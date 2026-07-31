@@ -7,7 +7,7 @@ import gc
 import multiprocessing as mp
 import traceback
 from collections import defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty
@@ -34,6 +34,7 @@ from .config import (
     practice_root,
 )
 from .dataset_split import load_split
+from .e5_runtime import add_prototype_id
 from .noise import fixed_observation_noise_seed, fixed_observation_reverse_seed, make_initial_noise
 from .output import AtomicOutputDirectory, write_metrics, write_records_parquet
 from .policy_loading import controlled_sample, load_policy_with_processors, replace_scheduler
@@ -57,6 +58,10 @@ class WorkerConfig:
     environment_seeds: tuple[int, ...]
     train_seed: int
     code_commit: str | None
+    evaluation_protocol: str = "standard"
+    prototype_manifest: Path | None = None
+    selected_k: int | None = None
+    oracle_episodes: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,7 +131,11 @@ def _offline_error(
     *,
     dataset_root: Path,
     development_episodes: Sequence[int],
+    oracle_prototype_ids: Mapping[int, int] | None = None,
+    selected_k: int | None = None,
 ) -> tuple[float, float]:
+    if (oracle_prototype_ids is None) != (selected_k is None):
+        raise ValueError("oracle_prototype_ids and selected_k must be provided together")
     metadata = LeRobotDatasetMetadata(
         DATASET_REPO_ID,
         root=dataset_root,
@@ -149,6 +158,12 @@ def _offline_error(
         raw_batch = _batched_inputs(item, loaded.policy)
         raw_batch[ACTION] = item[ACTION].unsqueeze(0)
         processed = loaded.preprocessor(raw_batch)
+        if oracle_prototype_ids is not None and selected_k is not None:
+            processed = add_prototype_id(
+                processed,
+                prototype_id=oracle_prototype_ids[episode],
+                num_prototypes=selected_k,
+            )
         prepared = _stack_images(loaded.policy, processed)
         start = loaded.config.n_obs_steps - 1
         end = start + loaded.config.n_action_steps
@@ -333,11 +348,14 @@ def _evaluate_run(
 def _checkpoint_tasks(
     bc_checkpoints: Sequence[tuple[int, Path]],
     diffusion_checkpoints: Sequence[tuple[int, Path]],
+    *,
+    bc_model_name: str = "bc_chunk",
+    diffusion_model_name: str = "diffusion",
 ) -> tuple[CheckpointTask, ...]:
     # Diffusion checkpoints are slower, so enqueue them first for better load balancing.
     return tuple(
-        [CheckpointTask("diffusion", step, path) for step, path in diffusion_checkpoints]
-        + [CheckpointTask("bc_chunk", step, path) for step, path in bc_checkpoints]
+        [CheckpointTask(diffusion_model_name, step, path) for step, path in diffusion_checkpoints]
+        + [CheckpointTask(bc_model_name, step, path) for step, path in bc_checkpoints]
     )
 
 
@@ -401,15 +419,9 @@ def _checkpoint_worker(
             )
 
         try:
-            row = _evaluate_checkpoint(
-                model_name=task.model_name,
-                step=task.step,
-                path=task.path,
-                dataset_root=config.dataset_root,
-                development_episodes=config.development_episodes,
-                environment_seeds=config.environment_seeds,
-                train_seed=config.train_seed,
-                code_commit=config.code_commit,
+            row = _evaluate_task(
+                task=task,
+                config=config,
                 device=f"cuda:{gpu_index}",
                 event_callback=report_event,
             )
@@ -433,6 +445,47 @@ def _checkpoint_worker(
                 row=row,
             )
         )
+
+
+def _evaluate_task(
+    *,
+    task: CheckpointTask,
+    config: WorkerConfig,
+    device: str | None,
+    event_callback: CheckpointEventCallback | None,
+) -> dict[str, Any]:
+    if config.evaluation_protocol == "standard":
+        return _evaluate_checkpoint(
+            model_name=task.model_name,
+            step=task.step,
+            path=task.path,
+            dataset_root=config.dataset_root,
+            development_episodes=config.development_episodes,
+            environment_seeds=config.environment_seeds,
+            train_seed=config.train_seed,
+            code_commit=config.code_commit,
+            device=device,
+            event_callback=event_callback,
+        )
+    if config.evaluation_protocol == "e5_oracle_mode":
+        if config.prototype_manifest is None or config.selected_k is None:
+            raise ValueError("E5 worker config requires prototype_manifest and selected_k")
+        from .e5_checkpoint_selection import evaluate_e5_checkpoint
+
+        return evaluate_e5_checkpoint(
+            model_name=task.model_name,
+            step=task.step,
+            path=task.path,
+            dataset_root=config.dataset_root,
+            oracle_episodes=config.oracle_episodes,
+            prototype_manifest=config.prototype_manifest,
+            selected_k=config.selected_k,
+            train_seed=config.train_seed,
+            code_commit=config.code_commit,
+            device=device,
+            event_callback=event_callback,
+        )
+    raise ValueError(f"Unsupported checkpoint evaluation protocol: {config.evaluation_protocol}")
 
 
 def _evaluate_parallel(
@@ -529,8 +582,16 @@ def _evaluate_parallel(
     if failed:
         details = ", ".join(f"{worker.name} exitcode={worker.exitcode}" for worker in failed)
         raise RuntimeError(f"Checkpoint worker shutdown failed: {details}")
-    model_order = {"bc_chunk": 0, "diffusion": 1}
-    return sorted(rows, key=lambda row: (model_order[str(row["model"])], int(row["step"])))
+    model_order = {
+        "bc_chunk": 0,
+        "mode_bc_chunk": 0,
+        "diffusion": 1,
+        "mode_diffusion": 1,
+    }
+    return sorted(
+        rows,
+        key=lambda row: (model_order.get(str(row["model"]), 99), int(row["step"])),
+    )
 
 
 def _select(rows: Sequence[dict[str, Any]], model: str) -> dict[str, Any]:
@@ -547,14 +608,19 @@ def _select(rows: Sequence[dict[str, Any]], model: str) -> dict[str, Any]:
     )
 
 
-def _record_selection(path: Path, rows: Sequence[dict[str, Any]]) -> None:
+def _record_selection(
+    path: Path,
+    rows: Sequence[dict[str, Any]],
+    *,
+    models: Sequence[str] = ("bc_chunk", "diffusion"),
+) -> None:
     recording = rr.RecordingStream(
         "robot_practice_pusht_checkpoint_selection",
         recording_id="pusht_development_checkpoints",
     )
     recording.save(path)
     try:
-        for model in ("bc_chunk", "diffusion"):
+        for model in models:
             model_rows = sorted(
                 (row for row in rows if row["model"] == model),
                 key=lambda row: int(row["step"]),

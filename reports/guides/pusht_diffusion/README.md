@@ -146,9 +146,17 @@ E1/E2/E3 推理不使用这个训练 batch-size 语义；E2/E3 通过各自的 `
     但仍不含 controller、配对数据或 E4 训练。
 12. **E5 Prototype-ID 条件控制**：按
     [E5 Prototype-ID 条件控制](e5_mode_conditioned.md) 从现有 train demonstrations
-    提取 K-medoids prototypes，训练 Mode-BCChunk/Mode-Diffusion，并执行固定
-    observation 条件切换与完整闭环 Prototype/NULL 网格。实现与 Smoke 已完成，正式
-    训练和 880 条闭环 rollout 尚未执行。
+    提取 K-medoids prototypes，训练 Mode-BCChunk/Mode-Diffusion，先用 development
+    demonstration 的唯一 oracle mode 做多 GPU checkpoint selection，再对 held-out
+    audit 做 open-loop/closed-loop 评测；固定 observation 条件切换与完整闭环
+    Prototype/NULL 网格作为补充分析。正式 selection 和 168-rollout held-out
+    all-condition audit 已完成；结果表明 condition 会改变动作，但没有形成可靠的
+    requested→achieved prototype 控制。880 条多-seed 补充网格尚未执行。
+13. **E6 7×7 Route Field 条件控制**：按
+    [E6 7×7 Route Field 条件控制](e6_route_field_7x7.md) 将 demonstration 的 T 中心
+    轨迹转成固定 BEV 路线场，训练 RouteField-BCChunk/RouteField-Diffusion。当前版本
+    使用 7×7、4 通道 field，并保留全部 165 条 train episode 和所有合法 action chunk；
+    正式 200k 训练与闭环路线遵循评测尚未执行。
 
 依赖关系可以简写为：
 
@@ -164,6 +172,7 @@ E1/E2/E3 推理不使用这个训练 batch-size 语义；E2/E3 通过各自的 `
   → 正式总报告
   → E4 同中心纯旋转场景 Smoke
   → E5 Prototype-ID 条件控制
+  → E6 7×7 Route Field 条件控制
 ```
 
 ## 统一实验字段
@@ -187,8 +196,11 @@ E1 已以 `Offline / Formal / Stage complete` 结束：完整 DDPM sampling stre
 E2b 使用 20 个环境 × 10 个 policy seed，并把每条完整 rollout 保存为可独立切换的
 Rerun Recording。主阈值 0.05 下有 14/20 个环境出现至少两个成功 mode。E3
 采样步数与延迟实验也已完成；E4 已完成场景 Smoke 和 5 条 DP OOD 诊断。E5 已完成
-K=3 prototype fit、条件模型与评测入口，并通过 1-step/一帧 Smoke；尚无正式训练或
-能力结论。
+K=3 prototype fit、两类条件模型训练、8-GPU development checkpoint selection 和
+168/168 条 held-out all-condition audit。Mode-Diffusion oracle success 为 57.1%，
+但 P0/P1/P2 adherence 仅 14.3%/28.6%/19.0%；当前结论是模型保留任务能力但没有
+建立可靠的 prototype-conditioned semantic control。固定噪声诊断已确认 condition
+输入生效，主要限制来自无同状态配对监督和 prototype 可选择性未被验证。
 E3 已支持通过 `--num-gpus=N` 按 environment seed 并行执行；每个场景输出一个包含六个
 同步采样条件的 active-Blueprint Recording。E3 的 300/300 条正式闭环 rollout 和
 latency benchmark 均已完成：DDIM-5 以 58% 成功率和 47.7 ms end-to-end p95 获得

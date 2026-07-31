@@ -194,6 +194,46 @@ def test_development_blueprint_contains_only_simulator_and_reward(
     assert all("env_" not in repr(kwargs) for _name, _args, kwargs in calls)
 
 
+def test_rollout_identity_blueprint_exposes_metadata_panel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+    def constructor(name: str):
+        def create(*args: object, **kwargs: object) -> object:
+            calls.append((name, args, kwargs))
+            return object()
+
+        return create
+
+    for name in (
+        "Blueprint",
+        "Horizontal",
+        "Spatial2DView",
+        "TimeSeriesView",
+        "TextDocumentView",
+    ):
+        monkeypatch.setattr(
+            rerun_visualization.rrb,
+            name,
+            constructor(name),
+        )
+
+    rerun_visualization.build_development_rollout_blueprint(show_metadata=True)
+
+    assert [name for name, _args, _kwargs in calls] == [
+        "Spatial2DView",
+        "TimeSeriesView",
+        "TextDocumentView",
+        "Horizontal",
+        "Blueprint",
+    ]
+    text_view = next(kwargs for name, _args, kwargs in calls if name == "TextDocumentView")
+    horizontal = next(kwargs for name, _args, kwargs in calls if name == "Horizontal")
+    assert text_view["contents"] == ["/rollout/metadata"]
+    assert horizontal["column_shares"] == [3.0, 1.0, 1.25]
+
+
 @pytest.mark.parametrize(
     ("sampling_protocol", "expected_title"),
     [
@@ -298,6 +338,11 @@ def test_rollout_overlay_coordinates_are_scaled_to_rendered_frame(
 
     monkeypatch.setattr(rerun_visualization.rr, "LineStrips2D", line_strips)
     monkeypatch.setattr(rerun_visualization.rr, "Points2D", point_cloud)
+    monkeypatch.setattr(
+        rerun_visualization.rr,
+        "TextDocument",
+        lambda value: ("text", value),
+    )
 
     next_frame = rerun_visualization.log_rollout_to_stream(
         Recording(),  # type: ignore[arg-type]
@@ -305,6 +350,11 @@ def test_rollout_overlay_coordinates_are_scaled_to_rendered_frame(
         global_frame_start=0,
         rollout_index=0,
         entity_root="/rollout",
+        metadata={
+            "model": "BC (mode_bc_chunk)",
+            "commanded_condition": "NULL",
+            "gt_mode": "P1",
+        },
     )
 
     assert next_frame == 2
@@ -333,6 +383,10 @@ def test_rollout_overlay_coordinates_are_scaled_to_rendered_frame(
         [[200.0, 80.0]],
     )
     assert log_options["/rollout/complete_action_targets"] == [{"static": True}]
+    metadata_text = str(logged["/rollout/metadata"][0][1])
+    assert "model: BC (mode_bc_chunk)" in metadata_text
+    assert "commanded_condition: NULL" in metadata_text
+    assert "gt_mode: P1" in metadata_text
     assert log_options["/rollout/current_action_target"] == [{}]
     np.testing.assert_array_equal(rollout.agent_path, agent_path)
     np.testing.assert_array_equal(rollout.block_path, block_path)

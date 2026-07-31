@@ -816,6 +816,64 @@ def test_libero_queue_hit_omits_model_query_latency(monkeypatch: pytest.MonkeyPa
     assert "latency/model_query_ms" not in paths
 
 
+def test_libero_terminal_observation_logs_complete_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_entities(monkeypatch)
+    recorder = FakeRecorder()
+    history = viz.LiberoTrajectoryHistory()
+    history.append(
+        episode_index=0,
+        step_index=0,
+        observation_state=np.zeros(8),
+    )
+
+    terminal_state = np.asarray([0.1, 0.2, 0.3, 0, 0, 0, -0.01, 0.01])
+    viz.log_libero_terminal_observation(
+        recorder,
+        global_step=1,
+        episode_index=0,
+        step_index=1,
+        observation_state=terminal_state,
+        measured_pose=_measured_pose(),
+        display_frame=viz.DisplayFrame(np.zeros(3), np.eye(3)),
+        trajectory_history=history,
+        images={
+            "observation.images.image": torch.zeros(3, 4, 5),
+            "observation.images.image2": torch.ones(3, 4, 5),
+        },
+        success=True,
+        agentview_calibration=_camera_calibration(),
+        agentview_image_convention="lerobot_180",
+    )
+
+    assert recorder.times == [("global_step", 1)]
+    entities = {path: entity for path, entity, _ in recorder.logs}
+    assert {
+        "rollout/cameras/input/image",
+        "rollout/cameras/input/image2",
+        "rollout/cameras/post_action/agentview",
+        "rollout/calibration/agentview_corrected",
+        "rollout/robot/skeleton",
+        "rollout/robot/joints",
+        "rollout/robot/gripper",
+        "rollout/trajectory/eef_measured",
+        "rollout/trajectory/eef_current",
+        "rollout/command",
+        "rollout/response",
+        "rollout/plan",
+        "rollout/success_so_far",
+        "rollout/done",
+    } <= set(entities)
+    for index, state_name in enumerate(viz.LIBERO_STATE_NAMES):
+        assert entities[f"state/observation/{state_name}"] == terminal_state[index]
+    assert entities["rollout/success_so_far"] == 1
+    assert entities["rollout/done"] == 1
+    assert "actions/executed/x" not in entities
+    assert "rollout/reward" not in entities
+    assert "latency/policy_step_ms" not in entities
+
+
 def test_libero_geometry_anchors_command_response_queue_and_discarded_tail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

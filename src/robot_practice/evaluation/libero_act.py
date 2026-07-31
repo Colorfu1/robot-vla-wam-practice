@@ -8,10 +8,12 @@ import shutil
 import sys
 import time
 import uuid
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from types import TracebackType
+from typing import Any, Protocol
 
 import gymnasium as gym
 import numpy as np
@@ -19,13 +21,13 @@ import pyarrow as pa
 import rerun as rr
 import rerun.dataframe as rdf
 import torch
-from tqdm import trange
-
 from lerobot.envs.configs import LiberoEnv
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.envs.utils import add_envs_task, close_envs, preprocess_observation
 from lerobot.utils.constants import ACTION
 from lerobot.utils.io_utils import write_video
+from tqdm import trange
+from typing_extensions import Self
 
 from robot_practice.evaluation.common import (
     ActionPlanStep,
@@ -43,6 +45,7 @@ from robot_practice.evaluation.common import (
     write_json_atomic,
     write_parquet_atomic,
 )
+from robot_practice.evaluation.libero_assets import configure_libero_assets_dir
 from robot_practice.evaluation.libero_checkpoint import (
     assess_checkpoint_task,
     log_checkpoint_task_assessment,
@@ -61,6 +64,7 @@ from robot_practice.evaluation.rerun_visualization import (
     image_to_hwc_uint8,
     initialize_libero_recording_stream,
     log_libero_step,
+    log_libero_terminal_observation,
     log_metric_summary,
     stage_merged_recordings,
 )
@@ -88,6 +92,9 @@ class LiberoEvaluationConfig:
     perturbation: str = "none"
     proprio_noise_std: float = 0.01
     seed: int = 1000
+    policy_seed: int | None = None
+    init_state_ids: tuple[int, ...] | None = None
+    libero_assets_dir: Path | None = None
     output_dir: Path | None = None
     overwrite: bool = False
     max_steps: int | None = None
@@ -172,6 +179,9 @@ def flush_and_disconnect_recordings(
 
 def libero_episode_recording_name(
     *,
+    suite: str,
+    task_id: int,
+    task_name: str,
     episode_index: int,
     seed: int,
     init_state_id: int,
@@ -180,11 +190,18 @@ def libero_episode_recording_name(
 ) -> str:
     outcome = "success" if success else f"failure:{termination_reason}"
     return (
-        f"Episode {episode_index:03d} | seed={seed} | init={init_state_id} | {outcome}"
+        f"{suite}/task_{task_id}/{task_name} | Episode {episode_index:03d} | "
+        f"seed={seed} | init={init_state_id} | {outcome}"
     )
 
 
-LIBERO_SUMMARY_RECORDING_NAME = "LIBERO closed-loop evaluation summary"
+def libero_summary_recording_name(
+    *,
+    suite: str,
+    task_id: int,
+    task_name: str,
+) -> str:
+    return f"{suite}/task_{task_id}/{task_name} | Summary"
 
 
 def verify_libero_recording_archive(
@@ -268,6 +285,88 @@ class PreparedLiberoObservation:
     joint_positions: np.ndarray
 
 
+@dataclass(frozen=True)
+class LiberoPolicyStep:
+    """One controller-space policy decision and its exact visualization plan."""
+
+    executed_action: np.ndarray
+    queried_chunk: np.ndarray | None
+    queued_actions: np.ndarray
+    discarded_actions: np.ndarray
+    new_prediction_chunk: np.ndarray | None
+    model_queried: bool
+    plan_step_index: int | None
+    policy_latency_ms: float
+    model_query_latency_ms: float | None
+
+    def __post_init__(self) -> None:
+        action = np.asarray(self.executed_action)
+        if action.shape != (7,) or not np.isfinite(action).all():
+            raise ValueError(
+                "executed_action must contain seven finite controller values"
+            )
+        for name in (
+            "queued_actions",
+            "discarded_actions",
+            "new_prediction_chunk",
+            "queried_chunk",
+        ):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            chunk = np.asarray(value)
+            if chunk.ndim != 2 or chunk.shape[1] != 7 or not np.isfinite(chunk).all():
+                raise ValueError(f"{name} must have finite shape [horizon,7]")
+        if self.model_queried != (self.queried_chunk is not None):
+            raise ValueError("model_queried must agree with queried_chunk")
+        if self.plan_step_index is not None and self.plan_step_index < 0:
+            raise ValueError("plan_step_index must be non-negative or None")
+        if not np.isfinite(self.policy_latency_ms) or self.policy_latency_ms < 0:
+            raise ValueError("policy_latency_ms must be finite and non-negative")
+        if self.model_query_latency_ms is not None and (
+            not np.isfinite(self.model_query_latency_ms)
+            or self.model_query_latency_ms < 0
+        ):
+            raise ValueError(
+                "model_query_latency_ms must be finite and non-negative or None"
+            )
+
+
+class LiberoPolicyDriver(Protocol):
+    """Policy-specific execution behind the shared LIBERO rollout engine."""
+
+    def __enter__(self) -> Self: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None: ...
+
+    def reset_episode(self) -> None: ...
+
+    def select_step(self, policy_input: dict[str, Any]) -> LiberoPolicyStep: ...
+
+
+@dataclass(frozen=True)
+class LiberoPolicyRuntime:
+    """Loaded policy plus metadata and an execution-driver factory."""
+
+    loaded: Any
+    checkpoint_task_assessment: Any
+    policy_execution: dict[str, Any]
+    application_id: str
+    make_driver: Callable[[Any], LiberoPolicyDriver]
+    reset_policy_rng: Callable[[int], None] | None = None
+
+
+PolicyRuntimeLoader = Callable[
+    [LiberoEnv, LiberoTaskIdentity],
+    LiberoPolicyRuntime,
+]
+
+
 def validate_config(
     config: LiberoEvaluationConfig,
     task: LiberoTaskIdentity | None = None,
@@ -296,6 +395,24 @@ def validate_config(
         raise ValueError("--proprio-noise-std must be finite and positive")
     if config.seed < 0:
         raise ValueError("--seed must be non-negative")
+    if config.policy_seed is not None and config.policy_seed < 0:
+        raise ValueError("--policy-seed must be non-negative")
+    if config.init_state_ids is not None:
+        if len(config.init_state_ids) != config.n_episodes:
+            raise ValueError(
+                "--init-state-ids must contain exactly --n-episodes values"
+            )
+        if len(set(config.init_state_ids)) != len(config.init_state_ids):
+            raise ValueError("--init-state-ids must not contain duplicates")
+        invalid = [
+            value
+            for value in config.init_state_ids
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 50
+        ]
+        if invalid:
+            raise ValueError(
+                "--init-state-ids values must be integer official state IDs in 0..49"
+            )
     if config.overwrite and config.output_dir is None:
         raise ValueError("--overwrite requires an explicit --output-dir")
     if config.max_steps is not None and not 1 <= config.max_steps <= task.episode_length:
@@ -367,6 +484,22 @@ def extract_terminal_success(info: dict[str, Any], *, terminal: bool) -> bool:
     if nested_mask is not None and not bool(np.asarray(nested_mask, dtype=bool)[0]):
         raise RuntimeError("Terminal LIBERO final_info has a false _is_success mask")
     return bool(success_values[0])
+
+
+def emit_rollout_progress(
+    *,
+    completed: int,
+    total: int,
+    init_state_id: int,
+    success: bool,
+) -> None:
+    """Emit the line-buffered subprocess protocol consumed by multi-GPU coordinators."""
+
+    print(
+        f"[RolloutProgress] completed={completed} total={total} "
+        f"init_state_id={init_state_id} success={success}",
+        flush=True,
+    )
 
 
 def _rollout_schema() -> pa.Schema:
@@ -620,6 +753,104 @@ def _controller_plan_partitions(
     return active_chunk_controller, queued, discarded, None
 
 
+class ACTLiberoPolicyDriver:
+    """Preserve ACT queue and Temporal Ensemble behavior behind a shared interface."""
+
+    def __init__(self, loaded: Any, env_postprocessor: Any) -> None:
+        self.loaded = loaded
+        self.env_postprocessor = env_postprocessor
+        self.plan_tracker = ActionPlanTracker(
+            n_action_steps=loaded.config.n_action_steps,
+            temporal_ensemble_coeff=loaded.config.temporal_ensemble_coeff,
+        )
+        self.model_timer = ModelQueryTimer(
+            loaded.policy,
+            loaded.config.device,
+        )
+        self.active_chunk_controller: np.ndarray | None = None
+
+    def __enter__(self) -> Self:
+        self.model_timer.__enter__()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        return self.model_timer.__exit__(exc_type, exc, traceback)
+
+    def reset_episode(self) -> None:
+        self.loaded.policy.reset()
+        self.plan_tracker.reset_episode()
+        self.active_chunk_controller = None
+
+    def select_step(self, policy_input: dict[str, Any]) -> LiberoPolicyStep:
+        self.model_timer.begin_step()
+        with torch.inference_mode(), _autocast_context(
+            str(self.loaded.config.device),
+            self.loaded.config.use_amp,
+        ):
+            action_policy, policy_latency_ms = timed_call(
+                self.loaded.policy.select_action,
+                policy_input,
+                device=self.loaded.config.device,
+            )
+        plan_step = self.plan_tracker.record_step(
+            selected_action_policy=action_policy,
+            queried_chunk_policy=self.model_timer.current_chunk_policy,
+        )
+        action_controller = _postprocess_policy_action_tensor(
+            action_policy,
+            checkpoint_postprocessor=self.loaded.postprocessor,
+            env_postprocessor=self.env_postprocessor,
+        )
+        action_numpy = action_controller.detach().cpu().float().numpy()
+        if action_numpy.shape != (1, 7):
+            raise ValueError(
+                "Postprocessed LIBERO action must have shape (1, 7), "
+                f"got {action_numpy.shape}"
+            )
+        queried_chunk_controller: np.ndarray | None = None
+        if plan_step.queried_chunk_policy is not None:
+            queried_chunk_controller = (
+                _postprocess_policy_action_tensor(
+                    plan_step.queried_chunk_policy,
+                    checkpoint_postprocessor=self.loaded.postprocessor,
+                    env_postprocessor=self.env_postprocessor,
+                )[0]
+                .detach()
+                .cpu()
+                .float()
+                .numpy()
+                .copy()
+            )
+        (
+            self.active_chunk_controller,
+            queued_actions,
+            discarded_actions,
+            new_prediction_chunk,
+        ) = _controller_plan_partitions(
+            plan_step,
+            queried_chunk_controller=queried_chunk_controller,
+            active_chunk_controller=self.active_chunk_controller,
+            executed_action_controller=action_numpy[0],
+            n_action_steps=self.loaded.config.n_action_steps,
+        )
+        return LiberoPolicyStep(
+            executed_action=action_numpy[0].copy(),
+            queried_chunk=queried_chunk_controller,
+            queued_actions=queued_actions,
+            discarded_actions=discarded_actions,
+            new_prediction_chunk=new_prediction_chunk,
+            model_queried=plan_step.model_queried,
+            plan_step_index=plan_step.plan_step_index,
+            policy_latency_ms=policy_latency_ms,
+            model_query_latency_ms=self.model_timer.current_latency_ms,
+        )
+
+
 def _make_eval_info(
     metrics: dict[str, Any],
     *,
@@ -676,10 +907,52 @@ def _set_init_state_id(env: gym.vector.VectorEnv, init_state_id: int) -> None:
     base_env.init_state_id = init_state_id
 
 
+def _load_act_policy_runtime(
+    config: LiberoEvaluationConfig,
+    env_config: LiberoEnv,
+    task: LiberoTaskIdentity,
+) -> LiberoPolicyRuntime:
+    manifest = validate_complete_checkpoint(config.policy_path)
+    LOGGER.info("[Policy] checkpoint: %s", manifest.path)
+    checkpoint_assessment = assess_checkpoint_task(manifest, task)
+    log_checkpoint_task_assessment(checkpoint_assessment, LOGGER)
+    loaded = load_act_checkpoint(
+        manifest,
+        env_config=env_config,
+        n_action_steps_override=config.n_action_steps,
+        temporal_ensemble_coeff_override=config.temporal_ensemble_coeff,
+    )
+    policy_execution = {
+        "checkpoint_n_action_steps": loaded.checkpoint_n_action_steps,
+        "effective_n_action_steps": loaded.config.n_action_steps,
+        "n_action_steps_overridden": config.n_action_steps is not None,
+        "checkpoint_temporal_ensemble_coeff": (
+            loaded.checkpoint_temporal_ensemble_coeff
+        ),
+        "effective_temporal_ensemble_coeff": (
+            loaded.config.temporal_ensemble_coeff
+        ),
+        "temporal_ensemble_coeff_overridden": (
+            config.temporal_ensemble_coeff is not None
+        ),
+    }
+    return LiberoPolicyRuntime(
+        loaded=loaded,
+        checkpoint_task_assessment=checkpoint_assessment,
+        policy_execution=policy_execution,
+        application_id="robot_practice_act_libero",
+        make_driver=lambda env_postprocessor: ACTLiberoPolicyDriver(
+            loaded,
+            env_postprocessor,
+        ),
+    )
+
+
 def evaluate_libero(
     config: LiberoEvaluationConfig,
     *,
     max_steps: int | None = None,
+    policy_runtime_loader: PolicyRuntimeLoader | None = None,
 ) -> LiberoEvaluationResult:
     """Run serial single-task rollouts and persist simulator-grounded results."""
 
@@ -690,112 +963,99 @@ def evaluate_libero(
     task = resolve_libero_task(config.suite, config.task_id)
     log_task_identity(task, LOGGER)
     validate_config(config, task)
-    manifest = validate_complete_checkpoint(config.policy_path)
-    LOGGER.info("[Policy] checkpoint: %s", manifest.path)
-    checkpoint_assessment = assess_checkpoint_task(manifest, task)
-    log_checkpoint_task_assessment(checkpoint_assessment, LOGGER)
-    env_config = make_libero_config(task)
-    loaded = load_act_checkpoint(
-        manifest,
-        env_config=env_config,
-        n_action_steps_override=config.n_action_steps,
-        temporal_ensemble_coeff_override=config.temporal_ensemble_coeff,
-    )
-    checkpoint_n_action_steps = loaded.checkpoint_n_action_steps
-    checkpoint_temporal_ensemble_coeff = (
-        loaded.checkpoint_temporal_ensemble_coeff
-    )
-    effective_n_action_steps = loaded.config.n_action_steps
-    effective_temporal_ensemble_coeff = loaded.config.temporal_ensemble_coeff
-    loaded.policy.reset()
-
     step_limit = config.max_steps or task.episode_length
     formal = step_limit == task.episode_length
     status = "complete" if formal else "smoke"
+    init_state_ids = (
+        config.init_state_ids
+        if config.init_state_ids is not None
+        else tuple(range(config.n_episodes))
+    )
+    policy_seed = config.seed if config.policy_seed is None else config.policy_seed
     output_dir = create_output_directory(
-        policy_path=manifest.path,
+        policy_path=config.policy_path,
         mode="libero",
         output_dir=config.output_dir,
         suite=task.suite,
         task_id=task.task_id,
         overwrite=config.overwrite,
     )
-    LOGGER.info("[Evaluation] mode: closed-loop LIBERO rollout")
-    LOGGER.info("[Evaluation] episodes: %d", config.n_episodes)
-    LOGGER.info(
-        "[Evaluation] visualized episodes: %d", config.num_visualized_episodes
-    )
-    LOGGER.info("[Evaluation] episode step limit: %d", step_limit)
-    LOGGER.info("[Evaluation] chunk_size: %d", loaded.config.chunk_size)
-    LOGGER.info(
-        "[Evaluation] n_action_steps: checkpoint=%d effective=%d override=%s",
-        checkpoint_n_action_steps,
-        effective_n_action_steps,
-        config.n_action_steps is not None,
-    )
-    LOGGER.info(
-        "[Evaluation] temporal_ensemble_coeff: checkpoint=%s effective=%s override=%s",
-        checkpoint_temporal_ensemble_coeff,
-        effective_temporal_ensemble_coeff,
-        config.temporal_ensemble_coeff is not None,
-    )
-    LOGGER.info("[Evaluation] perturbation: %s", config.perturbation)
-    if config.perturbation == "proprio_gaussian":
-        LOGGER.info(
-            "[Evaluation] proprioception noise: std=%g in %s",
-            config.proprio_noise_std,
-            PROPRIO_NOISE_SPACE,
-        )
-    LOGGER.info("[Evaluation] status: %s", status)
-    LOGGER.info("[Output] directory: %s", output_dir)
-    input_config = {
-        "task": task.to_dict(),
-        "checkpoint_task_assessment": checkpoint_assessment.to_dict(),
-        "cameras": list(RAW_CAMERAS),
-        "obs_type": "pixels_agent_pos",
-        "control_mode": "relative",
-        "observation_size": [256, 256],
-        "episode_length": task.episode_length,
-        "control_frequency_hz": CONTROL_FREQUENCY_HZ,
-        "policy_execution": {
-            "checkpoint_n_action_steps": checkpoint_n_action_steps,
-            "effective_n_action_steps": effective_n_action_steps,
-            "n_action_steps_overridden": config.n_action_steps is not None,
-            "checkpoint_temporal_ensemble_coeff": (
-                checkpoint_temporal_ensemble_coeff
-            ),
-            "effective_temporal_ensemble_coeff": (
-                effective_temporal_ensemble_coeff
-            ),
-            "temporal_ensemble_coeff_overridden": (
-                config.temporal_ensemble_coeff is not None
-            ),
-        },
-        "seeds": [config.seed + episode for episode in range(config.n_episodes)],
-        "init_state_ids": list(range(config.n_episodes)),
-        "perturbation": {
-            "name": config.perturbation,
-            "proprio_noise_std": (
-                config.proprio_noise_std
-                if config.perturbation == "proprio_gaussian"
-                else None
-            ),
-            "noise_seed": config.seed,
-            "space": (
-                PROPRIO_NOISE_SPACE
-                if config.perturbation == "proprio_gaussian"
-                else None
-            ),
-        },
-    }
-    run_config = build_run_config(
-        status="incomplete",
-        mode="libero",
-        loaded=loaded,
-        input_config=input_config,
-        arguments=asdict(config),
-    )
+    env_config = make_libero_config(task)
     try:
+        if config.libero_assets_dir is not None:
+            assets_dir = configure_libero_assets_dir(config.libero_assets_dir)
+            LOGGER.info("[Environment] offline LIBERO assets: %s", assets_dir)
+        runtime_loader = policy_runtime_loader or (
+            lambda selected_env_config, selected_task: _load_act_policy_runtime(
+                config,
+                selected_env_config,
+                selected_task,
+            )
+        )
+        runtime = runtime_loader(env_config, task)
+        loaded = runtime.loaded
+        checkpoint_assessment = runtime.checkpoint_task_assessment
+        checkpoint_assessment_payload = checkpoint_assessment.to_dict()
+        LOGGER.info("[Evaluation] mode: closed-loop LIBERO rollout")
+        LOGGER.info("[Evaluation] episodes: %d", config.n_episodes)
+        LOGGER.info(
+            "[Evaluation] visualized episodes: %d",
+            config.num_visualized_episodes,
+        )
+        LOGGER.info("[Evaluation] episode step limit: %d", step_limit)
+        LOGGER.info("[Evaluation] chunk_size: %d", loaded.config.chunk_size)
+        LOGGER.info(
+            "[Evaluation] n_action_steps: checkpoint=%d effective=%d override=%s",
+            runtime.policy_execution["checkpoint_n_action_steps"],
+            runtime.policy_execution["effective_n_action_steps"],
+            runtime.policy_execution["n_action_steps_overridden"],
+        )
+        LOGGER.info("[Evaluation] perturbation: %s", config.perturbation)
+        if config.perturbation == "proprio_gaussian":
+            LOGGER.info(
+                "[Evaluation] proprioception noise: std=%g in %s",
+                config.proprio_noise_std,
+                PROPRIO_NOISE_SPACE,
+            )
+        LOGGER.info("[Evaluation] status: %s", status)
+        LOGGER.info("[Output] directory: %s", output_dir)
+        input_config = {
+            "task": task.to_dict(),
+            "checkpoint_task_assessment": checkpoint_assessment_payload,
+            "cameras": list(RAW_CAMERAS),
+            "obs_type": "pixels_agent_pos",
+            "control_mode": "relative",
+            "observation_size": [256, 256],
+            "episode_length": task.episode_length,
+            "control_frequency_hz": CONTROL_FREQUENCY_HZ,
+            "policy_execution": runtime.policy_execution,
+            "seeds": [
+                config.seed + episode for episode in range(config.n_episodes)
+            ],
+            "init_state_ids": list(init_state_ids),
+            "policy_seed": policy_seed,
+            "perturbation": {
+                "name": config.perturbation,
+                "proprio_noise_std": (
+                    config.proprio_noise_std
+                    if config.perturbation == "proprio_gaussian"
+                    else None
+                ),
+                "noise_seed": config.seed,
+                "space": (
+                    PROPRIO_NOISE_SPACE
+                    if config.perturbation == "proprio_gaussian"
+                    else None
+                ),
+            },
+        }
+        run_config = build_run_config(
+            status="incomplete",
+            mode="libero",
+            loaded=loaded,
+            input_config=input_config,
+            arguments=asdict(config),
+        )
         write_json_atomic(output_dir / "run_config.json", run_config)
         envs = make_env(env_config, n_envs=1, use_async_envs=False)
     except BaseException:
@@ -811,6 +1071,7 @@ def evaluate_libero(
             env_cfg=env_config,
             policy_cfg=loaded.config,
         )
+        policy_driver = runtime.make_driver(env_postprocessor)
     except BaseException:
         close_envs(envs)
         release_output_directory_lock(output_dir)
@@ -835,10 +1096,6 @@ def evaluate_libero(
     episode_results: list[dict[str, Any]] = []
     global_step = 0
     evaluation_started = time.perf_counter()
-    plan_tracker = ActionPlanTracker(
-        n_action_steps=loaded.config.n_action_steps,
-        temporal_ensemble_coeff=loaded.config.temporal_ensemble_coeff,
-    )
     publication_ready = False
 
     try:
@@ -862,32 +1119,35 @@ def evaluate_libero(
                 fps=CONTROL_FREQUENCY_HZ,
                 agentview_calibration=agentview_calibration,
                 agentview_image_convention="lerobot_180",
+                application_id=runtime.application_id,
             )
             episode_recording = LiberoEpisodeRecording(
                 episode_index=episode_index,
                 seed=(
                     None if episode_index is None else config.seed + episode_index
                 ),
-                init_state_id=episode_index,
+                init_state_id=(
+                    None if episode_index is None else init_state_ids[episode_index]
+                ),
                 path=temporary_path,
                 stream=stream,
             )
             episode_recordings.append(episode_recording)
             if episode_index is not None:
                 episode_recording_by_index[episode_index] = episode_recording
-        with ModelQueryTimer(loaded.policy, loaded.config.device) as model_timer:
+        with policy_driver:
             for episode_index in trange(
                 config.n_episodes,
                 desc=f"{task.suite} task-{task.task_id} rollout",
                 unit="episode",
             ):
                 episode_seed = config.seed + episode_index
-                init_state_id = episode_index
+                init_state_id = init_state_ids[episode_index]
                 _set_init_state_id(env, init_state_id)
                 observation, _ = env.reset(seed=[episode_seed])
-                loaded.policy.reset()
-                plan_tracker.reset_episode()
-                active_chunk_controller: np.ndarray | None = None
+                policy_driver.reset_episode()
+                if runtime.reset_policy_rng is not None:
+                    runtime.reset_policy_rng(policy_seed)
                 prepared = _prepare_libero_observation(
                     observation,
                     env=env,
@@ -920,59 +1180,8 @@ def evaluate_libero(
                         step_index=step_index,
                     )
 
-                    model_timer.begin_step()
-                    with torch.inference_mode(), _autocast_context(
-                        str(loaded.config.device), loaded.config.use_amp
-                    ):
-                        action_policy, policy_latency_ms = timed_call(
-                            loaded.policy.select_action,
-                            policy_input,
-                            device=loaded.config.device,
-                        )
-                    model_latency_ms = model_timer.current_latency_ms
-                    plan_step = plan_tracker.record_step(
-                        selected_action_policy=action_policy,
-                        queried_chunk_policy=model_timer.current_chunk_policy,
-                    )
-                    action_controller = _postprocess_policy_action_tensor(
-                        action_policy,
-                        checkpoint_postprocessor=loaded.postprocessor,
-                        env_postprocessor=env_postprocessor,
-                    )
-                    action_numpy = (
-                        action_controller.detach().cpu().float().numpy()
-                    )
-                    if action_numpy.shape != (1, 7):
-                        raise ValueError(
-                            "Postprocessed LIBERO action must have shape (1, 7), "
-                            f"got {action_numpy.shape}"
-                        )
-                    queried_chunk_controller: np.ndarray | None = None
-                    if plan_step.queried_chunk_policy is not None:
-                        queried_chunk_controller = (
-                            _postprocess_policy_action_tensor(
-                                plan_step.queried_chunk_policy,
-                                checkpoint_postprocessor=loaded.postprocessor,
-                                env_postprocessor=env_postprocessor,
-                            )[0]
-                            .detach()
-                            .cpu()
-                            .float()
-                            .numpy()
-                            .copy()
-                        )
-                    (
-                        active_chunk_controller,
-                        queued_actions,
-                        discarded_actions,
-                        new_prediction_chunk,
-                    ) = _controller_plan_partitions(
-                        plan_step,
-                        queried_chunk_controller=queried_chunk_controller,
-                        active_chunk_controller=active_chunk_controller,
-                        executed_action_controller=action_numpy[0],
-                        n_action_steps=loaded.config.n_action_steps,
-                    )
+                    policy_step = policy_driver.select_step(policy_input)
+                    action_numpy = policy_step.executed_action[None, :]
 
                     next_observation, reward, terminated, truncated, info = env.step(
                         action_numpy
@@ -1002,9 +1211,9 @@ def evaluate_libero(
                     reward_value = float(np.asarray(reward, dtype=np.float64)[0])
                     actions.append(executed_action)
                     rewards.append(reward_value)
-                    policy_latencies.append(policy_latency_ms)
-                    if model_latency_ms is not None:
-                        model_latencies.append(model_latency_ms)
+                    policy_latencies.append(policy_step.policy_latency_ms)
+                    if policy_step.model_query_latency_ms is not None:
+                        model_latencies.append(policy_step.model_query_latency_ms)
 
                     measured_pose = kinematics.forward_measured(
                         prepared.joint_positions,
@@ -1033,16 +1242,18 @@ def evaluate_libero(
                             display_frame=kinematics.display_frame,
                             trajectory_history=episode_recording.trajectory_history,
                             action=executed_action,
-                            queued_actions=queued_actions,
-                            discarded_actions=discarded_actions,
-                            new_prediction_chunk=new_prediction_chunk,
-                            model_queried=plan_step.model_queried,
-                            plan_step_index=plan_step.plan_step_index,
+                            queued_actions=policy_step.queued_actions,
+                            discarded_actions=policy_step.discarded_actions,
+                            new_prediction_chunk=policy_step.new_prediction_chunk,
+                            model_queried=policy_step.model_queried,
+                            plan_step_index=policy_step.plan_step_index,
                             reward=reward_value,
                             success_so_far=success_seen,
                             done_after_step=done_after_step,
-                            policy_step_latency_ms=policy_latency_ms,
-                            model_query_latency_ms=model_latency_ms,
+                            policy_step_latency_ms=policy_step.policy_latency_ms,
+                            model_query_latency_ms=(
+                                policy_step.model_query_latency_ms
+                            ),
                             images=prepared.images,
                             post_action_agentview=next_prepared.images[
                                 CAMERA_KEYS[0]
@@ -1087,12 +1298,12 @@ def evaluate_libero(
                                 next_prepared.joint_positions.tolist()
                             ),
                             "executed_action": executed_action.tolist(),
-                            "model_queried": plan_step.model_queried,
-                            "plan_step_index": plan_step.plan_step_index,
+                            "model_queried": policy_step.model_queried,
+                            "plan_step_index": policy_step.plan_step_index,
                             "predicted_chunk": (
                                 None
-                                if queried_chunk_controller is None
-                                else queried_chunk_controller.tolist()
+                                if policy_step.queried_chunk is None
+                                else policy_step.queried_chunk.tolist()
                             ),
                             "reward": reward_value,
                             "terminated": raw_terminated,
@@ -1101,8 +1312,12 @@ def evaluate_libero(
                             "success_this_step": success_this_step,
                             "success_so_far": success_seen,
                             "termination_reason": termination_reason,
-                            "policy_step_latency_ms": policy_latency_ms,
-                            "model_query_latency_ms": model_latency_ms,
+                            "policy_step_latency_ms": (
+                                policy_step.policy_latency_ms
+                            ),
+                            "model_query_latency_ms": (
+                                policy_step.model_query_latency_ms
+                            ),
                             "visualized": visualized,
                         }
                     )
@@ -1126,13 +1341,41 @@ def evaluate_libero(
                         "model_query_latencies_ms": model_latencies,
                     }
                 )
+                emit_rollout_progress(
+                    completed=episode_index + 1,
+                    total=config.n_episodes,
+                    init_state_id=init_state_id,
+                    success=success_seen,
+                )
                 if visualized:
                     if episode_recording is None:
                         raise RuntimeError(
                             "Visualized LIBERO episode has no RecordingStream"
                         )
+                    terminal_pose = kinematics.forward_measured(
+                        next_prepared.joint_positions,
+                        next_prepared.state[6:8],
+                    )
+                    episode_recording.accept_step_index(len(actions))
+                    log_libero_terminal_observation(
+                        episode_recording.stream,
+                        global_step=len(actions),
+                        episode_index=episode_index,
+                        step_index=len(actions),
+                        observation_state=next_prepared.state,
+                        measured_pose=terminal_pose,
+                        display_frame=kinematics.display_frame,
+                        trajectory_history=episode_recording.trajectory_history,
+                        images=next_prepared.images,
+                        success=success_seen,
+                        agentview_calibration=agentview_calibration,
+                        agentview_image_convention="lerobot_180",
+                    )
                     episode_recording.send_final_name(
                         libero_episode_recording_name(
+                            suite=task.suite,
+                            task_id=task.task_id,
+                            task_name=task.task_name,
                             episode_index=episode_index,
                             seed=episode_seed,
                             init_state_id=init_state_id,
@@ -1156,7 +1399,7 @@ def evaluate_libero(
         )
         metrics["schema_version"] = 2
         metrics["task"] = task.to_dict()
-        metrics["checkpoint_task_assessment"] = checkpoint_assessment.to_dict()
+        metrics["checkpoint_task_assessment"] = checkpoint_assessment_payload
         metrics["perturbation"] = config.perturbation
         metrics["perturbation_config"] = input_config["perturbation"]
         metrics["visualized_episodes"] = list(
@@ -1171,7 +1414,13 @@ def evaluate_libero(
         if config.num_visualized_episodes == 0:
             if len(episode_recordings) != 1:
                 raise RuntimeError("Summary-only LIBERO evaluation requires one Recording")
-            episode_recordings[0].send_final_name(LIBERO_SUMMARY_RECORDING_NAME)
+            episode_recordings[0].send_final_name(
+                libero_summary_recording_name(
+                    suite=task.suite,
+                    task_id=task.task_id,
+                    task_name=task.task_name,
+                )
+            )
         for episode_recording in episode_recordings:
             log_metric_summary(episode_recording.stream, metrics)
         write_metrics_report(output_dir, metrics)
@@ -1244,6 +1493,20 @@ def evaluate_libero(
     )
 
 
+def _parse_init_state_ids(value: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in value.split(",")]
+    if not parts or any(not part for part in parts):
+        raise argparse.ArgumentTypeError(
+            "--init-state-ids must be a non-empty comma-separated integer list"
+        )
+    try:
+        return tuple(int(part) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--init-state-ids must contain integers only"
+        ) from exc
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1294,6 +1557,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Gaussian std in checkpoint-normalized state space (default: 0.01)",
     )
     parser.add_argument("--seed", type=int, default=1000)
+    parser.add_argument(
+        "--policy-seed",
+        type=int,
+        help="Reset the policy RNG to this seed before every rollout (default: --seed)",
+    )
+    parser.add_argument(
+        "--init-state-ids",
+        type=_parse_init_state_ids,
+        help=(
+            "Comma-separated official LIBERO init-state IDs; the number of IDs must "
+            "equal --n-episodes"
+        ),
+    )
+    parser.add_argument(
+        "--libero-assets-dir",
+        type=Path,
+        help="Validated offline LIBERO assets tree; prevents Hugging Face fallback",
+    )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument(
         "--overwrite",

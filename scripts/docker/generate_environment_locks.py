@@ -27,6 +27,7 @@ SOURCE_ONLY_PACKAGES = {
     for name in (
         "antlr4-python3-runtime",
         "bddl",
+        "docopt",
         "egl-probe",
         "evdev",
         "hf-egl-probe",

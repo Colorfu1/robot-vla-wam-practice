@@ -1,0 +1,97 @@
+{
+  "canonical_probability": 0.25,
+  "schema_version": 1,
+  "suite": "libero_goal",
+  "tasks": {
+    "1": {
+      "canonical": "put the bowl on the stove",
+      "held_out_paraphrases": [
+        "leave the bowl resting on the stovetop",
+        "carry the bowl over and set it on the stove",
+        "make sure the bowl ends up on top of the stove",
+        "bring the bowl to the stove and place it there",
+        "move the bowl until it is sitting on the stove"
+      ],
+      "semantic_review": {
+        "checks": {
+          "completion_condition_preserved": true,
+          "object_preserved": true,
+          "target_preserved": true,
+          "train_test_separated": true
+        },
+        "reviewed_at": "2026-07-30",
+        "status": "approved"
+      },
+      "train_paraphrases": [
+        "place the bowl on the stove",
+        "move the bowl onto the stove",
+        "set the bowl down on the stove",
+        "put the bowl atop the stove",
+        "position the bowl on the stove",
+        "transfer the bowl to the stove surface",
+        "pick up the bowl and place it on the stove",
+        "relocate the bowl so it rests on the stove"
+      ]
+    },
+    "4": {
+      "canonical": "put the bowl on top of the cabinet",
+      "held_out_paraphrases": [
+        "leave the bowl sitting on the cabinet's upper surface",
+        "carry the bowl over and set it atop the cabinet",
+        "make sure the bowl ends up on top of the cabinet",
+        "bring the bowl to the cabinet and place it on its top",
+        "move the bowl until it rests on the cabinet top"
+      ],
+      "semantic_review": {
+        "checks": {
+          "completion_condition_preserved": true,
+          "object_preserved": true,
+          "target_preserved": true,
+          "train_test_separated": true
+        },
+        "reviewed_at": "2026-07-30",
+        "status": "approved"
+      },
+      "train_paraphrases": [
+        "place the bowl on top of the cabinet",
+        "move the bowl onto the cabinet top",
+        "set the bowl down on the cabinet's top surface",
+        "put the bowl atop the cabinet",
+        "position the bowl on the cabinet's upper surface",
+        "transfer the bowl to the top of the cabinet",
+        "pick up the bowl and place it on the cabinet top",
+        "relocate the bowl so it rests on top of the cabinet"
+      ]
+    },
+    "8": {
+      "canonical": "put the bowl on the plate",
+      "held_out_paraphrases": [
+        "leave the bowl resting on the plate",
+        "carry the bowl over and set it down on the plate",
+        "make sure the bowl ends up sitting on the plate",
+        "bring the bowl to the plate and place it there",
+        "move the bowl until it is positioned on the plate"
+      ],
+      "semantic_review": {
+        "checks": {
+          "completion_condition_preserved": true,
+          "object_preserved": true,
+          "target_preserved": true,
+          "train_test_separated": true
+        },
+        "reviewed_at": "2026-07-30",
+        "status": "approved"
+      },
+      "train_paraphrases": [
+        "place the bowl on the plate",
+        "move the bowl onto the plate",
+        "set the bowl down on the plate",
+        "put the bowl atop the plate",
+        "position the bowl on the plate",
+        "transfer the bowl to the plate",
+        "pick up the bowl and place it on the plate",
+        "relocate the bowl so it rests on the plate"
+      ]
+    }
+  }
+}

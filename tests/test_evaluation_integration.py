@@ -9,7 +9,6 @@ import pyarrow.parquet as pq
 import pytest
 import rerun.dataframe as rdf
 import torch
-
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.datasets.utils import dataset_to_policy_features
 from lerobot.envs.factory import make_env
@@ -166,6 +165,7 @@ def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
             task_id=8,
             n_episodes=2,
             num_visualized_episodes=2,
+            init_state_ids=(7, 2),
             output_dir=output,
             max_steps=1,
             open_viewer=False,
@@ -187,8 +187,16 @@ def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
     assert archive.num_recordings() == 2
     assert len({recording.recording_id() for recording in recordings}) == 2
     expected_names = {
-        "Episode 000 | seed=1000 | init=0 | failure:time_limit",
-        "Episode 001 | seed=1001 | init=1 | failure:time_limit",
+        (
+            "libero_object/task_8/"
+            "pick_up_the_chocolate_pudding_and_place_it_in_the_basket | "
+            "Episode 000 | seed=1000 | init=7 | failure:time_limit"
+        ),
+        (
+            "libero_object/task_8/"
+            "pick_up_the_chocolate_pudding_and_place_it_in_the_basket | "
+            "Episode 001 | seed=1001 | init=2 | failure:time_limit"
+        ),
     }
     observed_names: set[str] = set()
     for recording in recordings:
@@ -221,7 +229,7 @@ def test_one_step_real_libero_rollout_writes_video_and_null_formal_success(
     assert observed_names == expected_names
     table = pq.read_table(output / "rollouts.parquet")
     assert table.num_rows == 2
-    assert table.column("init_state_id").to_pylist() == [0, 1]
+    assert table.column("init_state_id").to_pylist() == [7, 2]
     assert table.column("truncated").to_pylist() == [True, True]
     assert table.column("termination_reason").to_pylist() == ["time_limit", "time_limit"]
     assert table.column("model_queried").to_pylist() == [True, True]
@@ -310,7 +318,12 @@ def test_one_step_real_libero_rollout_writes_named_summary_recording(
         .to_pydict()
     )
     assert properties["property:RecordingInfo:name"] == [
-        ["LIBERO closed-loop evaluation summary"]
+        [
+            (
+                "libero_object/task_8/"
+                "pick_up_the_chocolate_pudding_and_place_it_in_the_basket | Summary"
+            )
+        ]
     ]
     assert not (output / "videos").exists()
     assert not (output / ".incomplete").exists()

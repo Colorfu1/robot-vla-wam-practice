@@ -10,6 +10,7 @@
 !docker/training/entrypoint.sh
 !docker/training/robot-practice-init
 !docker/training/robot-practice-verify
+!docker/training/watch
 !docker/training/verify_environment.py
 !docker/training/nccl_probe.py
 !docker/training/nvidia_icd.json

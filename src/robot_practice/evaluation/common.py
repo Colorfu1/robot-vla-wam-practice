@@ -59,6 +59,7 @@ T = TypeVar("T")
 INCOMPLETE_MARKER_TEXT = "Evaluation did not reach its atomic completion step.\n"
 _OUTPUT_DIRECTORY_LOCKS: dict[Path, Any] = {}
 ACT_CHECKPOINT_TYPES = frozenset({"act", "act_delta", "act_obs_equal"})
+EVALUATION_POLICY_TYPES = ACT_CHECKPOINT_TYPES | frozenset({"smolvla"})
 
 
 @dataclass(frozen=True)
@@ -277,6 +278,20 @@ def _processor_state_files(checkpoint: Path, processor_config: Path) -> list[Pat
     return states
 
 
+def validate_processor_state_files(checkpoint: Path) -> tuple[Path, ...]:
+    """Validate every state file referenced by a saved policy processor pipeline."""
+
+    states: list[Path] = []
+    for name in PROCESSOR_CONFIG_FILES:
+        processor_config = checkpoint / name
+        if not processor_config.is_file():
+            raise FileNotFoundError(
+                f"Checkpoint processor config is missing: {processor_config}"
+            )
+        states.extend(_processor_state_files(checkpoint, processor_config))
+    return tuple(sorted(set(states)))
+
+
 def validate_complete_checkpoint(policy_path: Path) -> CheckpointManifest:
     """Validate a local LeRobot ``pretrained_model`` directory and processor states."""
 
@@ -305,17 +320,13 @@ def validate_complete_checkpoint(policy_path: Path) -> CheckpointManifest:
             f"{', '.join(sorted(ACT_CHECKPOINT_TYPES))}), got {checkpoint_type!r}"
         )
 
-    state_files: list[Path] = []
-    for name in PROCESSOR_CONFIG_FILES:
-        state_files.extend(_processor_state_files(path, path / name))
-
     train_path = path / "train_config.json"
     train_config = read_json(train_path) if train_path.is_file() else None
     return CheckpointManifest(
         path=path,
         policy_config=policy_config,
         train_config=train_config,
-        processor_state_files=tuple(sorted(set(state_files))),
+        processor_state_files=validate_processor_state_files(path),
     )
 
 
@@ -572,7 +583,7 @@ def _valid_run_config_sentinel(path: Path, *, mode: str) -> bool:
         and payload.get("status") in {"incomplete", "smoke", "complete"}
         and isinstance(payload.get("created_at"), str)
         and isinstance(payload.get("policy"), dict)
-        and payload["policy"].get("type") in ACT_CHECKPOINT_TYPES
+        and payload["policy"].get("type") in EVALUATION_POLICY_TYPES
         and isinstance(payload.get("runtime"), dict)
         and isinstance(payload.get("input"), dict)
         and isinstance(payload.get("arguments"), dict)
@@ -700,7 +711,7 @@ def build_run_config(
     *,
     status: str,
     mode: str,
-    loaded: LoadedACT,
+    loaded: Any,
     input_config: dict[str, Any],
     arguments: dict[str, Any],
 ) -> dict[str, Any]:

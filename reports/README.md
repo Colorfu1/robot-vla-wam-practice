@@ -13,7 +13,7 @@
 - [实验指南总览](guides/README.md)
 - [ACT 实验指南](guides/act/README.md)
 - [PushT Diffusion Pilot](guides/pusht_diffusion/README.md)
-- [SmolVLA LIBERO LoRA 与语言增强（Planned，CLI 尚未实现）](guides/smolvla_libero/README.md)
+- [SmolVLA LIBERO LoRA 与语言增强（训练入口已实现，正式评测未完成）](guides/smolvla_libero/README.md)
 
 实验指南负责说明实验目标、实验设计、完整命令、结果落点和判断标准。实际运行后，
 还需要在 [实验运行记录](experiment_log.md) 中补充对应条目。
@@ -28,3 +28,4 @@
 - [2026-07-29 PushT 实验进展总结](daily/2026-07-29-PushT实验进展总结.md)
 - [2026-07-29 PushT E2 闭环采样结果](daily/2026-07-29-PushT-E2闭环采样结果.md)
 - [2026-07-30 PushT E5 原型条件实验阶段性成果](daily/2026-07-30-PushT-E5原型条件实验实现.md)
+- [2026-07-31 PushT 路线条件与 SmolVLA LIBERO 训练基建](daily/2026-07-31-PushT路线条件与SmolVLA-LIBERO训练基建.md)

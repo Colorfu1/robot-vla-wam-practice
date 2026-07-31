@@ -277,6 +277,8 @@ def test_multi_gpu_launcher_rejects_more_than_visible_devices(
         ("train_diffusion_multi_gpu.sh", "train_diffusion_multi_gpu"),
         ("train_mode_bc_chunk_multi_gpu.sh", "train_mode_bc_chunk_multi_gpu"),
         ("train_mode_diffusion_multi_gpu.sh", "train_mode_diffusion_multi_gpu"),
+        ("train_route_field_bc_chunk_multi_gpu.sh", "train_route_field_bc_chunk_multi_gpu"),
+        ("train_route_field_diffusion_multi_gpu.sh", "train_route_field_diffusion_multi_gpu"),
     ],
 )
 def test_multi_gpu_bash_is_only_a_model_specific_environment_forwarder(
@@ -364,4 +366,8 @@ def test_guides_keep_single_gpu_commands_and_add_compatible_multi_gpu_alternativ
     assert "train_mode_bc_chunk_multi_gpu.sh" in e5
     assert "train_mode_diffusion_multi_gpu.sh" in e5
     assert "--num-gpus=8" in e5
+    e6 = (guide_root / "e6_route_field_7x7.md").read_text(encoding="utf-8")
+    assert "train_route_field_bc_chunk_multi_gpu.sh" in e6
+    assert "train_route_field_diffusion_multi_gpu.sh" in e6
+    assert "--num-gpus=8" in e6
     assert "checkpoint selection" in benchmark

@@ -1,0 +1,958 @@
+{
+  "auxiliary_test_protocols": [
+    "held_out_paraphrase",
+    "prompt_swap"
+  ],
+  "dataset_repo_id": "lerobot/libero",
+  "main_test_instruction": "canonical",
+  "mapping_contract": "raw_action_noop_v1",
+  "paraphrases_sha256": "4f4891da2570f3bf580df32f07583b3f76e7592a2e20400456df711990d3cac3",
+  "rng_contract": {
+    "bit_generator": "PCG64",
+    "name": "pcg64_seedsequence_v1",
+    "namespaces": {
+      "target_closed_loop": 2,
+      "target_demonstration": 1
+    },
+    "seed": 1000
+  },
+  "schema_version": 1,
+  "source_manifest_sha256": "84b49f651e459976616ae9af223645cab06c6c6b8d4093fa60215fb3e36b70a1",
+  "split_seed": 1000,
+  "suite": "libero_goal",
+  "tasks": {
+    "1": {
+      "canonical": "put the bowl on the stove",
+      "closed_loop_split": {
+        "rng_namespace": 2,
+        "test_init_state_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          7,
+          9,
+          10,
+          11,
+          12,
+          17,
+          20,
+          23,
+          25,
+          26,
+          27,
+          29,
+          30,
+          31,
+          33,
+          34,
+          35,
+          36,
+          38,
+          40,
+          42,
+          43,
+          46,
+          47,
+          48
+        ],
+        "validation_init_state_ids": [
+          0,
+          6,
+          8,
+          13,
+          14,
+          15,
+          16,
+          18,
+          19,
+          21,
+          22,
+          24,
+          28,
+          32,
+          37,
+          39,
+          41,
+          44,
+          45,
+          49
+        ]
+      },
+      "combined_task_index": 17,
+      "demonstration_split": {
+        "offline_validation_demonstrations": [
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 415,
+            "raw_demo": "demo_0"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 445,
+            "raw_demo": "demo_5"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 557,
+            "raw_demo": "demo_6"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 629,
+            "raw_demo": "demo_24"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 641,
+            "raw_demo": "demo_46"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 688,
+            "raw_demo": "demo_17"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 691,
+            "raw_demo": "demo_3"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 704,
+            "raw_demo": "demo_45"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 740,
+            "raw_demo": "demo_47"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 796,
+            "raw_demo": "demo_42"
+          }
+        ],
+        "offline_validation_frames": 1045,
+        "rng_namespace": 1,
+        "sampling_strategy": "uniform_task_then_uniform_episode",
+        "train_demonstrations": [
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 392,
+            "raw_demo": "demo_38"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 394,
+            "raw_demo": "demo_12"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 395,
+            "raw_demo": "demo_27"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 401,
+            "raw_demo": "demo_18"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 424,
+            "raw_demo": "demo_48"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 455,
+            "raw_demo": "demo_44"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 495,
+            "raw_demo": "demo_35"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 500,
+            "raw_demo": "demo_21"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 524,
+            "raw_demo": "demo_28"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 530,
+            "raw_demo": "demo_19"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 544,
+            "raw_demo": "demo_15"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 545,
+            "raw_demo": "demo_34"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 550,
+            "raw_demo": "demo_39"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 558,
+            "raw_demo": "demo_37"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 565,
+            "raw_demo": "demo_26"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 580,
+            "raw_demo": "demo_29"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 598,
+            "raw_demo": "demo_1"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 604,
+            "raw_demo": "demo_49"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 612,
+            "raw_demo": "demo_2"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 616,
+            "raw_demo": "demo_16"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 618,
+            "raw_demo": "demo_9"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 637,
+            "raw_demo": "demo_36"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 643,
+            "raw_demo": "demo_11"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 649,
+            "raw_demo": "demo_7"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 673,
+            "raw_demo": "demo_14"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 676,
+            "raw_demo": "demo_4"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 692,
+            "raw_demo": "demo_10"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 707,
+            "raw_demo": "demo_22"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 721,
+            "raw_demo": "demo_33"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 741,
+            "raw_demo": "demo_40"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 747,
+            "raw_demo": "demo_13"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 751,
+            "raw_demo": "demo_30"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 763,
+            "raw_demo": "demo_43"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 764,
+            "raw_demo": "demo_8"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 786,
+            "raw_demo": "demo_31"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 789,
+            "raw_demo": "demo_25"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 804,
+            "raw_demo": "demo_32"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 805,
+            "raw_demo": "demo_41"
+          }
+        ],
+        "train_frames": 3809
+      },
+      "task_id": 1
+    },
+    "4": {
+      "canonical": "put the bowl on top of the cabinet",
+      "closed_loop_split": {
+        "rng_namespace": 2,
+        "test_init_state_ids": [
+          0,
+          1,
+          4,
+          6,
+          8,
+          9,
+          10,
+          14,
+          15,
+          16,
+          17,
+          19,
+          20,
+          21,
+          22,
+          23,
+          26,
+          27,
+          28,
+          30,
+          31,
+          33,
+          35,
+          39,
+          40,
+          41,
+          42,
+          44,
+          45,
+          49
+        ],
+        "validation_init_state_ids": [
+          2,
+          3,
+          5,
+          7,
+          11,
+          12,
+          13,
+          18,
+          24,
+          25,
+          29,
+          32,
+          34,
+          36,
+          37,
+          38,
+          43,
+          46,
+          47,
+          48
+        ]
+      },
+      "combined_task_index": 18,
+      "demonstration_split": {
+        "offline_validation_demonstrations": [
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 438,
+            "raw_demo": "demo_4"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 458,
+            "raw_demo": "demo_0"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 493,
+            "raw_demo": "demo_40"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 505,
+            "raw_demo": "demo_2"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 573,
+            "raw_demo": "demo_28"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 665,
+            "raw_demo": "demo_42"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 696,
+            "raw_demo": "demo_15"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 699,
+            "raw_demo": "demo_36"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 731,
+            "raw_demo": "demo_33"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 794,
+            "raw_demo": "demo_24"
+          }
+        ],
+        "offline_validation_frames": 980,
+        "rng_namespace": 1,
+        "sampling_strategy": "uniform_task_then_uniform_episode",
+        "train_demonstrations": [
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 398,
+            "raw_demo": "demo_20"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 402,
+            "raw_demo": "demo_9"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 444,
+            "raw_demo": "demo_43"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 446,
+            "raw_demo": "demo_32"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 452,
+            "raw_demo": "demo_45"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 456,
+            "raw_demo": "demo_49"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 474,
+            "raw_demo": "demo_30"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 501,
+            "raw_demo": "demo_35"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 514,
+            "raw_demo": "demo_13"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 521,
+            "raw_demo": "demo_6"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 570,
+            "raw_demo": "demo_48"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 590,
+            "raw_demo": "demo_17"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 597,
+            "raw_demo": "demo_29"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 601,
+            "raw_demo": "demo_47"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 608,
+            "raw_demo": "demo_41"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 630,
+            "raw_demo": "demo_27"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 636,
+            "raw_demo": "demo_16"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 638,
+            "raw_demo": "demo_8"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 660,
+            "raw_demo": "demo_44"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 661,
+            "raw_demo": "demo_21"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 662,
+            "raw_demo": "demo_12"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 669,
+            "raw_demo": "demo_10"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 674,
+            "raw_demo": "demo_5"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 681,
+            "raw_demo": "demo_23"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 689,
+            "raw_demo": "demo_22"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 702,
+            "raw_demo": "demo_7"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 706,
+            "raw_demo": "demo_3"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 712,
+            "raw_demo": "demo_38"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 724,
+            "raw_demo": "demo_14"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 732,
+            "raw_demo": "demo_39"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 743,
+            "raw_demo": "demo_37"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 745,
+            "raw_demo": "demo_11"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 767,
+            "raw_demo": "demo_18"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 775,
+            "raw_demo": "demo_26"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 791,
+            "raw_demo": "demo_31"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 793,
+            "raw_demo": "demo_25"
+          }
+        ],
+        "train_frames": 3594
+      },
+      "task_id": 4
+    },
+    "8": {
+      "canonical": "put the bowl on the plate",
+      "closed_loop_split": {
+        "rng_namespace": 2,
+        "test_init_state_ids": [
+          1,
+          4,
+          6,
+          7,
+          12,
+          13,
+          14,
+          15,
+          16,
+          18,
+          21,
+          22,
+          23,
+          24,
+          25,
+          27,
+          28,
+          29,
+          31,
+          34,
+          35,
+          37,
+          38,
+          39,
+          40,
+          42,
+          43,
+          44,
+          47,
+          48
+        ],
+        "validation_init_state_ids": [
+          0,
+          2,
+          3,
+          5,
+          8,
+          9,
+          10,
+          11,
+          17,
+          19,
+          20,
+          26,
+          30,
+          32,
+          33,
+          36,
+          41,
+          45,
+          46,
+          49
+        ]
+      },
+      "combined_task_index": 10,
+      "demonstration_split": {
+        "offline_validation_demonstrations": [
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 422,
+            "raw_demo": "demo_27"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 426,
+            "raw_demo": "demo_42"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 537,
+            "raw_demo": "demo_43"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 551,
+            "raw_demo": "demo_4"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 568,
+            "raw_demo": "demo_45"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 582,
+            "raw_demo": "demo_22"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 621,
+            "raw_demo": "demo_34"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 653,
+            "raw_demo": "demo_5"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 708,
+            "raw_demo": "demo_1"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 770,
+            "raw_demo": "demo_20"
+          }
+        ],
+        "offline_validation_frames": 944,
+        "rng_namespace": 1,
+        "sampling_strategy": "uniform_task_then_uniform_episode",
+        "train_demonstrations": [
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 379,
+            "raw_demo": "demo_10"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 431,
+            "raw_demo": "demo_21"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 433,
+            "raw_demo": "demo_6"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 447,
+            "raw_demo": "demo_40"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 448,
+            "raw_demo": "demo_7"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 451,
+            "raw_demo": "demo_9"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 459,
+            "raw_demo": "demo_15"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 466,
+            "raw_demo": "demo_18"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 481,
+            "raw_demo": "demo_35"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 483,
+            "raw_demo": "demo_24"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 488,
+            "raw_demo": "demo_3"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 507,
+            "raw_demo": "demo_25"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 511,
+            "raw_demo": "demo_0"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 513,
+            "raw_demo": "demo_46"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 522,
+            "raw_demo": "demo_11"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 532,
+            "raw_demo": "demo_12"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 549,
+            "raw_demo": "demo_29"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 563,
+            "raw_demo": "demo_13"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 607,
+            "raw_demo": "demo_30"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 615,
+            "raw_demo": "demo_36"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 620,
+            "raw_demo": "demo_8"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 626,
+            "raw_demo": "demo_48"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 634,
+            "raw_demo": "demo_19"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 639,
+            "raw_demo": "demo_23"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 642,
+            "raw_demo": "demo_41"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 646,
+            "raw_demo": "demo_38"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 655,
+            "raw_demo": "demo_14"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 670,
+            "raw_demo": "demo_16"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 679,
+            "raw_demo": "demo_37"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 716,
+            "raw_demo": "demo_44"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 718,
+            "raw_demo": "demo_47"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 726,
+            "raw_demo": "demo_49"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 727,
+            "raw_demo": "demo_28"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 749,
+            "raw_demo": "demo_39"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 750,
+            "raw_demo": "demo_33"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 768,
+            "raw_demo": "demo_17"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 801,
+            "raw_demo": "demo_32"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 803,
+            "raw_demo": "demo_31"
+          },
+          {
+            "action_max_abs_error": 0.0,
+            "episode_index": 806,
+            "raw_demo": "demo_2"
+          }
+        ],
+        "train_frames": 3619
+      },
+      "task_id": 8
+    }
+  },
+  "training_sampling_strategy": "uniform_task_then_uniform_episode",
+  "validation_instruction": "canonical"
+}

@@ -289,8 +289,8 @@ sent to LIBERO, and the simulator result at `t+1`.
 - **Deep-blue path:** measured end-effector history through observation `t`.
 - **Thin deep-orange segment:** the current controller command sent to `env.step`.
 - **Thick cyan arrow and endpoint:** measured end-effector displacement from `t` to `t+1`.
-- **Light-orange solid preview:** remaining standard ACT queue entries that can execute.
-- **Faint-orange dashed preview:** standard ACT chunk tail that will be discarded.
+- **Light-orange solid preview:** remaining policy queue entries that can execute.
+- **Faint-orange dashed preview:** predicted action-chunk tail that will be discarded.
 - **Violet dashed preview:** Temporal Ensemble's new prediction chunk; it is not an
   execution queue.
 - **Simulator state:** physical 8D state before checkpoint normalization.
@@ -613,7 +613,7 @@ def _build_libero_spatial_view() -> rrb.Container:
     free_3d = rrb.Spatial3DView(
         origin="/",
         contents=list(LIBERO_CALIBRATED_3D_CONTENTS),
-        name="Free 3D - measured rollout and ACT plan",
+        name="Free 3D - measured rollout and policy plan",
         line_grid=True,
     )
     return rrb.Tabs(
@@ -802,12 +802,15 @@ def initialize_libero_recording_stream(
     fps: float,
     agentview_calibration: FixedCameraCalibration,
     agentview_image_convention: str,
+    application_id: str = "robot_practice_act_libero",
 ) -> rr.RecordingStream:
     """Create one explicitly routed LIBERO Recording with its own file sink."""
 
+    if not application_id:
+        raise ValueError("LIBERO Rerun application_id must not be empty")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stream = rr.RecordingStream(
-        "robot_practice_act_libero",
+        application_id,
         recording_id=recording_id,
     )
     try:
@@ -1600,7 +1603,7 @@ def log_libero_step(
                 [queued_display],
                 colors=[ROLLOUT_QUEUE_COLOR],
                 radii=0.004,
-                labels=["Remaining executable ACT queue"],
+                labels=["Remaining executable policy queue"],
                 show_labels=False,
             ),
         )
@@ -1611,7 +1614,7 @@ def log_libero_step(
                 _dashed_line_strips(discarded_display),
                 colors=[ROLLOUT_DISCARDED_COLOR],
                 radii=0.003,
-                labels=["Predicted ACT tail - discarded"],
+                labels=["Predicted action-chunk tail - discarded"],
                 show_labels=False,
             ),
         )
@@ -1649,6 +1652,100 @@ def log_libero_step(
     recorder.log("latency/policy_step_ms", rr.Scalars(policy_step_latency_ms))
     if model_query_latency_ms is not None:
         recorder.log("latency/model_query_ms", rr.Scalars(model_query_latency_ms))
+
+
+def log_libero_terminal_observation(
+    recorder: Recorder,
+    *,
+    global_step: int,
+    episode_index: int,
+    step_index: int,
+    observation_state: Sequence[float] | NDArray[Any],
+    measured_pose: PandaMeasuredPose,
+    display_frame: DisplayFrame,
+    trajectory_history: LiberoTrajectoryHistory,
+    images: Mapping[str, torch.Tensor | NDArray[Any]],
+    success: bool,
+    agentview_calibration: FixedCameraCalibration,
+    agentview_image_convention: str,
+) -> None:
+    """Log the complete terminal observation without fabricating another transition."""
+
+    state = _validate_observation_state(observation_state)
+    prepared_images = {
+        key: image_to_hwc_uint8(image)
+        for key, image in images.items()
+    }
+    if AGENTVIEW_CAMERA_KEY not in prepared_images:
+        raise ValueError(
+            f"LIBERO visualization requires image {AGENTVIEW_CAMERA_KEY!r}"
+        )
+    current_agentview = prepared_images[AGENTVIEW_CAMERA_KEY]
+    agentview_calibration.validate_hwc_image(current_agentview)
+    corrected_agentview = physical_agentview_image(
+        current_agentview,
+        agentview_image_convention,
+    )
+    agentview_calibration.validate_hwc_image(corrected_agentview)
+    measured_path = trajectory_history.append(
+        episode_index=episode_index,
+        step_index=step_index,
+        observation_state=state,
+    )
+    path_display = display_frame.transform_points(measured_path)
+
+    recorder.set_time("global_step", sequence=global_step)
+    _log_measured_panda(recorder, pose=measured_pose, display_frame=display_frame)
+    for key, image_hwc in prepared_images.items():
+        recorder.log(
+            _camera_path(key, root=LIBERO_INPUT_CAMERA_ROOT),
+            rr.Image(image_hwc).compress(),
+        )
+    recorder.log(
+        LIBERO_POST_ACTION_AGENTVIEW_PATH,
+        rr.Image(current_agentview).compress(),
+    )
+    recorder.log(
+        LIBERO_CALIBRATED_AGENTVIEW_PATH,
+        rr.Image(corrected_agentview).compress(),
+    )
+    recorder.log("rollout/context/episode_index", rr.Scalars(episode_index))
+    recorder.log("rollout/context/step_index", rr.Scalars(step_index))
+    recorder.log("rollout/context/model_queried", rr.Scalars(0))
+    recorder.log(
+        "rollout/context/plan_step_index",
+        rr.Clear(recursive=False),
+    )
+    recorder.log(
+        "rollout/trajectory/eef_measured",
+        rr.LineStrips3D(
+            [path_display],
+            colors=[DEMONSTRATION_COLOR],
+            radii=0.003,
+            labels=["Measured EEF history through terminal observation"],
+            show_labels=False,
+        ),
+    )
+    recorder.log(
+        "rollout/trajectory/eef_current",
+        rr.Points3D(
+            [path_display[-1]],
+            colors=[DEMONSTRATION_COLOR],
+            radii=0.008,
+            labels=["Measured EEF at terminal observation"],
+            show_labels=False,
+        ),
+    )
+    recorder.log("rollout/command", rr.Clear(recursive=True))
+    recorder.log("rollout/response", rr.Clear(recursive=True))
+    recorder.log("rollout/plan", rr.Clear(recursive=True))
+    for index, state_name in enumerate(LIBERO_STATE_NAMES):
+        recorder.log(
+            f"state/observation/{state_name}",
+            rr.Scalars(float(state[index])),
+        )
+    recorder.log("rollout/success_so_far", rr.Scalars(int(success)))
+    recorder.log("rollout/done", rr.Scalars(1))
 
 
 def _finite_metric_number(value: Any) -> float | None:

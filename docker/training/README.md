@@ -1,8 +1,8 @@
 # Portable Robot Practice Training Environment
 
-This image contains the CUDA, Conda, Python, LeRobot, PushT, LIBERO, and
-ManiSkill environment only. It does not contain this repository, datasets,
-checkpoints, outputs, caches, or credentials.
+This image contains the CUDA, Conda, Python, LeRobot, PushT, LIBERO, SmolVLA,
+PEFT, and ManiSkill environment only. It does not contain this repository,
+datasets, checkpoints, outputs, caches, or credentials.
 
 ## Generate locks
 
@@ -16,19 +16,21 @@ bash scripts/docker/generate_environment_locks.sh
 The generator excludes this repository's editable package and rejects local,
 VCS, credential-bearing, and unapproved package sources.
 
-## Build
+## Build the portable environment base
 
 Choose the registry/repository at invocation time:
 
 ```bash
-IMAGE_REF='<registry>/<namespace>/practice:latest'
+IMAGE_REPOSITORY='<registry>/<namespace>/practice'
+BASE_TAG='env-YYYYMMDD-<lock-hash>'
 
 bash scripts/docker/build_training_image.sh \
-  --image="$IMAGE_REF"
+  --image="${IMAGE_REPOSITORY}:${BASE_TAG}" \
+  --version-tag="$BASE_TAG" \
+  --no-latest
 ```
 
-The script also creates an immutable `env-YYYYMMDD-<lock hash>` tag. No registry
-destination is committed to the repository.
+No registry destination is committed to the repository.
 
 If Docker Hub is unavailable, `--base-image` may point to a trusted mirror of the
 same pinned CUDA amd64 digest. Changing or omitting the digest is not allowed for
@@ -38,13 +40,33 @@ a release build. Dependency downloads are direct by default. Use
 explicit all-download fallback. Docker does not persist these predefined proxy
 build arguments in the resulting image.
 
+## Build the Volc MLP runtime image
+
+The remote `practice:latest` tag is the Volc MLP derivative, not the portable
+environment base. It preserves the same locked environment while switching to
+the platform-required root user, `/workspace`, and empty entrypoint:
+
+```bash
+VOLC_TAG='volc-YYYYMMDD-<purpose>'
+
+docker build \
+  --file docker/training/Dockerfile.volc-mlp \
+  --build-arg "BASE_IMAGE=${IMAGE_REPOSITORY}:${BASE_TAG}" \
+  --tag "${IMAGE_REPOSITORY}:${VOLC_TAG}" \
+  --tag "${IMAGE_REPOSITORY}:latest" \
+  .
+```
+
 ## Verify locally
 
 ```bash
+IMAGE_REF="${IMAGE_REPOSITORY}:${VOLC_TAG}"
+
 bash scripts/docker/verify_training_image.sh \
   --image="$IMAGE_REF" \
   --repo="$PWD" \
-  --require-gpus=1
+  --require-gpus=1 \
+  --require-bf16
 
 bash scripts/docker/audit_training_image.sh \
   --image="$IMAGE_REF" \
@@ -62,10 +84,12 @@ Registry authentication remains an explicit user action:
 
 ```bash
 docker login '<registry>'
-docker push "$IMAGE_REF"
+docker push "${IMAGE_REPOSITORY}:${BASE_TAG}"
+docker push "${IMAGE_REPOSITORY}:${VOLC_TAG}"
+docker push "${IMAGE_REPOSITORY}:latest"
 ```
 
-Push the immutable tag printed by the build script as well.
+Push both immutable tags before updating `latest`.
 
 ## Use the repository at any path
 
@@ -79,6 +103,8 @@ cd /any/path/to/practice
 Existing commands continue to work:
 
 ```bash
+watch -n 2 nvidia-smi
+
 bash scripts/experiments/pusht/train_diffusion.sh \
   --mode=pilot
 
@@ -88,7 +114,9 @@ python -m robot_practice.experiments.pusht_diffusion.train_diffusion \
 
 No editable install or `robot-practice-init` call is required. The image intentionally
 uses the relative `PYTHONPATH=./src`, so commands must be launched from the repository
-root. `robot-practice-init` remains available only as a compatibility tool.
+root. `watch` transparently isolates the system procps binary from Conda ncurses while
+leaving the training process library path unchanged. `robot-practice-init` remains
+available only as a compatibility tool.
 
 ## Verify an eight-H20 worker
 
@@ -101,6 +129,7 @@ cd /any/path/to/practice
 robot-practice-verify \
   --repo=. \
   --require-gpus=8 \
+  --require-bf16 \
   --nccl-world-size=8 \
   --headless
 ```

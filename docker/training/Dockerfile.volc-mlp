@@ -15,13 +15,16 @@ ENV HOME=/root \
 
 COPY docker/training/robot-practice-init /usr/local/bin/robot-practice-init
 COPY docker/training/verify_environment.py /usr/local/lib/robot-practice/verify_environment.py
+COPY docker/training/watch /usr/local/bin/watch
 
 RUN mkdir -p \
         /root/.cache/huggingface \
         /root/.cache/matplotlib \
         /tmp/runtime-root \
     && chmod 0700 /tmp/runtime-root \
-    && chmod 0755 /usr/local/bin/robot-practice-init
+    && chmod 0755 \
+        /usr/local/bin/robot-practice-init \
+        /usr/local/bin/watch
 
 ENTRYPOINT []
 CMD ["/bin/bash"]

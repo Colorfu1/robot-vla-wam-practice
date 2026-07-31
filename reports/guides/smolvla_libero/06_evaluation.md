@@ -9,7 +9,7 @@
 
 ## 实验思路
 
-三个模型使用相同 test states、prompt 分配、policy seed 和 full 300-step episode。
+C1/C2/C3 使用相同 test states、prompt 分配、policy seed 和 full 300-step episode。
 Canonical 与 Paraphrase rollout 必须恢复相同的 flow-noise 随机流。Prompt Swap 在同一个
 reference environment 中恢复完全相同的 simulator state，只改变 prompt，并用独立三目标
 分类器判断 bowl 最终落点。Test 只运行一次，不能根据结果追加同一批状态的实验。
@@ -46,8 +46,33 @@ RNG 初态。
 
 ## 评测命令
 
-以下 evaluator 尚未实现，属于 `Planned / CLI 未实现 / 当前不可运行`。实现后可直接运行
-三个 selected checkpoints：
+现有 `eval_libero.sh` 已支持单个 task 的 canonical 闭环 rollout，可用于 checkpoint
+Smoke、Rerun 检查和单任务诊断：
+
+```bash
+bash scripts/experiments/smolvla_libero/eval_libero.sh \
+  --policy-path=outputs/smolvla_libero/pilot/c2_canonical_lora/checkpoints/selected/pretrained_model \
+  --suite=libero_goal \
+  --task-id=1 \
+  --n-episodes=1 \
+  --num-visualized-episodes=1 \
+  --n-action-steps=10 \
+  --seed=2000 \
+  --policy-seed=2000 \
+  --init-state-ids=0 \
+  --libero-assets-dir=datasets/raw/libero_assets \
+  --output-dir=outputs/smolvla_libero/eval/c2_task1_diagnostic \
+  --no-open-viewer
+```
+
+该入口输出 `rollouts.parquet`、`rollout.rrd`、MP4、`metrics.json` 和
+`run_config.json`。它支持显式 `--init-state-ids`，并在每个 rollout 前按
+`--policy-seed` 恢复 policy RNG；但它尚不直接读取冻结 split/paraphrase 文件，也不实现
+Prompt Swap，因此不能替代以下正式多协议入口。B0 严格选模由
+`select_b0_checkpoint.sh` 读取冻结 split 并调用该底层评测器。
+
+以下 `eval.sh` 仍属于 `Planned / CLI 未实现 / 当前不可运行`。实现后可直接运行三个
+selected checkpoints：
 
 ```bash
 C1_POLICY="outputs/smolvla_libero/pilot/c1_default_non_peft/checkpoints/selected/pretrained_model"
@@ -80,7 +105,7 @@ for MODEL in "${MODELS[@]}"; do
     --policy-path="${POLICY_PATH}" \
     --suite=libero_goal \
     --task-ids=1,4,8 \
-    --split-file=configs/experiments/smolvla_libero/split.json \
+  --split-file=configs/experiments/smolvla_libero/target_split.json \
     --paraphrases=configs/experiments/smolvla_libero/paraphrases.json \
     --protocols=canonical,held_out_paraphrase,prompt_swap \
     --policy-seed=2000 \
