@@ -69,9 +69,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 LOCAL_BASE_POLICY_REFERENCE = "policies/smolvla_or_pi0/smolvla_base"
 LOCAL_BASE_POLICY_PATH = REPO_ROOT / LOCAL_BASE_POLICY_REFERENCE
 OFFLINE_VLM_ASSETS_DIRNAME = "vlm_assets"
-LOCAL_VLM_ASSETS_REFERENCE = (
-    f"{LOCAL_BASE_POLICY_REFERENCE}/{OFFLINE_VLM_ASSETS_DIRNAME}"
-)
+LOCAL_VLM_ASSETS_REFERENCE = f"{LOCAL_BASE_POLICY_REFERENCE}/{OFFLINE_VLM_ASSETS_DIRNAME}"
 _REPOSITORY_PATH_ANCHORS = frozenset(
     {
         "configs",
@@ -114,6 +112,7 @@ _FRESH_ONLY_OPTIONS = {
     "--train-seed",
     "--num-workers",
     "--output-dir",
+    "--overwrite",
 }
 _REQUIRED_POLICY_FILES = {
     "config.json",
@@ -175,6 +174,7 @@ class FreshArguments:
     num_workers: int
     mixed_precision: str
     output_dir: Path
+    overwrite: bool = False
 
 
 @dataclass(frozen=True)
@@ -313,6 +313,11 @@ def parse_arguments(
     parser.add_argument("--num-workers", type=_nonnegative_integer, default=4)
     parser.add_argument("--mixed-precision", choices=("bf16",))
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Delete and recreate --output-dir so a fresh run replaces previous artifacts",
+    )
     parser.add_argument("--resume-from", type=Path)
     parser.add_argument("--inspect-launch", action="store_true", help=argparse.SUPPRESS)
     _reject_duplicate_options(parser, raw)
@@ -364,12 +369,11 @@ def parse_arguments(
         learning_rate=namespace.learning_rate
         if namespace.learning_rate is not None
         else FORMAL_LEARNING_RATE,
-        train_seed=namespace.train_seed
-        if namespace.train_seed is not None
-        else FORMAL_TRAIN_SEED,
+        train_seed=namespace.train_seed if namespace.train_seed is not None else FORMAL_TRAIN_SEED,
         num_workers=namespace.num_workers,
         mixed_precision=namespace.mixed_precision or FORMAL_MIXED_PRECISION,
         output_dir=resolve_repository_path(namespace.output_dir),
+        overwrite=namespace.overwrite,
     )
     validate_fresh_contract(arguments)
     if namespace.inspect_launch:
@@ -378,7 +382,7 @@ def parse_arguments(
 
 
 def validate_fresh_contract(arguments: FreshArguments) -> None:
-    if arguments.output_dir.exists():
+    if arguments.output_dir.exists() and not arguments.overwrite:
         raise FileExistsError(f"Output directory already exists: {arguments.output_dir}")
     if arguments.base_policy == BASE_POLICY_REPO_ID:
         raise ValueError(
@@ -473,9 +477,7 @@ def load_background_split(path: str | Path) -> BackgroundSplit:
             raise ValueError(f"Task {task_index} train/validation episodes overlap")
         task_train_frames = task_payload.get("train_frames")
         task_validation_frames = task_payload.get("validation_frames")
-        if not isinstance(task_train_frames, int) or not isinstance(
-            task_validation_frames, int
-        ):
+        if not isinstance(task_train_frames, int) or not isinstance(task_validation_frames, int):
             raise TypeError(f"Task {task_index} frame counts must be integers")
         tasks.append(task_index)
         train_episodes.extend(task_train)
@@ -495,13 +497,10 @@ def load_background_split(path: str | Path) -> BackgroundSplit:
         raise ValueError("B0 train and validation episodes overlap globally")
     if len(train_episodes) != EXPECTED_TRAIN_EPISODES:
         raise ValueError(
-            f"Expected {EXPECTED_TRAIN_EPISODES} B0 train episodes, "
-            f"got {len(train_episodes)}"
+            f"Expected {EXPECTED_TRAIN_EPISODES} B0 train episodes, got {len(train_episodes)}"
         )
     if train_frames != EXPECTED_TRAIN_FRAMES:
-        raise ValueError(
-            f"Expected {EXPECTED_TRAIN_FRAMES} B0 train frames, got {train_frames}"
-        )
+        raise ValueError(f"Expected {EXPECTED_TRAIN_FRAMES} B0 train frames, got {train_frames}")
 
     aggregate = payload.get("aggregate")
     expected_aggregate = {
@@ -576,8 +575,7 @@ def validate_dataset(
     metadata = LeRobotDatasetMetadata(DATASET_REPO_ID, root=root)
     if int(metadata.total_episodes) != EXPECTED_TOTAL_EPISODES:
         raise ValueError(
-            f"Expected {EXPECTED_TOTAL_EPISODES} dataset episodes, "
-            f"got {metadata.total_episodes}"
+            f"Expected {EXPECTED_TOTAL_EPISODES} dataset episodes, got {metadata.total_episodes}"
         )
     if int(metadata.total_frames) != EXPECTED_TOTAL_FRAMES:
         raise ValueError(
@@ -632,9 +630,7 @@ def configure_smolvla_policy(
         raise TypeError(f"Expected SmolVLAConfig, got {type(policy).__name__}")
     policy.pretrained_path = Path(portable_path(resolved_pretrained_path))
     policy.vlm_model_name = portable_path(
-        validate_local_vlm_assets(
-            resolved_pretrained_path / OFFLINE_VLM_ASSETS_DIRNAME
-        )
+        validate_local_vlm_assets(resolved_pretrained_path / OFFLINE_VLM_ASSETS_DIRNAME)
     )
     # The outer SmolVLA model.safetensors already contains every VLM tensor.
     # Construct the nested VLM from local config only, then let the outer
@@ -689,7 +685,11 @@ def _asdict(value: Any) -> dict[str, Any]:
     return dataclasses.asdict(value)
 
 
-def validate_policy_preset(policy: Any) -> None:
+def validate_policy_preset(
+    policy: Any,
+    *,
+    expected_learning_rate: float | None = None,
+) -> None:
     if policy.type != "smolvla":
         raise ValueError(f"Expected policy type smolvla, got {policy.type}")
     expected_fields = {
@@ -710,9 +710,16 @@ def validate_policy_preset(policy: Any) -> None:
             raise ValueError(f"SmolVLA B0 requires {field}={expected!r}, got {actual!r}")
     optimizer = _asdict(policy.get_optimizer_preset())
     scheduler = _asdict(policy.get_scheduler_preset())
-    if optimizer != OPTIMIZER_PRESET:
+    expected_optimizer = dict(OPTIMIZER_PRESET)
+    expected_scheduler = dict(SCHEDULER_PRESET)
+    if expected_learning_rate is not None:
+        # Diagnostic runs may scale the learning rate while every other
+        # optimizer/scheduler field stays frozen.
+        expected_optimizer["lr"] = float(expected_learning_rate)
+        expected_scheduler["peak_lr"] = float(expected_learning_rate)
+    if optimizer != expected_optimizer:
         raise ValueError(f"Optimizer preset mismatch: {optimizer}")
-    if scheduler != SCHEDULER_PRESET:
+    if scheduler != expected_scheduler:
         raise ValueError(f"Scheduler preset mismatch: {scheduler}")
     actual_inputs = {
         key: (getattr(feature.type, "value", str(feature.type)), tuple(feature.shape))
@@ -790,10 +797,7 @@ def _hash_identity_files(root: Path) -> dict[str, str]:
         raise FileNotFoundError(f"Base policy config.json is missing: {root}")
     if not any(path.name.startswith("model") for path in candidates):
         raise FileNotFoundError(f"Base policy weights are missing: {root}")
-    return {
-        str(path.relative_to(root)): sha256_file(path)
-        for path in sorted(candidates)
-    }
+    return {str(path.relative_to(root)): sha256_file(path) for path in sorted(candidates)}
 
 
 def normalize_base_policy_reference(reference: str) -> str:
@@ -824,8 +828,7 @@ def validate_local_vlm_assets(root: str | Path) -> Path:
     ]
     if missing:
         raise FileNotFoundError(
-            "Offline VLM assets are incomplete; missing "
-            f"{', '.join(missing)} in {resolved}"
+            f"Offline VLM assets are incomplete; missing {', '.join(missing)} in {resolved}"
         )
 
     from transformers import AutoConfig, AutoProcessor
@@ -857,9 +860,7 @@ def validate_local_base_policy(root: str | Path) -> Path:
     _hash_identity_files(resolved)
     for filename in ("policy_preprocessor.json", "policy_postprocessor.json"):
         if not (resolved / filename).is_file():
-            raise FileNotFoundError(
-                f"Local SmolVLA base policy is missing {filename}: {resolved}"
-            )
+            raise FileNotFoundError(f"Local SmolVLA base policy is missing {filename}: {resolved}")
     validate_local_vlm_assets(resolved / OFFLINE_VLM_ASSETS_DIRNAME)
 
     from lerobot.configs.policies import PreTrainedConfig
@@ -867,10 +868,7 @@ def validate_local_base_policy(root: str | Path) -> Path:
 
     policy = PreTrainedConfig.from_pretrained(resolved)
     if not isinstance(policy, SmolVLAConfig):
-        raise TypeError(
-            "Local base policy must be a SmolVLA config, got "
-            f"{type(policy).__name__}"
-        )
+        raise TypeError(f"Local base policy must be a SmolVLA config, got {type(policy).__name__}")
     return resolved
 
 
@@ -976,6 +974,7 @@ def build_run_config(
             "dataset_root": portable_path(arguments.dataset_root),
             "split_file": portable_path(split.source),
             "split_sha256": split.sha256,
+            "overwrite": arguments.overwrite,
             "base_policy": dataclasses.asdict(base_identity),
         },
         "dataset": {
@@ -1015,9 +1014,7 @@ def build_run_config(
 def checkpoint_run_dir(checkpoint_dir: str | Path) -> Path:
     checkpoint = resolve_repository_path(checkpoint_dir)
     if checkpoint.parent.name != "checkpoints" or not _STEP_NAME.fullmatch(checkpoint.name):
-        raise ValueError(
-            "--resume-from must point to <run>/checkpoints/<six-digit-step>"
-        )
+        raise ValueError("--resume-from must point to <run>/checkpoints/<six-digit-step>")
     return checkpoint.parent.parent
 
 
@@ -1234,7 +1231,9 @@ def validate_resume(
         split.train_episodes,
         field="dataset.episodes",
     )
-    _require_equal(saved_config.get("batch_size"), training.get("per_gpu_batch_size"), field="batch")
+    _require_equal(
+        saved_config.get("batch_size"), training.get("per_gpu_batch_size"), field="batch"
+    )
     _require_equal(saved_config.get("steps"), total_steps, field="steps")
     _require_equal(saved_config.get("save_freq"), training.get("save_freq"), field="save_freq")
     _require_equal(saved_config.get("seed"), training.get("seed"), field="seed")
@@ -1267,9 +1266,7 @@ def validate_resume(
 
     from lerobot.configs.policies import PreTrainedConfig
 
-    checkpoint_policy = PreTrainedConfig.from_pretrained(
-        checkpoint_dir / "pretrained_model"
-    )
+    checkpoint_policy = PreTrainedConfig.from_pretrained(checkpoint_dir / "pretrained_model")
     validate_policy_preset(checkpoint_policy)
 
     attempt_id, tail_step = _metrics_history(run_dir / "train_metrics.jsonl")

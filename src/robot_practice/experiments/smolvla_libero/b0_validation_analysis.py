@@ -73,7 +73,10 @@ def _load_selection_protocol(
         )
     selection = _read_json(selection_path)
     results = _read_json(results_path)
-    if selection.get("status") != "complete" or selection.get("selection_set") != "background_validation":
+    if (
+        selection.get("status") != "complete"
+        or selection.get("selection_set") != "background_validation"
+    ):
         raise ValueError("Validation analysis requires a complete background validation selection")
     if selection.get("split_sha256") != _sha256_file(arguments.split_file):
         raise ValueError("Checkpoint selection and validation analysis split hashes differ")
@@ -149,7 +152,9 @@ def _load_episode_maps(
     reference_keys = set(by_step[COMPARISON_STEPS[0]])
     for step, episodes in by_step.items():
         if set(episodes) != reference_keys:
-            raise ValueError(f"Checkpoint {step:06d} does not contain the same paired validation cases")
+            raise ValueError(
+                f"Checkpoint {step:06d} does not contain the same paired validation cases"
+            )
     return by_step
 
 
@@ -174,9 +179,7 @@ def _checkpoint_summary(
         "checkpoint_step": step,
         "num_episodes": len(episodes),
         "num_successes": num_successes,
-        "macro_success_rate": float(
-            np.mean([task["success_rate"] for task in per_task.values()])
-        ),
+        "macro_success_rate": float(np.mean([task["success_rate"] for task in per_task.values()])),
         "mean_successful_episode_steps": (
             float(np.mean(successful_steps)) if successful_steps else None
         ),
@@ -428,7 +431,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 def _resolve_arguments(namespace: argparse.Namespace) -> ValidationAnalysisArguments:
     run_dir = resolve_repository_path(namespace.run_dir)
-    selection_dir = resolve_repository_path(namespace.selection_dir or run_dir / "checkpoint_selection")
+    selection_dir = resolve_repository_path(
+        namespace.selection_dir or run_dir / "checkpoint_selection"
+    )
     split_file = resolve_repository_path(namespace.split_file)
     if namespace.env_seed < 0 or namespace.policy_seed < 0:
         raise ValueError("--env-seed and --policy-seed must be non-negative")

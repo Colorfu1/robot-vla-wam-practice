@@ -2,17 +2,21 @@
 #
 # One-command SmolVLA LIBERO C1 Default Non-PEFT training launcher.
 #
-# Formal 8-GPU run with the frozen defaults:
-#   bash scripts/experiments/smolvla_libero/train_c1.sh
+# Formal run with the frozen global batch 8 (default layout 8x1; on fewer GPUs
+# use e.g. --num-processes=4 --batch-size=2 so N*B stays 8):
+#   bash scripts/experiments/smolvla_libero/train_c1.sh \
+#     --mode=formal \
+#     --dataset-root=datasets/lerobot/lerobot/libero \
+#     --split-file=configs/experiments/smolvla_libero/target_split.json \
+#     --output-dir=outputs/smolvla_libero/pilot/c1_default_non_peft
 #
 # Validate and print the exact Accelerate command without training:
 #   bash scripts/experiments/smolvla_libero/train_c1.sh --print-command
 #
-# One-GPU two-step smoke from a B0 checkpoint (selection provenance is only
-# mandatory for formal mode):
+# One-GPU two-step smoke from the published selected B0 checkpoint:
 #   bash scripts/experiments/smolvla_libero/train_c1.sh \
 #     --mode=smoke \
-#     --base-policy=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoints/030000/pretrained_model \
+#     --base-policy=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoints/selected/pretrained_model \
 #     --steps=2 \
 #     --save-freq=2 \
 #     --num-workers=0 \
@@ -27,28 +31,34 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  train_c1.sh [--print-command]
-  train_c1.sh --mode=smoke|formal [fresh options] [--print-command]
+  train_c1.sh --mode=smoke|formal --dataset-root=DIR --split-file=FILE \
+    --output-dir=DIR [fresh options] [--print-command]
   train_c1.sh --resume-from=CHECKPOINT_DIR [--print-command]
 
-With no arguments, the launcher starts the frozen formal C1 run:
-  selected B0 checkpoint, target Train split, 8 GPUs, batch 1/GPU,
-  BF16, 30000 steps, and checkpoints every 5000 steps.
-
 Fresh options:
+  --mode=smoke|formal|diagnostic
+                          Required. diagnostic additionally requires
+                          --experiment-tag and allows --learning-rate/--steps
+                          overrides; its outputs are marked diagnostic and can
+                          never be used as formal results.
+  --experiment-tag=LABEL  Short diagnostic label; required only for
+                          --mode=diagnostic.
+  --dataset-root=DIR      Required.
+  --split-file=FILE       Required.
+  --output-dir=DIR        Required.
   --base-policy=DIR       B0 pretrained_model directory. Formal mode requires
-                          selected_checkpoint.json provenance beside it.
-  --dataset-root=DIR      Default: datasets/lerobot/lerobot/libero.
-  --split-file=FILE       Default: target_split.json.
-  --num-processes=N       Formal: 8; smoke: 1.
-  --batch-size=1          C1 is frozen to batch 1 per GPU.
-  --steps=N               Formal: 30000; smoke: 2.
-  --save-freq=N           Formal: 5000; smoke: 2.
+                          selected_checkpoint.json provenance beside it. Default:
+                          outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoints/selected/pretrained_model.
+  --num-processes=N       Formal default: 8; smoke: 1. Must not exceed the
+                          visible GPUs; select cards with CUDA_VISIBLE_DEVICES.
+  --batch-size=N          Per-GPU batch. Formal requires N x num-processes = 8
+                          (legal layouts: 8x1, 4x2, 2x4, 1x8); smoke defaults to 1.
+  --steps=N               Formal default: 30000; smoke: 2.
+  --save-freq=N           Formal default: 5000; smoke: 2.
   --learning-rate=0.0001  Frozen optimizer peak learning rate.
   --train-seed=1000       Frozen training and sampler seed.
   --num-workers=N         DataLoader workers per process (default: 4).
   --mixed-precision=bf16  Required mixed precision.
-  --output-dir=DIR        Default formal output: c1_default_non_peft.
 
 Resume accepts no fresh options. GPU count and BF16 are restored from the
 original run_config.json. CHECKPOINT_DIR must be the latest complete checkpoint.

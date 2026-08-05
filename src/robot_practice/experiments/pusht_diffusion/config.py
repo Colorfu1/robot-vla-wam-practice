@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ PRETRAINED_POLICY_REVISION = "84a7c23178445c6bbf7e1a884ff497017910f653"
 PROTOCOL_NAMESPACE = 20260727
 PUSHT_FPS = 10
 PUSHT_WORKSPACE_SIZE = 512.0
+PUSHT_GOAL_BLOCK_ANGLE_RAD = math.pi / 4.0  # gym_pusht goal_pose = [256, 256, pi/4]
 N_OBS_STEPS = 2
 HORIZON = 16
 N_ACTION_STEPS = 8

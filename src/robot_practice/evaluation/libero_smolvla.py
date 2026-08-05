@@ -38,12 +38,17 @@ from robot_practice.evaluation.libero_act import (
     LiberoEvaluationResult,
     LiberoPolicyRuntime,
     LiberoPolicyStep,
+    _parse_episode_seeds,
     _parse_init_state_ids,
     _postprocess_policy_action_tensor,
     evaluate_libero,
     resolve_n_action_steps,
 )
 from robot_practice.evaluation.libero_checkpoint import CheckpointTaskAssessment
+from robot_practice.evaluation.libero_goal_classifier import (
+    GOAL_CLASSIFIER_NAME,
+    GOAL_LABELS,
+)
 from robot_practice.evaluation.libero_tasks import SUPPORTED_SUITES, LiberoTaskIdentity
 from robot_practice.experiments.smolvla_libero.b0_training import (
     LOCAL_VLM_ASSETS_REFERENCE,
@@ -70,6 +75,10 @@ class SmolVLAEvaluationConfig:
     seed: int = 1000
     policy_seed: int | None = None
     init_state_ids: tuple[int, ...] | None = None
+    episode_seeds: tuple[int, ...] | None = None
+    instruction: str | None = None
+    goal_classifier: str | None = None
+    expected_goal: str | None = None
     libero_assets_dir: Path | None = None
     output_dir: Path | None = None
     overwrite: bool = False
@@ -496,6 +505,10 @@ def evaluate_smolvla_libero(
         seed=config.seed,
         policy_seed=config.policy_seed,
         init_state_ids=config.init_state_ids,
+        episode_seeds=config.episode_seeds,
+        instruction=config.instruction,
+        goal_classifier=config.goal_classifier,
+        expected_goal=config.expected_goal,
         libero_assets_dir=config.libero_assets_dir,
         output_dir=output_dir,
         overwrite=config.overwrite,
@@ -521,7 +534,11 @@ def evaluate_smolvla_libero(
             ),
             evidence={
                 "source_kind": "local" if local_path is not None else "huggingface_hub",
-                "language": task.language,
+                "language": (
+                    task.language
+                    if config.instruction is None
+                    else " ".join(config.instruction.split())
+                ),
             },
         )
         LOGGER.info("[Policy] %s", assessment.message)
@@ -595,6 +612,28 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "Comma-separated official LIBERO init-state IDs; the number of IDs must "
             "equal --n-episodes"
         ),
+    )
+    parser.add_argument(
+        "--episode-seeds",
+        type=_parse_episode_seeds,
+        help=(
+            "Comma-separated simulator seeds paired one-to-one with --init-state-ids; "
+            "defaults to --seed plus episode index"
+        ),
+    )
+    parser.add_argument(
+        "--instruction",
+        help="Override the LIBERO task instruction supplied to SmolVLA",
+    )
+    parser.add_argument(
+        "--goal-classifier",
+        choices=(GOAL_CLASSIFIER_NAME,),
+        help="Enable the simulator-grounded three-goal Prompt Swap classifier",
+    )
+    parser.add_argument(
+        "--expected-goal",
+        choices=GOAL_LABELS,
+        help="Prompt target scored by --goal-classifier",
     )
     parser.add_argument(
         "--libero-assets-dir",

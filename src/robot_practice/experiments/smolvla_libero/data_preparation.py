@@ -195,11 +195,7 @@ def _installed_init_state_records(
             raise ValueError(f"Task {task_id} init states must be a 2D array")
         from libero.libero import get_libero_path
 
-        path = (
-            Path(get_libero_path("init_states"))
-            / task.problem_folder
-            / task.init_states_file
-        )
+        path = Path(get_libero_path("init_states")) / task.problem_folder / task.init_states_file
         arrays[task_id] = states
         records.append(
             {
@@ -248,8 +244,7 @@ def fetch_sources(
     siblings = [
         sibling
         for sibling in info.siblings
-        if sibling.rfilename.startswith(f"{suite}/")
-        and sibling.rfilename.endswith(".hdf5")
+        if sibling.rfilename.startswith(f"{suite}/") and sibling.rfilename.endswith(".hdf5")
     ]
     if not siblings:
         raise ValueError(f"No HDF5 files found for {raw_repo_id}:{suite}")
@@ -426,9 +421,7 @@ def audit_paraphrases(
         if canonical != definition["canonical"]:
             raise ValueError(f"Task {task_id} canonical instruction mismatch")
         if not isinstance(train, list) or len(train) != TRAIN_PARAPHRASE_COUNT:
-            raise ValueError(
-                f"Task {task_id} must have {TRAIN_PARAPHRASE_COUNT} train paraphrases"
-            )
+            raise ValueError(f"Task {task_id} must have {TRAIN_PARAPHRASE_COUNT} train paraphrases")
         if not isinstance(held_out, list) or len(held_out) != HELD_OUT_PARAPHRASE_COUNT:
             raise ValueError(
                 f"Task {task_id} must have {HELD_OUT_PARAPHRASE_COUNT} held-out paraphrases"
@@ -542,7 +535,9 @@ def _tasks_table(dataset_root: Path) -> dict[int, str]:
     return result
 
 
-def load_episode_catalog(dataset_root: str | Path) -> tuple[dict[int, EpisodeCatalogEntry], dict[int, str]]:
+def load_episode_catalog(
+    dataset_root: str | Path,
+) -> tuple[dict[int, EpisodeCatalogEntry], dict[int, str]]:
     root = Path(dataset_root).expanduser().resolve()
     info = load_json_object(root / "meta" / "info.json")
     if info.get("total_tasks") != EXPECTED_TOTAL_TASKS:
@@ -845,9 +840,7 @@ def build_target_task_split(
     train_records = records_for(train_ids)
     offline_validation_records = records_for(offline_validation_ids)
     train_raw_demos = {record["raw_demo"] for record in train_records}
-    offline_validation_raw_demos = {
-        record["raw_demo"] for record in offline_validation_records
-    }
+    offline_validation_raw_demos = {record["raw_demo"] for record in offline_validation_records}
     if train_ids & offline_validation_ids:
         raise ValueError(f"Task {task_id} demonstration episode sets overlap")
     if train_raw_demos & offline_validation_raw_demos:
@@ -859,9 +852,7 @@ def build_target_task_split(
         namespace=TARGET_CLOSED_LOOP_RNG_NAMESPACE,
         identity=task_id,
     )
-    closed_loop_validation = sorted(
-        closed_loop_order[:closed_loop_validation_count]
-    )
+    closed_loop_validation = sorted(closed_loop_order[:closed_loop_validation_count])
     closed_loop_test = sorted(closed_loop_order[closed_loop_validation_count:])
     if len(closed_loop_test) != closed_loop_test_count:
         raise ValueError(
@@ -869,9 +860,7 @@ def build_target_task_split(
         )
     if set(closed_loop_validation) & set(closed_loop_test):
         raise ValueError(f"Task {task_id} closed-loop state sets overlap")
-    if set(closed_loop_validation) | set(closed_loop_test) != set(
-        range(official_state_count)
-    ):
+    if set(closed_loop_validation) | set(closed_loop_test) != set(range(official_state_count)):
         raise ValueError(f"Task {task_id} closed-loop states do not cover all official states")
 
     return {
@@ -970,8 +959,7 @@ def build_splits(
         )
         demonstration_split = split["demonstration_split"]
         train_episode_ids = {
-            int(record["episode_index"])
-            for record in demonstration_split["train_demonstrations"]
+            int(record["episode_index"]) for record in demonstration_split["train_demonstrations"]
         }
         offline_validation_episode_ids = {
             int(record["episode_index"])
@@ -981,8 +969,7 @@ def build_splits(
             catalog[episode_index].length for episode_index in train_episode_ids
         )
         demonstration_split["offline_validation_frames"] = sum(
-            catalog[episode_index].length
-            for episode_index in offline_validation_episode_ids
+            catalog[episode_index].length for episode_index in offline_validation_episode_ids
         )
         target_tasks[str(task_id)] = {
             "task_id": task_id,
@@ -1016,12 +1003,8 @@ def build_splits(
             "offline_validation_episodes": len(
                 demonstration_split["offline_validation_demonstrations"]
             ),
-            "offline_validation_frames": demonstration_split[
-                "offline_validation_frames"
-            ],
-            "closed_loop_validation_states": len(
-                closed_loop_split["validation_init_state_ids"]
-            ),
+            "offline_validation_frames": demonstration_split["offline_validation_frames"],
+            "closed_loop_validation_states": len(closed_loop_split["validation_init_state_ids"]),
             "closed_loop_test_states": len(closed_loop_split["test_init_state_ids"]),
             "max_action_abs_error": max(
                 (mapping.action_max_abs_error for mapping in mappings),
@@ -1128,7 +1111,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-repo-id", default=DEFAULT_RAW_REPO_ID)
     parser.add_argument("--raw-revision", default=DEFAULT_RAW_REVISION)
     parser.add_argument("--raw-data-root", type=Path, default=Path("datasets/raw/libero"))
-    parser.add_argument("--dataset-root", type=Path, default=Path("datasets/lerobot/lerobot/libero"))
+    parser.add_argument(
+        "--dataset-root", type=Path, default=Path("datasets/lerobot/lerobot/libero")
+    )
     parser.add_argument("--source-manifest", type=Path)
     parser.add_argument("--suite", default=DEFAULT_SUITE)
     parser.add_argument("--task-ids", type=parse_integer_csv, default=DEFAULT_TASK_IDS)
@@ -1148,7 +1133,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CLOSED_LOOP_TEST_PER_TASK,
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SPLIT_SEED)
-    parser.add_argument("--init-states-source", choices=("installed_libero",), default="installed_libero")
+    parser.add_argument(
+        "--init-states-source", choices=("installed_libero",), default="installed_libero"
+    )
     parser.add_argument(
         "--paraphrases",
         "--output-paraphrases",
@@ -1189,10 +1176,7 @@ def _positive_split_counts(args: argparse.Namespace) -> None:
         args.closed_loop_validation_per_task + args.closed_loop_test_per_task
         != EXPECTED_OFFICIAL_INIT_STATES
     ):
-        raise ValueError(
-            "Closed-loop split counts must sum to "
-            f"{EXPECTED_OFFICIAL_INIT_STATES}"
-        )
+        raise ValueError(f"Closed-loop split counts must sum to {EXPECTED_OFFICIAL_INIT_STATES}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:

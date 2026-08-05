@@ -13,6 +13,24 @@ C1 从统一 selected B0 checkpoint 开始，不使用 PEFT，保留 SmolVLA 默
 它训练 action expert 和相关 projections，但仍冻结 VLM 与 vision encoder。只有在单卡
 BF16 batch 1 Smoke 通过后才运行；不能缩小模型后继续称为同一个上限对照。
 
+## 本实验用到的数据
+
+三个目标任务是 `libero_goal` 本地编号 1 / 4 / 8，被完整排除在 B0 训练之外。
+
+- 训练：113 条 demonstration / 11,022 帧（38 + 36 + 39），离线 validation 不进训练。
+- 选模主判据（`Validation`）：每任务 20 个初始状态 = 60 个 case，六个 checkpoint 各跑一遍，
+  `6 × 3 × 20 = 360` 条闭环 rollout。
+- 选模第二判据：30 条离线 validation demonstration / 2,969 帧上的开环动作误差。
+- 最终成绩（`Test`）：只跑冻结的 winner，用每任务 30 个此前保留的初始状态。目标协议评测由
+  三套协议组成，共 21 个 job / 210 条 rollout：canonical `3 × 30 = 90`；held-out paraphrase
+  每任务 5 条改写句、按状态序号模 5 各分 6 个状态，`3 × 5 × 6 = 90`；prompt swap 3 个目标
+  各 10 个参考状态，`3 × 10 = 30`。
+- 指令：只用 canonical；8 条 train paraphrases 与 5 条 held-out paraphrases 都不参与 C1。
+
+test 初始状态与 held-out paraphrases 都不得进入选模。held-out 只针对初始状态——这 3 个任务
+正是本实验训练的任务，且摆放随机化范围约 3 cm，所以 test 测的是同任务同分布、未被使用过的
+摆放。完整清单见[实验族总览](README.md#结果类别标签与数据分工)。
+
 ## 配置边界
 
 ```text
@@ -47,15 +65,21 @@ C1/C2/C3 必须共享：
 `selected/pretrained_model` 后，以下命令可直接启动 8 卡训练：
 
 ```bash
-bash scripts/experiments/smolvla_libero/train_c1.sh
+bash scripts/experiments/smolvla_libero/train_c1.sh \
+  --mode=formal \
+  --dataset-root=datasets/lerobot/lerobot/libero \
+  --split-file=configs/experiments/smolvla_libero/target_split.json \
+  --output-dir=outputs/smolvla_libero/pilot/c1_default_non_peft
 ```
 
-该命令固定使用：
+`--mode`、`--dataset-root`、`--split-file`、`--output-dir` 是 fresh 启动的必填参数，
+不允许裸跑。该命令固定使用：
 
 - `outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoints/selected/pretrained_model`
 - `datasets/lerobot/lerobot/libero`
 - `configs/experiments/smolvla_libero/target_split.json`
-- 8 个 Accelerate processes、每卡 batch 1、全局 batch 8
+- 默认 8 个 Accelerate processes、每卡 batch 1、全局 batch 8（合法布局：
+  8×1、4×2、2×4、1×8）
 - 30,000 steps、每 5,000 steps 保存、BF16、seed 1000、LR `1e-4`
 - 全离线 Hugging Face/Transformers/Datasets 模式
 
@@ -73,12 +97,19 @@ bash scripts/experiments/smolvla_libero/train_c1.sh --print-command
 
 - 无参数正式入口是单机 8 卡：Accelerate 使用 8 个 process、`--gpu_ids=all` 和
   `--multi_gpu`，每张卡对应一个训练进程。
-- C1 正式协议冻结为 world size 8、每卡 batch 1、全局 batch 8；少于 8 卡不能继续标记为
-  同一份正式 C1 结果。
-- Smoke/debug 可通过 `--num-processes=N` 使用单卡或多卡；`CUDA_VISIBLE_DEVICES` 暴露的
-  GPU 数必须不少于 `N`。
-- 续训从原始 `run_config.json` 恢复 world size 和 BF16，必须提供与原 run 相同数量的 GPU，
-  不能在 resume 时改变卡数。
+- C1 正式协议冻结的是**全局 batch 8**（同时冻结 30,000 steps、每 5,000 保存、
+  LR `1e-4`、seed 1000、BF16）。卡数可配置为 8×1、4×2、2×4、1×8 任一合法布局；
+  `--num-processes=N` 必须满足 `N × --batch-size = 8`，且不能超过可见 GPU 数。
+- 不同卡数的 run **协议等价但不是逐位复现**：sampler 分片与数据读取顺序随 world size
+  改变，loss 曲线不会重合。报告必须写明 `data_parallel_layout`（如 `4x2`），不能把
+  不同布局当成同一次运行的重复。
+- 少于 8 卡时每卡 batch 会上升（1 卡需 batch 8），显存风险随之上升；OOM 时按下面的
+  `N_A.json` 契约记录，不缩小模型、不降全局 batch。
+- `--num-processes` 超过可见 GPU 数会立即失败并提示用 `CUDA_VISIBLE_DEVICES` 选卡
+  （launcher 固定 `--gpu_ids=all`，选特定卡只能通过环境变量）。
+- 续训从原始 `run_config.json` 恢复 world size、每卡 batch 与 BF16，必须提供与原 run
+  相同数量的 GPU（`world_size × per_gpu_batch_size` 仍必须等于 8），不能在 resume 时
+  改变卡数。
 - 当前 launcher 支持单机多卡，不包含跨节点 rendezvous 配置。
 
 单卡 Smoke：
@@ -86,6 +117,8 @@ bash scripts/experiments/smolvla_libero/train_c1.sh --print-command
 ```bash
 bash scripts/experiments/smolvla_libero/train_c1.sh \
   --mode=smoke \
+  --dataset-root=datasets/lerobot/lerobot/libero \
+  --split-file=configs/experiments/smolvla_libero/target_split.json \
   --base-policy=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoints/selected/pretrained_model \
   --steps=2 \
   --save-freq=2 \
@@ -100,8 +133,8 @@ bash scripts/experiments/smolvla_libero/train_c1.sh \
   --resume-from=outputs/smolvla_libero/pilot/c1_default_non_peft/checkpoints/005000
 ```
 
-VS Code 可选择 `SmolVLA LIBERO C1: train (1-step offline debug)` 做单卡单步调试；每次
-必须填写新的 output directory。
+VS Code 可选择 `SmolVLA LIBERO C1: train (1-step offline debug)` 做单卡单步调试；它使用
+固定 output 目录并带 `--overwrite`，每次重跑直接覆盖上一次 debug 结果。
 
 ## Checkpoint Selection
 
@@ -127,7 +160,151 @@ bash scripts/experiments/smolvla_libero/select_checkpoint.sh \
   --selected-dir=outputs/smolvla_libero/pilot/c1_default_non_peft/checkpoints/selected
 ```
 
-该 selection 入口属于 `Planned / CLI 未实现 / 当前不可运行`。
+该入口已实现（`scripts/experiments/smolvla_libero/select_checkpoint.sh`）。判据顺序：
+
+1. 三任务 macro canonical closed-loop SR（高优先）；
+2. 平局时比较 macro **normalized** offline action error（低优先；denormalized 误差同时
+   记录但只作参考）；
+3. 仍平局时选择更早 checkpoint。
+
+Open-loop error 的固定条件：同一批 frame（30 条 offline validation demonstration 的
+全部 2,969 帧，顺序由 split 固定）、固定 flow-noise seed（按 task/episode/frame 从
+split seed 派生，同一 frame 在所有 checkpoint 上使用同一份噪声）、同一 action horizon
+（chunk 50、只比较前 10 步）；先按任务求均值，再对三个任务取 macro average。
+
+闭环规模为 `6 × 3 × 20 = 360` 条 300-step rollout；`ranking_audit` 记录实际生效的判据
+级别，位于 `checkpoint_selection/ranking_audit.json`。**不得使用 test split 或
+held-out paraphrases 选模**。
+
+开环误差按 checkpoint 并行评测：每个 checkpoint 分派到一张 GPU（并行度 =
+`min(num_gpus, checkpoint 数)`），6 卡下预计约 12 分钟（单卡串行约 69 分钟）。子进程日志
+在 `checkpoint_selection/logs/open_loop_checkpoint_<step>.log`（首行为完整命令），中间结果
+在 `checkpoint_selection/jobs/open_loop/checkpoint_<step>.json`；`--resume` 会复用
+`checkpoint_id` / `split_sha256` / `max_frames_per_task` 一致的已完成结果。并行调度不改
+抽帧、噪声派生与误差公式，数值与串行逐值相同。
+
+## 已完成的正式结果
+
+训练、选模与 210 条目标协议评测都已跑完。完整对比、协议一致性核对与结论边界见
+[2026-08-04 Z0 基线与 C1 目标适配正式评测结论](../../2026-08-04-Z0基线与C1目标适配正式评测结论.md)。
+
+### 训练（Formal / Offline）
+
+一次 attempt 完成 30,000 updates，`data_parallel_layout=8x1`，8 个 rank 状态均为 `complete`。
+loss 首步 0.1599、末 1,000 步均值 0.01739，grad norm 峰值 9.42，LR 峰值 9.99e-5、终值 2.5e-6，
+全程无 NaN/Inf。
+
+### Checkpoint selection（Formal / Closed-loop / Validation）
+
+360 条闭环 rollout + 每个 checkpoint 在 2,969 帧上的开环误差。
+
+| Rank | Step | Macro SR | Offline norm MSE | Successes | 生效判据 |
+|---:|---:|---:|---:|---:|---|
+| 1 | **030000** | **0.9833** | 0.309668 | 59/60 | winner |
+| 2 | 025000 | 0.9833 | 0.311054 | 59/60 | level 2 |
+| 3 | 015000 | 0.9833 | 0.324043 | 59/60 | level 2 |
+| 4 | 020000 | 0.9667 | 0.310969 | 58/60 | level 1 |
+| 5 | 010000 | 0.9500 | 0.335584 | 57/60 | level 1 |
+| 6 | 005000 | 0.8833 | 0.389176 | 53/60 | level 1 |
+
+三个 checkpoint 在主判据上并列，由第二判据分出 `030000`。macro 成功率粒度只有 1/60，
+并列是常态，所以开环判据在 C 家族会真正生效。**0.9833 不是无偏成绩**——同一批 60 个 case
+被六个 checkpoint 各看过一遍。
+
+### 目标协议 test（Formal / Closed-loop / Test）
+
+与 Z0（selected B0 原样零样本）在同一份冻结协议上各跑 210 条：
+
+| 协议 | Z0（B0 零样本） | C1（目标适配） |
+|---|---:|---:|
+| canonical | 0/90 = **0.0%** | 87/90 = **96.7%** |
+| held-out paraphrase | 2/90 = 2.2% | 30/90 = 33.3% |
+| prompt compliance | 0/30 = 0.0% | 18/30 = 60.0% |
+
+逐任务 canonical：C1 为 29/30、29/30、29/30；Z0 三任务全 0/30，90 条全部 `time_limit`。
+
+模型查询延迟 p50 / p95：Z0 310.1 / 471.3 ms，C1 285.3 / 443.2 ms。动作平滑度 C1 明显更好
+（action TV 0.0268 对 0.0483，jerk 0.0285 对 0.0706，平均 gripper 切换 3.76 对 18.62）。
+
+三点读数纪律：
+
+- **113 条示范就足以学会这三个任务，而 B0 完全不会做。** Z0 canonical 0/90 说明本设置下
+  SmolVLA 没有跨任务零样本迁移能力，任务适配是必需的。
+- **C1 学到的是指令与动作的固定绑定，不是语言理解。** canonical 96.7% 掉到改写句 33.3%，
+  `para_gap` 点估计 +0.6333、bootstrap 95% CI `[0.5222, 0.7333]`，不含 0。这正是 C3 要针对的
+  问题，本次为它提供了基线。
+- **prompt compliance 60% 不能读成"六成听懂"。** 混淆矩阵是 cabinet 10/10、plate 8/10、
+  stove 0/10，且 stove 的 10 条失败没有一条跑向其他目标——是做不到，不是听错。60% 是
+  "两个目标能听、一个目标不可达"的合成值。
+
+最后，test 的 30 个初始状态与训练摆放同属约 3 cm 范围的同一分布，所以 96.7% 衡量的是同任务、
+未被使用过的摆放，不是远距离泛化。
+
+### 背景任务回退（Formal / Closed-loop / Test）
+
+**目标任务的 96.7% 是以全部背景能力为代价换来的。** 用同一份背景 test 协议
+（7 个 libero_goal 背景任务 × 30 个 test 初始状态 = 210 条）评测 C1 的 selected `030000`：
+
+| task | 指令 | B0（记录） | C1（实测） | 差 |
+|---:|---|---:|---:|---:|
+| 0 | open the middle drawer of the cabinet | 30/30 | **0/30** | −30 |
+| 2 | put the wine bottle on top of the cabinet | 27/30 | **0/30** | −27 |
+| 3 | open the top drawer and put the bowl inside | 15/30 | **0/30** | −15 |
+| 5 | push the plate to the front of the stove | 27/30 | **0/30** | −27 |
+| 6 | put the cream cheese in the bowl | 26/30 | **0/30** | −26 |
+| 7 | turn on the stove | 30/30 | **0/30** | −30 |
+| 9 | put the wine bottle on the rack | 28/30 | **0/30** | −28 |
+| **合计** | | **183/210** | **0/210** | **−183** |
+
+210 条全部 `time_limit`，每条跑满 300 步，七个任务无一例外。这是彻底的灾难性遗忘，不是
+"泛化变差"。冻结边界（`freeze_vision_encoder=True` + `train_expert_only=True`）**没有**拦住
+它——action expert 正是决定动作的部分。
+
+两点必须一起读：
+
+- **在目标任务上 C1 并没有过拟合。** 选模曲线从 step 15000 起持平 0.9833、开环误差单调下降到
+  30000、validation 0.9833 与 test 0.9667 只差 1.7 个点。问题不在目标任务侧。
+- **B0 的 183/210 是文档记录值，不是本次实测。** 原始产物已丢失且未重跑，因此没有逐 episode
+  配对，无法做 McNemar。不过在 0 对 183 的量级下这不影响结论。
+
+诊断中发现两处配置不对称：`FORMAL_LEARNING_RATE = 1e-4` 定义在 `b0_training.py` 并被 C1 直接
+导入，但 B0 的 global batch 是 64、C1 是 8，LR 没有随之缩放；同时目标任务在 step 15000 就
+饱和，后 15000 步对目标任务毫无贡献却继续漂离背景能力。这两条由
+[C1 遗忘权衡曲线诊断](../../../plans/2026-08-05-C1遗忘权衡曲线诊断.md) 定量回答。
+
+### TODO：尚未尝试的缓解方向
+
+以下两项**均未执行**，不构成任何结论，仅记录为后续设计选项。它们比早停与降 LR 更根本，但
+成本也更高。
+
+**TODO-1：背景数据回放。** 把 B0 的背景 demonstration 按一定比例混进 C1 训练，让损失函数里
+真正存在保留旧行为的项。这是唯一能约束漂移方向而非仅降低漂移速度的做法——只降 LR 的话，
+背景能力仍会随步数流失，只是慢一些。代价：新增「目标 : 背景」采样比例这个超参，背景侧有
+236,470 帧（目标侧只有 11,022 帧），比例怎么定需要单独扫；且混入后目标任务的收敛速度与
+饱和点都会变，选模协议要重新校准。做之前需要先有权衡曲线，否则不知道该往哪个方向调。
+
+**~~TODO-2：改用 LoRA（即 C2/C3）~~ → 已验证，结果为负。** C2（Canonical LoRA，rank 32）已完成
+训练、选模与两类正式评测，结论是 **LoRA 没有防住灾难性遗忘**：
+
+| | 目标 canonical | held-out paraphrase | 背景任务 |
+|---|---:|---:|---:|
+| B0（记录） | 0/90 | 2/90 | 183/210 |
+| C1（Non-PEFT） | 87/90 = 96.7% | 30/90 = 33.3% | **0/210** |
+| C2（LoRA rank 32） | 87/90 = 96.7% | 19/90 = 21.1% | **8/210 = 3.8%** |
+
+目标任务完全打平（都 87/90），背景任务只从 0/210 回到 8/210——相对 B0 的保留率 4.4%，七个背景
+任务中四个仍为 0/30。语言泛化还更差（21.1% 对 33.3%，`para_gap` 的 bootstrap 95% CI
+`[0.667, 0.844]` 与 C1 的 `[0.522, 0.733]` 不重叠）。推理成本也更高（查询 p50 376.8 ms 对
+285.3 ms，jerk 0.0588 对 0.0285）。
+
+C1 与 C2 的数据、LR、步数、batch、seed 完全相同，唯一差别是参数化方式。在这个对照下遗忘程度
+几乎不变，说明**根因不是"训练了多少参数"，而是训练数据里没有背景任务**——损失函数里不存在
+保留旧行为的项。换参数化方式改不了这一点。详见
+[C2 Canonical LoRA 正式评测结论](../../2026-08-05-C2%20Canonical%20LoRA%20正式评测结论.md)。
+
+因此可行方向收窄为两条：改数据（TODO-1 回放）或缩短优化路径（早停、降 LR，见
+[C1 遗忘权衡曲线诊断](../../../plans/2026-08-05-C1遗忘权衡曲线诊断.md)）。C3 仍需跑同一份背景
+test，但先验上不应期待它比 C2 好——它与 C2 的差别只在训练指令，不在参数化。
 
 ## 结果落点
 

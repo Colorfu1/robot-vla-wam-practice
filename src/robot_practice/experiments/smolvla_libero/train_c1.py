@@ -73,8 +73,7 @@ def _validate_accelerator(
 
     if accelerator.num_processes != expected_processes:
         raise RuntimeError(
-            f"Expected {expected_processes} Accelerate processes, "
-            f"found {accelerator.num_processes}"
+            f"Expected {expected_processes} Accelerate processes, found {accelerator.num_processes}"
         )
     if accelerator.mixed_precision != expected_mixed_precision:
         raise RuntimeError(
@@ -107,7 +106,9 @@ def _validate_offline_c1_policy_load(
         strict=True,
     )
     total = sum(parameter.numel() for parameter in policy.parameters())
-    trainable = sum(parameter.numel() for parameter in policy.parameters() if parameter.requires_grad)
+    trainable = sum(
+        parameter.numel() for parameter in policy.parameters() if parameter.requires_grad
+    )
     del policy
     return total, trainable
 
@@ -129,8 +130,7 @@ def _fresh_training(
             learning_rate=arguments.learning_rate,
         )
         print(
-            "Offline selected-B0 preflight passed "
-            f"(trainable={trainable:,}, total={total:,})",
+            f"Offline selected-B0 preflight passed (trainable={trainable:,}, total={total:,})",
             flush=True,
         )
     accelerator.wait_for_everyone()
@@ -275,6 +275,7 @@ def run_training(arguments: C1FreshArguments | C1ResumeArguments) -> None:
             initial_step=initial_step,
             run_config=run_config,
             resume=resume,
+            overwrite=(arguments.overwrite if isinstance(arguments, C1FreshArguments) else False),
             enabled=accelerator.is_main_process,
         ) as sink:
             try:

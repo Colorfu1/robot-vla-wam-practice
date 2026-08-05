@@ -22,6 +22,24 @@ launcher 在分配训练显存前严格加载 selected B0 并实际包裹 LoRA�
 - [数据准备](01_data_preparation.md) 已冻结 split 与 provenance
 - B0 checkpoint selection 已生成自包含的 `selected/pretrained_model`
 
+## 本实验用到的数据
+
+三个目标任务是 `libero_goal` 本地编号 1 / 4 / 8，被完整排除在 B0 训练之外。
+
+- 训练：113 条 demonstration / 11,022 帧（38 + 36 + 39），离线 validation 不进训练。
+- 选模主判据（`Validation`）：每任务 20 个初始状态 = 60 个 case，六个 checkpoint 各跑一遍，
+  `6 × 3 × 20 = 360` 条闭环 rollout。
+- 选模第二判据：30 条离线 validation demonstration / 2,969 帧上的开环动作误差。
+- 最终成绩（`Test`）：只跑冻结的 winner，用每任务 30 个此前保留的初始状态。目标协议评测由
+  三套协议组成，共 21 个 job / 210 条 rollout：canonical `3 × 30 = 90`；held-out paraphrase
+  每任务 5 条改写句、按状态序号模 5 各分 6 个状态，`3 × 5 × 6 = 90`；prompt swap 3 个目标
+  各 10 个参考状态，`3 × 10 = 30`。
+- 指令：只用 canonical；8 条 train paraphrases 与 5 条 held-out paraphrases 都不参与 C2。
+
+test 初始状态与 held-out paraphrases 都不得进入选模。held-out 只针对初始状态——这 3 个任务
+正是本实验训练的任务，且摆放随机化范围约 3 cm，所以 test 测的是同任务同分布、未被使用过的
+摆放。完整清单见[实验族总览](README.md#结果类别标签与数据分工)。
+
 ## 配置边界
 
 ```text
@@ -70,7 +88,8 @@ bash scripts/experiments/smolvla_libero/train_c2.sh
 - `datasets/lerobot/lerobot/libero`
 - `configs/experiments/smolvla_libero/target_split.json`
 - rank-32 canonical LoRA
-- 8 个 Accelerate processes、每卡 batch 1、全局 batch 8
+- 默认 8 个 Accelerate processes、每卡 batch 1、全局 batch 8（合法布局：
+  8×1、4×2、2×4、1×8）
 - 30,000 steps、每 5,000 steps 保存、BF16、seed 1000、LR `1e-4`
 - 全离线 Hugging Face/Transformers/Datasets 模式
 
@@ -89,12 +108,21 @@ bash scripts/experiments/smolvla_libero/train_c2.sh --print-command
 
 - 无参数正式入口是单机 8 卡：Accelerate 使用 8 个 process、`--gpu_ids=all` 和
   `--multi_gpu`，每张卡对应一个训练进程。
-- C2 正式协议冻结为 world size 8、每卡 batch 1、全局 batch 8；少于 8 卡不能继续标记为
-  同一份正式 C2 结果。
-- Smoke/debug 可通过 `--num-processes=N` 使用单卡或多卡；`CUDA_VISIBLE_DEVICES` 暴露的
-  GPU 数必须不少于 `N`。
-- 续训从原始 `run_config.json` 恢复 world size 和 BF16，必须提供与原 run 相同数量的 GPU，
-  不能在 resume 时改变卡数。
+- C2 正式协议冻结的是**全局 batch 8**（同时冻结 30,000 steps、每 5,000 保存、
+  LR `1e-4`、seed 1000、BF16、LoRA rank 32）。卡数可配置为 8×1、4×2、2×4、1×8 任一
+  合法布局；`--num-processes=N` 必须满足 `N × --batch-size = 8`，且不能超过可见 GPU 数。
+- 不同卡数的 run **协议等价但不是逐位复现**：sampler 分片与数据顺序随 world size
+  改变。报告必须写明 `data_parallel_layout`（如 `4x2`）。
+- **C1/C2/C3 三方对照必须使用同一个 `data_parallel_layout`**：全局 batch 相同的不同布局
+  数据顺序不同，混用布局会把布局差异算进模型差异里。
+- 少于 8 卡时每卡 batch 上升（1 卡需 batch 8），LoRA 仍需前向整个冻结主干并保存部分
+  activation，显存不一定比 C1 低；OOM 时按 `N_A.json` 契约记录，不缩小模型、不降全局
+  batch。
+- `--num-processes` 超过可见 GPU 数会立即失败并提示用 `CUDA_VISIBLE_DEVICES` 选卡
+  （launcher 固定 `--gpu_ids=all`）。
+- 续训从原始 `run_config.json` 恢复 world size、每卡 batch 与 BF16，必须提供与原 run
+  相同数量的 GPU（`world_size × per_gpu_batch_size` 仍必须等于 8），不能在 resume 时
+  改变卡数。
 - 当前 launcher 支持单机多卡，不包含跨节点 rendezvous 配置。
 
 单卡两步 Smoke：
@@ -128,8 +156,8 @@ bash scripts/experiments/smolvla_libero/train_c2.sh \
 adapter；adapter 以 `is_trainable=true` 加载，并跳过 LeRobot 默认的第二次 PEFT 包裹。
 只允许从该 run 的最新完整 checkpoint 恢复。
 
-VS Code 可选择 `SmolVLA LIBERO C2: train (1-step offline LoRA debug)` 做单卡单步调试；每次
-必须填写新的 output directory。
+VS Code 可选择 `SmolVLA LIBERO C2: train (1-step offline LoRA debug)` 做单卡单步调试；
+它使用固定 output 目录并带 `--overwrite`，每次重跑直接覆盖上一次 debug 结果。
 
 ## Checkpoint Selection
 
@@ -142,7 +170,25 @@ VS Code 可选择 `SmolVLA LIBERO C2: train (1-step offline LoRA debug)` 做单�
 Open-loop error 使用相同 frame、固定 flow-noise seed 和相同 action horizon；先按任务求
 均值，再计算 macro average。不得使用 test split 或 held-out paraphrases 选择 checkpoint。
 
-以下 selection 入口仍属于 `Planned / CLI 未实现 / 当前不可运行`：
+该入口已实现（`scripts/experiments/smolvla_libero/select_checkpoint.sh`），判据与固定条件：
+
+1. 三任务 macro canonical closed-loop SR（高优先）；
+2. 平局时比较 macro **normalized** offline action error（低优先；denormalized 同时记录，
+   只作参考）；
+3. 仍平局时选择更早 checkpoint。
+
+Open-loop error 使用相同 frame（30 条 offline validation demonstration 的全部
+2,969 帧）、固定 flow-noise seed（按 task/episode/frame 派生，跨 checkpoint 相同）和
+相同 action horizon（chunk 50、取前 10 步）；先按任务求均值，再 macro average。闭环
+规模为 `6 × 3 × 20 = 360` 条 rollout；`ranking_audit` 在
+`checkpoint_selection/ranking_audit.json`。不得使用 test split 或 held-out paraphrases。
+
+开环误差按 checkpoint 并行评测：每个 checkpoint 分派到一张 GPU（并行度 =
+`min(num_gpus, checkpoint 数)`），6 卡下预计约 12 分钟（单卡串行约 69 分钟）。子进程日志
+在 `checkpoint_selection/logs/open_loop_checkpoint_<step>.log`（首行为完整命令），中间结果
+在 `checkpoint_selection/jobs/open_loop/checkpoint_<step>.json`；`--resume` 会复用
+`checkpoint_id` / `split_sha256` / `max_frames_per_task` 一致的已完成结果。并行调度不改
+抽帧、噪声派生与误差公式，数值与串行逐值相同。
 
 ```bash
 bash scripts/experiments/smolvla_libero/select_checkpoint.sh \
@@ -158,6 +204,83 @@ bash scripts/experiments/smolvla_libero/select_checkpoint.sh \
 ```
 
 `selected-dir` 必须保存自包含的 checkpoint 副本，不能只创建软链接。
+
+## 已完成的正式结果
+
+训练、选模、目标协议评测与背景回退评测都已跑完。完整对比与结论边界见
+[C2 Canonical LoRA 正式评测结论](../../2026-08-05-C2%20Canonical%20LoRA%20正式评测结论.md)。
+
+### 训练（Formal / Offline）
+
+一次 attempt 完成 30,000 updates，`data_parallel_layout=8x1`，8 个 rank 状态均为 `complete`。
+LoRA rank 32 / alpha 8 / dropout 0，target 覆盖 `lm_expert` 的 q/v 投影与 `state_proj`、
+`action_in_proj`、`action_out_proj`、`action_time_mlp_{in,out}`。loss 首步 0.1568、末 1,000 步
+均值 **0.06798**（C1 同项 0.01739），grad norm 峰值 **0.64**（C1 为 9.42）——低秩增量的梯度
+规模小一个量级，拟合也更浅。
+
+### Checkpoint selection（Formal / Closed-loop / Validation）
+
+| Rank | Step | Macro SR | Offline norm MSE | Successes | 生效判据 |
+|---:|---:|---:|---:|---:|---|
+| 1 | **020000** | **0.9667** | 0.371719 | 58/60 | winner |
+| 2 | 025000 | 0.9667 | 0.376928 | 58/60 | level 2 |
+| 3 | 005000 | 0.9667 | 0.402103 | 58/60 | level 2 |
+| 4 | 030000 | 0.9500 | 0.374399 | 57/60 | level 1 |
+| 5 | 015000 | 0.9333 | 0.375955 | 56/60 | level 1 |
+| 6 | 010000 | 0.9333 | 0.385587 | 56/60 | level 2 |
+
+三个 checkpoint 在主判据上并列 0.9667，由第二判据分出 `020000`。两点与 C1 不同：C2 的最优 step
+是 **20000 而非终点**（030000 反而掉到 0.9500），且 **005000 就已达 0.9667**（C1 同期 0.8833），
+LoRA 收敛更快。
+
+### 目标协议 test（Formal / Closed-loop / Test）
+
+| 协议 | Z0（B0 零样本） | C1（Non-PEFT） | C2（LoRA） |
+|---|---:|---:|---:|
+| canonical | 0/90 = 0.0% | 87/90 = 96.7% | 87/90 = **96.7%** |
+| held-out paraphrase | 2/90 = 2.2% | 30/90 = 33.3% | 19/90 = **21.1%** |
+| prompt compliance | 0/30 = 0.0% | 18/30 = 60.0% | 18/30 = **60.0%** |
+
+canonical 与 C1 完全打平（逐任务 C2 为 29/30、30/30、28/30）。Prompt Swap 的混淆矩阵与 C1
+**逐格相同**（cabinet 10/10、plate 8/10、stove 0/10），说明 stove 不可达与训练方案无关。
+
+**语言泛化差于 C1**：`para_gap` 点估计 +0.7556，bootstrap 95% CI `[0.6667, 0.8444]`，与 C1 的
+`[0.5222, 0.7333]` 不重叠。C1 与 C2 的训练指令相同（都只用 canonical），所以这不是数据差异，
+而是低秩参数化在单一指令上更容易贴死字面形式。
+
+### 背景任务回退（Formal / Closed-loop / Test）
+
+| task | 指令 | B0（记录） | C1 | C2 |
+|---:|---|---:|---:|---:|
+| 0 | open the middle drawer of the cabinet | 30/30 | 0/30 | **3/30** |
+| 2 | put the wine bottle on top of the cabinet | 27/30 | 0/30 | 0/30 |
+| 3 | open the top drawer and put the bowl inside | 15/30 | 0/30 | 0/30 |
+| 5 | push the plate to the front of the stove | 27/30 | 0/30 | **1/30** |
+| 6 | put the cream cheese in the bowl | 26/30 | 0/30 | **2/30** |
+| 7 | turn on the stove | 30/30 | 0/30 | **2/30** |
+| 9 | put the wine bottle on the rack | 28/30 | 0/30 | 0/30 |
+| **合计** | | **183/210** | **0/210** | **8/210 = 3.8%** |
+
+**LoRA 没有防住灾难性遗忘。** 相对 B0 的保留率只有 4.4%，七个任务中四个仍为零，成绩最好的
+task 0 从 30/30 掉到 3/30。C1 与 C2 的数据、LR、步数、batch、seed 完全相同，唯一差别是参数化
+方式；在这个对照下遗忘程度几乎不变，说明根因是**训练数据里没有背景任务**，不是"训练了多少
+参数"。
+
+B0 的 183/210 是文档记录值（原始产物已丢失、未重跑），因此只能做非配对比较，无法给出配对
+显著性。
+
+### 推理成本高于 C1
+
+| 指标 | C1 | C2 |
+|---|---:|---:|
+| 模型查询延迟 p50 | 285.3 ms | 376.8 ms |
+| 模型查询延迟 p95 | 443.2 ms | 541.4 ms |
+| action TV | 0.0268 | 0.0436 |
+| action jerk | 0.0285 | 0.0588 |
+| 平均 gripper 切换 | 3.76 | 10.52 |
+
+两者 canonical 成功率相同，但 C2 的成功路径更抖。**LoRA 的成本优势在 trainable parameters、
+optimizer state 与 adapter checkpoint 体积上，不在推理端。**
 
 ## 结果落点
 

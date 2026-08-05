@@ -301,6 +301,7 @@ def run_training(arguments: C3FreshArguments | C3ResumeArguments) -> None:
             initial_step=initial_step,
             run_config=run_config,
             resume=resume,
+            overwrite=(arguments.overwrite if isinstance(arguments, C3FreshArguments) else False),
             enabled=accelerator.is_main_process,
         ) as sink:
             try:
@@ -352,8 +353,12 @@ def run_training(arguments: C3FreshArguments | C3ResumeArguments) -> None:
                     _upstream_resume_argv(resume_config_path),
                 ):
                     lerobot_train.train(config, accelerator=accelerator)
+                # LeRobot's train() already synchronized all ranks and called
+                # accelerator.end_training(), which destroys the default process
+                # group. Each rank's final instruction snapshot was written during
+                # the last successful update (complete_step), so the main process
+                # can aggregate the on-disk snapshots without another barrier.
                 tracker.ensure_complete()
-                accelerator.wait_for_everyone()
                 if accelerator.is_main_process:
                     aggregate_instruction_counts(
                         run_dir=output_dir,
@@ -364,7 +369,6 @@ def run_training(arguments: C3FreshArguments | C3ResumeArguments) -> None:
                         world_size=accelerator.num_processes,
                         batch_size=config.batch_size,
                     )
-                accelerator.wait_for_everyone()
             except BaseException as error:
                 if sink is not None:
                     sink.write(

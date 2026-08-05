@@ -27,6 +27,11 @@
 #   --init-state-ids accepts an explicit comma-separated official-state list
 #   whose length equals --n-episodes. --policy-seed resets the policy RNG before
 #   every rollout so stochastic policy comparisons remain paired.
+#   --episode-seeds optionally freezes the simulator seed paired with each state.
+#   --instruction overrides the task text supplied to SmolVLA. The unified
+#   target protocol launcher additionally uses --goal-classifier and
+#   --expected-goal for simulator-grounded Prompt Swap scoring; direct users
+#   should prefer eval_target_protocols.sh for that formal protocol.
 #   --libero-assets-dir forces a validated offline asset tree and disables the
 #   unreliable runtime download fallback.
 

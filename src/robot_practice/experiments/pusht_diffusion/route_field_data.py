@@ -112,6 +112,85 @@ def route_to_field(
     return field
 
 
+def _simple_route(route: Sequence[int], *, minimum: int, purpose: str) -> tuple[int, ...]:
+    cells = tuple(int(cell) for cell in route)
+    if len(cells) < minimum:
+        raise ValueError(f"{purpose} requires at least {minimum} cells, got {len(cells)}")
+    if len(cells) != len(set(cells)):
+        raise ValueError(f"{purpose} requires a simple route without repeated cells: {cells}")
+    return cells
+
+
+def reverse_macro_route(route: Sequence[int]) -> tuple[int, ...]:
+    """Reverse a macro route.
+
+    Occupancy is preserved exactly, while ``progress`` is mirrored and the
+    per-cell direction vectors are recomputed against the opposite traversal
+    order. A reversed route is therefore an occupancy-matched probe that
+    isolates the ordering and direction channels of the RF7 encoding.
+    """
+
+    return tuple(reversed(_simple_route(route, minimum=2, purpose="Route reversal")))
+
+
+def permute_macro_route_middle(route: Sequence[int]) -> tuple[int, ...]:
+    """Reverse only the interior cells, keeping the first and last cell fixed.
+
+    Unlike :func:`reverse_macro_route` this keeps the commanded start next to
+    the actual initial T position and the commanded end at the goal region, so
+    the probe stays physically plausible while still changing the visiting
+    order over an identical occupancy support.
+    """
+
+    cells = _simple_route(route, minimum=4, purpose="Middle permutation")
+    return (cells[0], *reversed(cells[1:-1]), cells[-1])
+
+
+def cell_center(
+    cell: int,
+    *,
+    grid_size: int = ROUTE_FIELD_GRID_SIZE,
+    workspace_size: float = PUSHT_WORKSPACE_SIZE,
+) -> tuple[float, float]:
+    """Return the PushT world-space center of one row-major grid cell."""
+
+    if grid_size <= 1 or workspace_size <= 0:
+        raise ValueError("grid_size must exceed one and workspace_size must be positive")
+    if not 0 <= int(cell) < grid_size * grid_size:
+        raise ValueError(f"Cell {cell!r} is out of range for a {grid_size}x{grid_size} grid")
+    cell_size = workspace_size / grid_size
+    row, column = divmod(int(cell), grid_size)
+    return ((column + 0.5) * cell_size, (row + 0.5) * cell_size)
+
+
+def route_segment_direction(
+    route: Sequence[int],
+    *,
+    index: int = 0,
+    grid_size: int = ROUTE_FIELD_GRID_SIZE,
+    workspace_size: float = PUSHT_WORKSPACE_SIZE,
+) -> tuple[float, float] | None:
+    """Return the unit world-space direction of one route segment.
+
+    ``None`` means the route is too short to define the requested segment, in
+    which case no directional readout is available.
+    """
+
+    cells = tuple(int(cell) for cell in route)
+    if index < 0:
+        raise ValueError("index must not be negative")
+    if len(cells) < index + 2:
+        return None
+    start = cell_center(cells[index], grid_size=grid_size, workspace_size=workspace_size)
+    end = cell_center(cells[index + 1], grid_size=grid_size, workspace_size=workspace_size)
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    norm = math.hypot(dx, dy)
+    if norm == 0.0:
+        return None
+    return (dx / norm, dy / norm)
+
+
 def simplify_macro_route(route: Sequence[int]) -> tuple[tuple[int, ...], int, int]:
     """Remove immediate backtracks, then erase only residual closed loops."""
 

@@ -155,13 +155,9 @@ def test_background_split_excludes_targets_and_is_deterministic() -> None:
     for task in first["tasks"].values():
         assert len(task["train_episode_indices"]) == 9
         assert len(task["validation_episode_indices"]) == 1
-        assert not set(task["train_episode_indices"]) & set(
-            task["validation_episode_indices"]
-        )
+        assert not set(task["train_episode_indices"]) & set(task["validation_episode_indices"])
         assert task["train_episode_indices"] == sorted(task["train_episode_indices"])
-        assert task["validation_episode_indices"] == sorted(
-            task["validation_episode_indices"]
-        )
+        assert task["validation_episode_indices"] == sorted(task["validation_episode_indices"])
 
     task_zero_ids = list(range(10))
     expected = np.random.Generator(
@@ -194,32 +190,24 @@ def test_target_split_separates_demo_and_closed_loop_namespaces() -> None:
     )
 
     train_records = split["demonstration_split"]["train_demonstrations"]
-    offline_validation_records = split["demonstration_split"][
-        "offline_validation_demonstrations"
-    ]
+    offline_validation_records = split["demonstration_split"]["offline_validation_demonstrations"]
     train_episodes = {record["episode_index"] for record in train_records}
-    offline_validation_episodes = {
-        record["episode_index"] for record in offline_validation_records
-    }
+    offline_validation_episodes = {record["episode_index"] for record in offline_validation_records}
     assert len(train_records) == 38
     assert len(offline_validation_records) == 10
     assert not train_episodes & offline_validation_episodes
     assert train_episodes | offline_validation_episodes == set(range(48))
     assert [record["episode_index"] for record in train_records] == sorted(train_episodes)
-    assert [
-        record["episode_index"] for record in offline_validation_records
-    ] == sorted(offline_validation_episodes)
+    assert [record["episode_index"] for record in offline_validation_records] == sorted(
+        offline_validation_episodes
+    )
 
     expected_demo_order = np.random.Generator(
         np.random.PCG64(np.random.SeedSequence([1000, 1, 1]))
     ).permutation(np.arange(48))
-    assert offline_validation_episodes == {
-        int(value) for value in expected_demo_order[:10]
-    }
+    assert offline_validation_episodes == {int(value) for value in expected_demo_order[:10]}
 
-    closed_loop_validation = set(
-        split["closed_loop_split"]["validation_init_state_ids"]
-    )
+    closed_loop_validation = set(split["closed_loop_split"]["validation_init_state_ids"])
     closed_loop_test = set(split["closed_loop_split"]["test_init_state_ids"])
     assert len(closed_loop_validation) == 20
     assert len(closed_loop_test) == 30
@@ -228,9 +216,7 @@ def test_target_split_separates_demo_and_closed_loop_namespaces() -> None:
     expected_state_order = np.random.Generator(
         np.random.PCG64(np.random.SeedSequence([1000, 2, 1]))
     ).permutation(np.arange(50))
-    assert closed_loop_validation == {
-        int(value) for value in expected_state_order[:20]
-    }
+    assert closed_loop_validation == {int(value) for value in expected_state_order[:20]}
 
 
 def test_target_split_rejects_too_few_mapped_demonstrations() -> None:
@@ -249,9 +235,8 @@ def test_target_split_rejects_too_few_mapped_demonstrations() -> None:
 def test_target_split_rejects_duplicate_episode_or_raw_demo_identity() -> None:
     with pytest.raises(ValueError, match="duplicate episode_index"):
         build_target_task_split(
-            [_mapping(1), _mapping(1, raw_demo="demo_other")] + [
-                _mapping(episode) for episode in range(2, 12)
-            ],
+            [_mapping(1), _mapping(1, raw_demo="demo_other")]
+            + [_mapping(episode) for episode in range(2, 12)],
             task_id=1,
             seed=1000,
             official_state_count=50,
@@ -262,7 +247,10 @@ def test_target_split_rejects_duplicate_episode_or_raw_demo_identity() -> None:
 
     with pytest.raises(ValueError, match="duplicate raw_demo"):
         build_target_task_split(
-            [_mapping(episode, raw_demo="demo_shared" if episode < 2 else None) for episode in range(12)],
+            [
+                _mapping(episode, raw_demo="demo_shared" if episode < 2 else None)
+                for episode in range(12)
+            ],
             task_id=1,
             seed=1000,
             official_state_count=50,

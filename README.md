@@ -220,6 +220,9 @@ eval/
   rollout.py
   metrics.py
   perturbations.py
+plans/
+  README.md
+  TEMPLATE.md
 reports/
   README.md
   experiment_log.md
@@ -231,6 +234,8 @@ reports/
 ```
 
 Keep reusable local Python helpers under `src/robot_practice/`.
+Work that still needs to be executed goes in `plans/`; see
+[`plans/README.md`](plans/README.md).
 
 ## Benchmark Roles
 

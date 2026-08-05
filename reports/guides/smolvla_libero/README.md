@@ -2,16 +2,15 @@
 
 ## 当前状态
 
-- 状态：`Phase 1 数据准备已完成`
+- 状态：`B0 已完成；C1/C2/C3 训练与统一正式评测待运行`
 - 环境：LIBERO、SmolVLA、PEFT 和 RTX 3090/BF16 基础能力已具备。
 - 已完成：两步 LoRA 训练 Smoke；Hub、本地普通 checkpoint 和本地 PEFT checkpoint
   共用的单任务闭环评测/Rerun 入口；公共 SmolVLA-LIBERO 完整 episode Smoke。
 - 已完成：完整 LIBERO-Goal source freeze、B0 background split、目标 action provenance、
   Train/Offline Validation demonstration split、20/30 closed-loop Validation/Test split、
   paraphrase 审核和正式 target split 发布。
-- 已完成：B0 37任务 domain adaptation 训练入口、8卡 BF16 启动、逐 step 指标和
-  checkpoint resume；本地真实数据两步 Smoke 及 step 2→3 中断续训均已通过，正式训练
-  尚未启动。
+- 已完成：B0 37任务 domain adaptation 正式训练、严格 checkpoint selection、冻结
+  `025000` 和 background held-out closed-loop test。
 - 已完成：C1 Default Non-PEFT 的目标 Train 白名单、task/episode-balanced sampler、
   selected-B0 provenance 校验、8卡 BF16 训练/续训入口和单步 VS Code debug 配置；正式训练
   尚未启动。
@@ -20,9 +19,40 @@
 - 已完成：C3 LoRA + Paraphrase 的 split-bound 25/75 instruction selector、逐 rank
   checkpoint 计数、adapter 续训入口、8卡 launcher 和单步 VS Code debug 配置；正式训练
   尚未启动。
-- 未完成：C1/C2/C3 正式训练和多协议正式评测。
+- 已完成：B0/C1/C2/C3 共用的 21-job / 210-rollout target protocol evaluator，覆盖
+  Canonical、Held-out Paraphrase、Prompt Swap、多 GPU、断点续跑和冻结协议校验；真实
+  Prompt Swap 1-step Smoke 已通过。
+- 未完成：B0 target baseline 正式运行、C1/C2/C3 正式训练、选模和多协议正式评测。
 - 启动前动作：在训练环境确认 selected B0、其 provenance 和 8 张可见 GPU 均已就位，再运行
   对应的一键 launcher。
+
+## 结果类别标签与数据分工
+
+报告里的标签是三个维度拼起来的：`Offline`/`Closed-loop` 说评测方式，`Smoke`/`Formal` 说
+完整程度，`Validation`/`Test` 说用的是允许反复看的选模集还是只看一次的最终集。第三段不在
+`reports/AGENTS.md` 的四个基础标签里，是本族的扩展；缺了它读者无法判断一个数字是否被选模
+过程看过。
+
+数据分三条互不相干的轴，跨轴不能求交集：
+
+| 轴 | 是什么 | B0（背景 37 任务） | C 家族 + Z0（目标 3 任务） |
+| --- | --- | --- | --- |
+| 数据侧 demonstration | 录好的轨迹，逐帧含观测与动作。用于训练与开环动作误差 | 训练 1,412 条 / 236,470 帧；离线 validation 138 条 / 23,004 帧（**无入口使用**） | 训练 113 条 / 11,022 帧；离线 validation 30 条 / 2,969 帧（选模第二判据） |
+| 仿真侧 init state | LIBERO 每任务 50 个摆法的**编号**，不是数据。闭环按编号摆好物体让模型自己跑，不需要参考轨迹 | 7 任务 × 20 validation，六个 checkpoint 各跑一遍 = `6 × 7 × 20 = 840` 条；test 只跑冻结 winner = `7 × 30 = 210` 条 | 3 任务 × 20 validation，六个 checkpoint = `6 × 3 × 20 = 360` 条；test 由三套协议组成，合计 210 条（见下） |
+| 语言侧 instruction | 指令文本 | 只用 canonical | 每任务 1 canonical + 8 train paraphrases（仅 C3 训练用）+ 5 held-out paraphrases（仅评测用） |
+
+四条硬约束：
+
+- 离线 validation 不进训练，train 与 validation episode 有交集会直接报错。
+- 每任务的 validation 与 test 初始状态互不重叠，合并恰好覆盖官方 `0..49`。
+- test 初始状态与 held-out paraphrases 都不得进入任何选模过程。
+- held-out 只针对**初始状态**，不针对任务：闭环评测的任务都在自己的训练任务内。跨任务迁移
+  由目标三任务的 Z0 baseline 回答。
+
+关于"未见过"的实测边界：官方 50 个初始状态与 demonstration 的起始状态是同一摆放分布下的
+两批独立抽样（三个任务实测均无精确匹配），所以不存在字面意义的状态泄漏；但物体摆放跨度只有
+约 3 cm，每个 eval 初始状态到最近训练起点约 2 cm。因此 test 衡量的是同分布、未被使用过的
+摆放，不是远距离泛化。
 
 ## 实验目标
 
@@ -39,7 +69,7 @@
 | --- | --- | --- | --- |
 | C0 | 公共 checkpoint | 不训练 | 闭环接口与可视化 Smoke |
 | B0 | 37 个非目标任务 | Default Non-PEFT | LIBERO 域适配 |
-| Z0 | 目标 Validation states | 不训练 | B0 的任务迁移基线 |
+| Z0 | B0 在冻结目标 Test states 上执行 | 不训练 | B0 的任务迁移 baseline 结果 |
 | C1 | 目标 Train split | Default Non-PEFT | 普通适配对照 |
 | C2 | 目标 Train split | LoRA，canonical | 参数高效适配 |
 | C3 | 目标 Train split | LoRA + paraphrase | 语言增强 |
@@ -95,7 +125,7 @@ C1 保留 SmolVLA 默认的 `train_expert_only=true` 和
   → B0/Target splits 与 paraphrase 审计
   → B0 37任务 domain adaptation
   → background validation checkpoint selection
-  → Z0 目标任务迁移基线
+  → 冻结 B0 target baseline workload（正式 Test 与 C1/C2/C3 一起发布结果）
   → C1 / C2 / C3 从同一 B0 checkpoint 训练
   → 各自 validation checkpoint selection
   → Canonical / Held-out Paraphrase / Prompt Swap Pilot
@@ -104,9 +134,8 @@ C1 保留 SmolVLA 默认的 `train_expert_only=true` 和
 
 `lerobot/smolvla_base` 只初始化 B0；C1/C2/C3 不得绕过 B0 或使用不同 B0 checkpoint。
 它自身的 state/action processor 与 LIBERO 不匹配，因此不作为闭环 C0。Phase 0/1
-未通过时，不得启动正式训练。尚不存在的 checkpoint selection 和正式评测脚本均在
-对应 guide 中标为
-`Planned / CLI 未实现 / 当前不可运行`。
+未通过时，不得启动正式训练。统一正式评测入口已经实现；尚未产生的 C1/C2/C3 selected
+checkpoint 仍必须先经过 validation selection，不能用 Test 结果补选。
 
 实际结果统一登记到 [实验运行记录](../../experiment_log.md)，通用指标定义见
 [指标说明](../../metrics.md)。

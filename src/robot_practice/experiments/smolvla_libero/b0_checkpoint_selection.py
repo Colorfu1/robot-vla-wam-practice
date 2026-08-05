@@ -207,7 +207,9 @@ def discover_candidate_checkpoints(
         if step in discovered:
             raise ValueError(f"Duplicate explicit checkpoint step: {step:06d}")
         missing = [
-            filename for filename in REQUIRED_CHECKPOINT_FILES if not (resolved / filename).is_file()
+            filename
+            for filename in REQUIRED_CHECKPOINT_FILES
+            if not (resolved / filename).is_file()
         ]
         if missing:
             raise FileNotFoundError(
@@ -580,6 +582,69 @@ def _copy_selected_checkpoint(
         raise
 
 
+def publish_selected_checkpoint(
+    *,
+    selection_file: Path,
+    selected_dir: Path,
+    overwrite: bool,
+    selection_set: str = "background_validation",
+) -> dict[str, Any]:
+    """Publish a completed selection without running any rollout or ranking.
+
+    The selection JSON is validated before the source checkpoint is copied:
+    status/selection_set, the source directory name against the selected step,
+    and (when a target copy already exists) the target weights against the
+    source weights. Both full-weight (model.safetensors) and PEFT/LoRA
+    (adapter_model.safetensors) checkpoints are supported. Publication stays
+    fail-closed.
+    """
+
+    selection = _read_json(selection_file)
+    if selection.get("status") != "complete":
+        raise ValueError(f"Selection is not complete: {selection_file}")
+    if selection.get("selection_set") != selection_set:
+        raise ValueError(f"Selection set is not {selection_set}: {selection_file}")
+    step = selection.get("selected_checkpoint_step")
+    source_value = selection.get("source_checkpoint")
+    if isinstance(step, bool) or not isinstance(step, int) or not isinstance(source_value, str):
+        raise TypeError(
+            f"{selection_file} must declare selected_checkpoint_step and source_checkpoint"
+        )
+    source_checkpoint = resolve_repository_path(source_value)
+    if source_checkpoint.name != f"{step:06d}":
+        raise ValueError(
+            f"source_checkpoint directory {source_checkpoint.name!r} does not match "
+            f"selected_checkpoint_step {step:06d}"
+        )
+    source_weights_name = "model.safetensors"
+    source_model = source_checkpoint / "pretrained_model" / source_weights_name
+    if not source_model.is_file():
+        # PEFT/LoRA checkpoints store only the low-rank adapter weights.
+        source_weights_name = "adapter_model.safetensors"
+        source_model = source_checkpoint / "pretrained_model" / source_weights_name
+    if not source_model.is_file():
+        raise FileNotFoundError(
+            "Source checkpoint is missing model or LoRA adapter weights: "
+            f"{source_checkpoint / 'pretrained_model'}"
+        )
+    target_model = selected_dir / "pretrained_model" / source_weights_name
+    if target_model.is_file() and _sha256_file(source_model) != _sha256_file(target_model):
+        raise ValueError(
+            "Existing selected weights do not match the source checkpoint; refusing to publish"
+        )
+    if selected_dir.exists() and not overwrite:
+        raise FileExistsError(
+            f"Selected checkpoint directory already exists: {selected_dir}; use --overwrite"
+        )
+    _copy_selected_checkpoint(
+        source_checkpoint_dir=source_checkpoint,
+        selected_dir=selected_dir,
+        selection=selection,
+    )
+    LOGGER.info("Published selected checkpoint %06d to %s", step, selected_dir)
+    return selection
+
+
 def run_evaluation_jobs(
     jobs: list[SelectionJob],
     *,
@@ -601,9 +666,7 @@ def run_evaluation_jobs(
     for gpu in range(num_gpus):
         gpu_pool.put(gpu)
     checkpoint_steps = {job.checkpoint_step for job in jobs}
-    collected: dict[int, dict[int, dict[str, Any]]] = {
-        step: {} for step in checkpoint_steps
-    }
+    collected: dict[int, dict[int, dict[str, Any]]] = {step: {} for step in checkpoint_steps}
     progress_events: queue.Queue[tuple[SelectionJob, int, int]] = queue.Queue()
     observed_progress: dict[tuple[int, int], int] = {}
     active_processes: dict[tuple[int, int], subprocess.Popen[str]] = {}
@@ -881,13 +944,25 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate inputs and print the resolved selection workload without running",
     )
+    parser.add_argument(
+        "--publish-only",
+        action="store_true",
+        help="Copy an existing completed selection to --selected-dir without rollouts",
+    )
+    parser.add_argument(
+        "--selection-file",
+        type=Path,
+        help="Completed selected_checkpoint.json consumed by --publish-only",
+    )
     return parser
 
 
 def _resolve_arguments(namespace: argparse.Namespace) -> SelectionArguments:
     run_dir = resolve_repository_path(namespace.run_dir)
     raw_checkpoint_paths = namespace.checkpoint_path
-    if raw_checkpoint_paths is not None and any(path.is_absolute() for path in raw_checkpoint_paths):
+    if raw_checkpoint_paths is not None and any(
+        path.is_absolute() for path in raw_checkpoint_paths
+    ):
         raise ValueError("--checkpoint-path values must be repository-relative")
     checkpoint_paths = (
         None
@@ -933,7 +1008,20 @@ def main() -> None:
         format="%(levelname)s %(asctime)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    namespace = build_argument_parser().parse_args()
+    parser = build_argument_parser()
+    namespace = parser.parse_args()
+    if namespace.publish_only:
+        if namespace.selection_file is None:
+            parser.error("--publish-only requires --selection-file")
+        run_dir = resolve_repository_path(namespace.run_dir)
+        publish_selected_checkpoint(
+            selection_file=resolve_repository_path(namespace.selection_file),
+            selected_dir=resolve_repository_path(
+                namespace.selected_dir or run_dir / "checkpoints" / "selected"
+            ),
+            overwrite=namespace.overwrite,
+        )
+        return
     select_checkpoints(_resolve_arguments(namespace))
 
 

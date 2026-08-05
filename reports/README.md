@@ -13,7 +13,7 @@
 - [实验指南总览](guides/README.md)
 - [ACT 实验指南](guides/act/README.md)
 - [PushT Diffusion Pilot](guides/pusht_diffusion/README.md)
-- [SmolVLA LIBERO LoRA 与语言增强（训练入口已实现，正式评测未完成）](guides/smolvla_libero/README.md)
+- [SmolVLA LIBERO LoRA 与语言增强（B0 域适配已完成正式评测；C1/C2/C3 待运行）](guides/smolvla_libero/README.md)
 
 实验指南负责说明实验目标、实验设计、完整命令、结果落点和判断标准。实际运行后，
 还需要在 [实验运行记录](experiment_log.md) 中补充对应条目。

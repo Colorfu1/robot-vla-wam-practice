@@ -8,14 +8,35 @@ Train episodes，训练供 Z0/C1/C2/C3 共用的 LIBERO 域适配 checkpoint。
 
 结果类别：正式训练为 `Formal / Offline`；两步链路检查为 `Smoke / Offline`。
 
-## 实验思路
+B0 三个阶段各用不同的 held-out 集合，标签也因此不同。这三段不可混着读：
 
-B0 排除目标 task indices `10,17,18`，使用 1,412 episodes、236,470 frames。
-训练保持 LeRobot 原生全局按帧 shuffle，不做 task/episode balancing。
-图像使用 ImageNet stats，state/action 使用完整 `lerobot/libero` metadata stats。
-正式训练采用 8 卡、每卡 batch 8、BF16、30,000 updates，每 5,000 steps 保存一次。
-训练沿用 SmolVLA Non-PEFT 默认冻结边界及完整 AdamW/cosine preset。
-本阶段不做目标任务训练，也不把 train loss 当作闭环成功率。
+| 阶段 | 结果类别 | 用哪个集合 | 规模 | 这个数字能回答什么 |
+| --- | --- | --- | --- | --- |
+| 正式训练 | `Formal / Offline` | 只用 37 任务的 train episodes | 1,412 episodes / 236,470 frames | 只是训练本身完成了。train loss 不能推断任何成功率 |
+| checkpoint selection | `Formal / Closed-loop / Validation` | 7 个背景任务各 20 个 validation init states | 840 条 300-step rollout | 六个 checkpoint 里哪个最好。这个集合允许被反复看，因此它的成功率**不是**无偏成绩 |
+| held-out test | `Formal / Closed-loop / Test` | 同 7 个任务各 30 个 test init states，此前完全保留 | 210 条 300-step rollout | 冻结 winner 的无偏成绩。看过之后不得加 seed、改 horizon 或重选 checkpoint |
+
+标签第三段（`Validation` / `Test`）是本实验族的扩展，`reports/AGENTS.md` 的四个基础标签里
+没有它。缺了这一段，读者无法判断一个成功率是否被选模过程看过。各集合的完整清单与相互约束见
+[实验族总览](README.md#结果类别标签与数据分工)。
+
+### B0 用到的数据
+
+- 训练：37 个背景任务的 1,412 条 demonstration / 236,470 帧。
+- 选模（`Validation`）：7 个 libero_goal 背景任务各 20 个初始状态 = 140 个 case，六个
+  checkpoint 各跑一遍，`6 × 7 × 20 = 840` 条闭环 rollout。同一批 case 被看了六遍，成绩偏高，
+  不是无偏结果。
+- 最终成绩（`Test`）：只跑冻结的 winner，同 7 个任务各 30 个此前保留的初始状态，
+  `7 × 30 = 210` 条闭环 rollout。看过之后不得加 seed、改 horizon 或重选 checkpoint。
+- **未使用**：另有 138 条离线 validation demonstration / 23,004 帧从训练里划出，但没有任何
+  入口消费它。因此 B0 的"开环动作误差"字段应写"未评测"，不能留空或由 train loss 推断。
+
+初始状态是 LIBERO 每任务 50 个摆法的编号，不是数据；闭环按编号摆好物体让模型自己跑，不需要
+参考轨迹。所以数据侧没有 test 并不妨碍跑 210 条 test rollout。
+
+两条边界：这 7 个任务全在 B0 的 37 个训练任务内，所以 test 测的是同任务、未被使用过的摆放，
+不是跨任务泛化；且摆放随机化范围本身只有约 3 cm，也不是远距离泛化。各集合的完整清单见
+[实验族总览](README.md#结果类别标签与数据分工)。
 
 ## 冻结配置
 
@@ -103,7 +124,7 @@ bash scripts/experiments/smolvla_libero/train_b0.sh \
   --train-seed=1000 \
   --num-workers=4 \
   --mixed-precision=bf16 \
-  --output-dir=outputs/smolvla_libero/pilot/b0_domain_adaptation
+  --output-dir=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline
 ```
 
 只验证参数并查看最终 Accelerate 命令时，在任一 fresh 命令末尾添加：
@@ -120,7 +141,7 @@ batch、LR、seed、steps、输出目录或 GPU 数覆盖；启动脚本会从�
 
 ```bash
 bash scripts/experiments/smolvla_libero/train_b0.sh \
-  --resume-from=outputs/smolvla_libero/pilot/b0_domain_adaptation/checkpoints/005000
+  --resume-from=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoints/005000
 ```
 
 如果已有更晚的完整 checkpoint，必须把上述路径替换为该 checkpoint；脚本不会自动
@@ -176,6 +197,25 @@ flush，任何 task job 失败都会立即终止其他子进程并指出对应�
 若进程中断，原命令末尾增加 `--resume`。入口会校验并复用已完成且 init-state 协议完全
 匹配的 task job，只重跑缺失或不完整项。启动前只检查解析后的工作量而不执行时，末尾
 增加 `--print-command`。
+
+### 只发布已选 checkpoint（不跑 rollout）
+
+若 selection 已完成但 `checkpoints/selected/` 的实体副本缺失或损坏，不需要重跑任何
+validation rollout，直接用发布入口把 `selected_checkpoint.json` 指向的源 checkpoint
+实体复制到目标目录：
+
+```bash
+bash scripts/experiments/smolvla_libero/publish_selected_b0.sh \
+  --run-dir=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline \
+  --selection-file=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoint_selection/selected_checkpoint.json \
+  --selected-dir=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoints/selected
+```
+
+发布前必须校验：`status=complete`、`selection_set=background_validation`、
+`selected_checkpoint_step` 与 `source_checkpoint` 目录名一致，且若目标
+`selected/pretrained_model/model.safetensors` 已存在，其 sha256 必须与源 checkpoint
+相同；任一不符则拒绝发布。目标目录已存在时需要 `--overwrite`。先加
+`--print-command` 只打印命令。
 
 选中的 checkpoint 会被实体复制，而不是创建软链接：
 
@@ -268,10 +308,83 @@ test 结果一旦查看，不得使用 `--overwrite` 增加 seed、修改执行 
 checkpoint。`test_results.json` 保存总体与逐任务成功率、成功耗时、失败终止原因、动作
 平滑度和 latency 汇总；`metrics.md` 是供阅读的正式结果入口。
 
+## 已完成的正式结果
+
+训练、选模和 held-out test 都已跑完。以下数字由 `checkpoint_results.json`、
+`test_results.json` 及各 job 的 `metrics.json` 复算核对一致。
+
+### 训练（Formal / Offline）
+
+一次 attempt 完成 30,000 updates，8 个 rank 状态全为 `complete`。loss、grad norm、LR
+全程有限，无 NaN/Inf。LR 在 step 999 达到峰值 `9.990e-5`，随后 cosine 衰减，step 30000
+正好落在 `2.5e-6`。末 1,000 步 loss 均值 `0.064`（首步 `0.607`）。`run_config.json` 记录的
+1,412 episodes / 236,470 frames 与 `background_split.json` 的 aggregate 一致，split
+sha256 与当前文件一致。
+
+### Background validation checkpoint selection（Formal / Closed-loop / Validation）
+
+6 个 checkpoint × 7 任务 × 20 validation init states = 840 条 300-step rollout。
+每个 job 使用的 init state 集合与 split 中的 `validation_init_state_ids` 完全一致。
+
+| checkpoint | macro success | 成功数 | 成功 episode 平均步数 |
+|---:|---:|---:|---:|
+| 5000 | 0.3286 | 46/140 | 141.74 |
+| 10000 | 0.7143 | 100/140 | 121.81 |
+| 15000 | 0.7929 | 111/140 | 126.96 |
+| 20000 | 0.7929 | 111/140 | 123.06 |
+| **25000** | **0.8643** | **121/140** | **120.85** |
+| 30000 | 0.8643 | 121/140 | 122.21 |
+
+25000 与 30000 在主指标上并列，按注册顺序由成功 episode 平均步数分出 25000
+（120.85 < 122.21）。`validation_paired_analysis.json` 的 `ranking_audit` 为
+`matches_registered_tie_breakers: true`；配对诊断中 25k→30k 的 exact McNemar
+p = 1.0、净增益 0，没有改动已冻结的 winner。
+
+注意第一个 tie-breaker `mean_max_reward_desc` 在 LIBERO 上不起作用：奖励是稀疏 0/1，
+六个 checkpoint 的 `mean_max_reward` 全部等于对应的成功率，因此它永远无法打破平局，
+实际生效的链条是成功步数、然后 checkpoint step。这一项保留在协议里只为记录完整，
+不要当作独立判据。
+
+### Selected B0 held-out test（Formal / Closed-loop / Test）
+
+冻结 winner `025000`，7 任务 × 30 test init states = 210 条 300-step rollout，
+全部使用此前保留、未参与选模的 30 个 init state。
+
+| task | 指令 | 成功率 | 成功 episode 平均步数 |
+|---:|---|---:|---:|
+| 0 | open the middle drawer of the cabinet | 30/30 | 137.53 |
+| 2 | put the wine bottle on top of the cabinet | 27/30 | 104.89 |
+| 3 | open the top drawer and put the bowl inside | 15/30 | 185.00 |
+| 5 | push the plate to the front of the stove | 27/30 | 137.93 |
+| 6 | put the cream cheese in the bowl | 26/30 | 94.69 |
+| 7 | turn on the stove | 30/30 | 71.77 |
+| 9 | put the wine bottle on the rack | 28/30 | 153.11 |
+| **合计** | macro success | **183/210 = 0.8714** | 122.18 |
+
+失败全部是 `time_limit`（27 条），没有其他终止原因。动作平滑度 macro action TV
+`0.0345`、macro action jerk `0.0466`、macro 平均 gripper 切换 `2.69` 次。模型查询延迟
+macro p50 `253.2 ms`、p95 `348.9 ms`。最弱任务是 task 3（open the top drawer and put the
+bowl inside，0.50），也是选模阶段最弱的一项（10/20）。
+
+**这里的 held-out 只针对 init state。** 这 7 个任务本身都在 B0 的 37 个训练任务里，
+因此该结果衡量的是同任务、未见初始状态下的表现，不是跨任务泛化。跨任务迁移由目标
+三任务的 Z0 baseline 回答，不能用本节数字代替。
+
+### 任务编号的两套命名空间
+
+`background_split.json` 的 key 是 `lerobot/libero` 的全局 `task_index`（数据侧，0..39），
+而 `background_closed_loop_split.json` 与 `target_split.json` 的 key 是 LIBERO 官方
+libero_goal 本地编号（仿真侧，0..9）。同一个整数在两处含义不同：例如闭环 split 的
+`0` 是 "open the middle drawer of the cabinet"，而全局 `task_index=0` 是一条 LIBERO-10
+任务。两边靠各自文件里的 `canonical` 文本交叉校验；49 个 job 的 `task.language` 与 split
+canonical 逐条一致。被排除的目标任务在数据侧是全局 `10/17/18`，对应仿真侧本地
+`8/1/4`，即 "put the bowl on the plate" / "on the stove" / "on top of the cabinet"。
+改动任一 split 时必须同时核对 canonical 文本，不要只看数字。
+
 ## 结果落点
 
 ```text
-outputs/smolvla_libero/pilot/b0_domain_adaptation/
+outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/
 ├── run_config.json
 ├── train_metrics.jsonl
 ├── train.log

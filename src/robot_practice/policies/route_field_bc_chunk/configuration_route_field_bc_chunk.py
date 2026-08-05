@@ -15,7 +15,7 @@ from robot_practice.policies.route_field_conditioning import validate_route_fiel
 class RouteFieldBCChunkConfig(BCChunkConfig):
     """BCChunk config extended by one fixed spatial route map."""
 
-    route_grid_size: int = 5
+    route_grid_size: int = 7
     route_field_channels: int = 4
     route_embedding_dim: int = 64
 

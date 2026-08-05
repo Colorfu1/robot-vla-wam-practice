@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from .b0_training import (
     CAMERA_RENAME_MAP,
     DATASET_REPO_ID,
@@ -33,16 +35,18 @@ from .b0_training import (
 )
 from .c1_training import (
     DEFAULT_B0_SELECTED_REFERENCE,
+    DEFAULT_BATCH_SIZE,
     DEFAULT_DATASET_ROOT,
     DEFAULT_SPLIT_FILE,
-    FORMAL_BATCH_SIZE,
+    DEFAULT_WORLD_SIZE,
     FORMAL_GLOBAL_BATCH_SIZE,
-    FORMAL_WORLD_SIZE,
     C1BasePolicy,
     base_policy_identity,
     configure_c1_policy,
     resolve_c1_base_policy,
     validate_c1_policy_preset,
+    validate_resume_batch_contract,
+    validate_resume_formal_contract,
 )
 from .c1_training import build_run_config as build_c1_run_config
 from .c1_training import build_train_config as build_c1_train_config
@@ -77,6 +81,7 @@ _FRESH_ONLY_OPTIONS = {
     "--train-seed",
     "--num-workers",
     "--output-dir",
+    "--overwrite",
 }
 _REQUIRED_POLICY_FILES = {
     "adapter_config.json",
@@ -118,6 +123,7 @@ class C2FreshArguments:
     num_workers: int
     mixed_precision: str
     output_dir: Path
+    overwrite: bool = False
 
 
 @dataclass(frozen=True)
@@ -212,6 +218,11 @@ def parse_arguments(
     parser.add_argument("--num-workers", type=_nonnegative_integer, default=4)
     parser.add_argument("--mixed-precision", choices=("bf16",))
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Delete and recreate --output-dir so a fresh run replaces previous artifacts",
+    )
     parser.add_argument("--resume-from", type=Path)
     parser.add_argument("--inspect-launch", action="store_true", help=argparse.SUPPRESS)
     _reject_duplicate_options(parser, raw)
@@ -246,34 +257,36 @@ def parse_arguments(
         split_file=resolve_repository_path(namespace.split_file),
         num_processes=namespace.num_processes
         if namespace.num_processes is not None
-        else (FORMAL_WORLD_SIZE if formal else 1),
-        batch_size=namespace.batch_size or FORMAL_BATCH_SIZE,
+        else (DEFAULT_WORLD_SIZE if formal else 1),
+        batch_size=namespace.batch_size or DEFAULT_BATCH_SIZE,
         steps=namespace.steps if namespace.steps is not None else (FORMAL_STEPS if formal else 2),
         save_freq=namespace.save_freq
         if namespace.save_freq is not None
         else (FORMAL_SAVE_FREQ if formal else 2),
         learning_rate=namespace.learning_rate or FORMAL_LEARNING_RATE,
         lora_rank=namespace.lora_rank or FORMAL_LORA_RANK,
-        train_seed=namespace.train_seed
-        if namespace.train_seed is not None
-        else FORMAL_TRAIN_SEED,
+        train_seed=namespace.train_seed if namespace.train_seed is not None else FORMAL_TRAIN_SEED,
         num_workers=namespace.num_workers,
         mixed_precision=namespace.mixed_precision or FORMAL_MIXED_PRECISION,
         output_dir=resolve_repository_path(output_dir),
+        overwrite=namespace.overwrite,
     )
-    validate_fresh_contract(arguments)
+    validate_fresh_contract(arguments, check_gpu_capacity=not namespace.inspect_launch)
     if namespace.inspect_launch:
         return LaunchInspection(arguments.num_processes, arguments.mixed_precision)
     return arguments
 
 
-def validate_fresh_contract(arguments: C2FreshArguments) -> None:
-    if arguments.output_dir.exists():
+def validate_fresh_contract(
+    arguments: C2FreshArguments,
+    *,
+    check_gpu_capacity: bool = True,
+) -> None:
+    if arguments.output_dir.exists() and not arguments.overwrite:
         raise FileExistsError(f"Output directory already exists: {arguments.output_dir}")
     if arguments.save_freq > arguments.steps:
         raise ValueError("save frequency cannot exceed total steps")
     fixed = {
-        "batch_size": FORMAL_BATCH_SIZE,
         "learning_rate": FORMAL_LEARNING_RATE,
         "lora_rank": FORMAL_LORA_RANK,
         "train_seed": FORMAL_TRAIN_SEED,
@@ -283,10 +296,21 @@ def validate_fresh_contract(arguments: C2FreshArguments) -> None:
         actual = getattr(arguments, field)
         if actual != expected:
             raise ValueError(f"C2 requires {field}={expected!r}, got {actual!r}")
+    if check_gpu_capacity and arguments.num_processes > torch.cuda.device_count():
+        raise ValueError(
+            f"Requested --num-processes={arguments.num_processes} but only "
+            f"{torch.cuda.device_count()} CUDA GPU(s) are visible; select GPUs with "
+            "CUDA_VISIBLE_DEVICES"
+        )
     if arguments.mode != "formal":
         return
+    if arguments.batch_size * arguments.num_processes != FORMAL_GLOBAL_BATCH_SIZE:
+        raise ValueError(
+            "Formal C2 requires global batch size "
+            f"{FORMAL_GLOBAL_BATCH_SIZE} (legal layouts: 8x1, 4x2, 2x4, 1x8); "
+            f"got {arguments.num_processes}x{arguments.batch_size}"
+        )
     formal = {
-        "num_processes": FORMAL_WORLD_SIZE,
         "steps": FORMAL_STEPS,
         "save_freq": FORMAL_SAVE_FREQ,
     }
@@ -294,8 +318,6 @@ def validate_fresh_contract(arguments: C2FreshArguments) -> None:
         actual = getattr(arguments, field)
         if actual != expected:
             raise ValueError(f"Formal C2 requires {field}={expected!r}, got {actual!r}")
-    if arguments.batch_size * arguments.num_processes != FORMAL_GLOBAL_BATCH_SIZE:
-        raise ValueError(f"Formal C2 requires global batch size {FORMAL_GLOBAL_BATCH_SIZE}")
 
 
 def requested_peft_config(rank: int):
@@ -497,24 +519,17 @@ def validate_resume(arguments: C2ResumeArguments) -> C2ResumeContext:
     dataset_record = run_config.get("dataset")
     peft_record = run_config.get("peft")
     if not all(
-        isinstance(value, dict)
-        for value in (training, inputs, dataset_record, peft_record)
+        isinstance(value, dict) for value in (training, inputs, dataset_record, peft_record)
     ):
         raise TypeError("C2 run_config lacks required records")
-    _require_equal(arguments.num_processes, training.get("world_size"), field="world_size")
+    validate_resume_batch_contract(
+        requested_world_size=arguments.num_processes,
+        training=training,
+    )
     _require_equal(
         arguments.mixed_precision,
         training.get("mixed_precision"),
         field="mixed_precision",
-    )
-    world_size = training.get("world_size")
-    per_gpu_batch = training.get("per_gpu_batch_size")
-    if not isinstance(world_size, int) or not isinstance(per_gpu_batch, int):
-        raise TypeError("C2 run_config batch contract is invalid")
-    _require_equal(
-        training.get("global_batch_size"),
-        world_size * per_gpu_batch,
-        field="global_batch_size",
     )
     _require_equal(training.get("seed"), FORMAL_TRAIN_SEED, field="train_seed")
     _require_equal(training.get("lora_rank"), FORMAL_LORA_RANK, field="lora_rank")
@@ -522,16 +537,7 @@ def validate_resume(arguments: C2ResumeArguments) -> C2ResumeContext:
     if mode not in {"smoke", "formal"}:
         raise ValueError("C2 run_config mode is invalid")
     if mode == "formal":
-        formal_contract = {
-            "world_size": FORMAL_WORLD_SIZE,
-            "per_gpu_batch_size": FORMAL_BATCH_SIZE,
-            "global_batch_size": FORMAL_GLOBAL_BATCH_SIZE,
-            "mixed_precision": FORMAL_MIXED_PRECISION,
-            "steps": FORMAL_STEPS,
-            "save_freq": FORMAL_SAVE_FREQ,
-        }
-        for field, expected in formal_contract.items():
-            _require_equal(training.get(field), expected, field=field)
+        validate_resume_formal_contract(training)
     validate_base_policy_identity(inputs.get("base_policy"))
     _require_equal(dataset_record.get("sampler"), SAMPLING_STRATEGY, field="sampler")
 

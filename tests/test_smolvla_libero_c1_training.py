@@ -9,13 +9,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from robot_practice.experiments.smolvla_libero.b0_training import CAMERA_RENAME_MAP
+from robot_practice.experiments.smolvla_libero import c1_training
+from robot_practice.experiments.smolvla_libero.b0_training import (
+    CAMERA_RENAME_MAP,
+    BasePolicyIdentity,
+)
 from robot_practice.experiments.smolvla_libero.c1_training import (
     DEFAULT_B0_SELECTED_REFERENCE,
+    DEFAULT_WORLD_SIZE,
     FORMAL_GLOBAL_BATCH_SIZE,
-    FORMAL_WORLD_SIZE,
+    FORMAL_SAVE_FREQ,
+    FORMAL_STEPS,
     C1FreshArguments,
     LaunchInspection,
+    build_run_config,
     build_train_config,
     parse_arguments,
 )
@@ -81,6 +88,26 @@ def _fresh_arguments(tmp_path: Path) -> C1FreshArguments:
     )
 
 
+def _formal_cli_args(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "--mode=formal",
+        "--dataset-root=datasets/lerobot/lerobot/libero",
+        f"--split-file={SPLIT_FILE}",
+        f"--output-dir={tmp_path / 'formal'}",
+        *extra,
+    ]
+
+
+def _diagnostic_cli_args(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "--mode=diagnostic",
+        "--dataset-root=datasets/lerobot/lerobot/libero",
+        f"--split-file={SPLIT_FILE}",
+        f"--output-dir={tmp_path / 'diagnostic'}",
+        *extra,
+    ]
+
+
 def test_frozen_target_split_has_exact_c1_counts() -> None:
     split = load_target_split(SPLIT_FILE)
 
@@ -94,16 +121,24 @@ def test_frozen_target_split_has_exact_c1_counts() -> None:
 
 
 def test_no_argument_cli_resolves_frozen_formal_launch(tmp_path: Path) -> None:
-    inspection = parse_arguments(
-        [
-            f"--output-dir={tmp_path / 'formal'}",
-            "--inspect-launch",
-        ]
-    )
+    inspection = parse_arguments([*_formal_cli_args(tmp_path), "--inspect-launch"])
 
     assert isinstance(inspection, LaunchInspection)
-    assert inspection.num_processes == FORMAL_WORLD_SIZE == 8
+    assert inspection.num_processes == DEFAULT_WORLD_SIZE == 8
     assert inspection.mixed_precision == "bf16"
+
+
+def test_fresh_cli_requires_mode_dataset_split_and_output(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        parse_arguments([f"--output-dir={tmp_path / 'formal'}"])
+    with pytest.raises(SystemExit):
+        parse_arguments(
+            [
+                "--mode=formal",
+                "--dataset-root=datasets/lerobot/lerobot/libero",
+                f"--split-file={SPLIT_FILE}",
+            ]
+        )
 
 
 @pytest.mark.parametrize(
@@ -119,12 +154,251 @@ def test_no_argument_cli_resolves_frozen_formal_launch(tmp_path: Path) -> None:
 )
 def test_formal_cli_rejects_contract_drift(tmp_path: Path, override: str) -> None:
     with pytest.raises(ValueError):
-        parse_arguments(
-            [
-                override,
-                f"--output-dir={tmp_path / 'formal'}",
-            ]
+        parse_arguments(_formal_cli_args(tmp_path, override))
+
+
+def test_formal_accepts_four_gpus_two_per_gpu_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c1_training.torch.cuda, "device_count", lambda: 4)
+    arguments = parse_arguments(
+        _formal_cli_args(
+            tmp_path,
+            "--num-processes=4",
+            "--batch-size=2",
         )
+    )
+
+    assert isinstance(arguments, C1FreshArguments)
+    assert arguments.num_processes == 4
+    assert arguments.batch_size == 2
+    assert arguments.num_processes * arguments.batch_size == FORMAL_GLOBAL_BATCH_SIZE
+
+
+def test_formal_rejects_global_batch_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c1_training.torch.cuda, "device_count", lambda: 4)
+    with pytest.raises(ValueError, match=r"8x1, 4x2, 2x4, 1x8"):
+        parse_arguments(
+            _formal_cli_args(
+                tmp_path,
+                "--num-processes=4",
+                "--batch-size=1",
+            )
+        )
+
+
+def test_fresh_rejects_more_processes_than_visible_gpus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c1_training.torch.cuda, "device_count", lambda: 1)
+    with pytest.raises(ValueError, match="CUDA_VISIBLE_DEVICES"):
+        parse_arguments(
+            _formal_cli_args(
+                tmp_path,
+                "--num-processes=2",
+                "--batch-size=4",
+            )
+        )
+
+
+def test_diagnostic_mode_requires_experiment_tag(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        parse_arguments(_diagnostic_cli_args(tmp_path))
+    with pytest.raises(SystemExit):
+        parse_arguments(_formal_cli_args(tmp_path, "--experiment-tag=tag"))
+
+
+def test_diagnostic_allows_lr_and_steps_override(tmp_path: Path) -> None:
+    arguments = parse_arguments(
+        _diagnostic_cli_args(
+            tmp_path,
+            "--experiment-tag=a_same_config",
+            "--num-processes=1",
+            "--batch-size=8",
+            "--steps=20000",
+            "--save-freq=5000",
+            "--learning-rate=0.0000125",
+        )
+    )
+
+    assert isinstance(arguments, C1FreshArguments)
+    assert arguments.mode == "diagnostic"
+    assert arguments.experiment_tag == "a_same_config"
+    assert arguments.learning_rate == pytest.approx(1.25e-5)
+    assert arguments.steps == 20000
+
+
+def test_diagnostic_enforces_frozen_items(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c1_training.torch.cuda, "device_count", lambda: 4)
+    with pytest.raises(ValueError, match="train_seed"):
+        parse_arguments(
+            _diagnostic_cli_args(
+                tmp_path,
+                "--experiment-tag=tag",
+                "--num-processes=1",
+                "--batch-size=8",
+                "--steps=30000",
+                "--save-freq=5000",
+                "--train-seed=999",
+            )
+        )
+    with pytest.raises(ValueError, match="save_freq"):
+        parse_arguments(
+            _diagnostic_cli_args(
+                tmp_path,
+                "--experiment-tag=tag",
+                "--num-processes=1",
+                "--batch-size=8",
+                "--steps=30000",
+                "--save-freq=2",
+            )
+        )
+    with pytest.raises(ValueError, match=r"8x1, 4x2, 2x4, 1x8"):
+        parse_arguments(
+            _diagnostic_cli_args(
+                tmp_path,
+                "--experiment-tag=tag",
+                "--num-processes=4",
+                "--batch-size=1",
+                "--steps=30000",
+                "--save-freq=5000",
+            )
+        )
+
+
+def test_diagnostic_run_config_records_tag_and_label(tmp_path: Path) -> None:
+    arguments = dataclasses.replace(
+        _fresh_arguments(tmp_path),
+        mode="diagnostic",
+        experiment_tag="b_scaled_lr",
+        learning_rate=1.25e-5,
+        steps=30000,
+        save_freq=5000,
+        num_processes=1,
+        batch_size=8,
+    )
+    split = load_target_split(SPLIT_FILE)
+    dataset_audit = SimpleNamespace(
+        fps=10,
+        features={"observation.image": {"shape": [3, 256, 256]}},
+    )
+    train_config = SimpleNamespace(
+        to_dict=lambda: {"optimizer": {"type": "adamw"}, "scheduler": {"type": "cosine"}},
+        use_policy_training_preset=True,
+    )
+    base_identity = BasePolicyIdentity(
+        requested="policies/smolvla_or_pi0/smolvla_base",
+        source_type="local",
+        resolved_revision=None,
+        files_sha256={},
+    )
+
+    payload = build_run_config(
+        arguments=arguments,
+        split=split,
+        dataset_audit=dataset_audit,
+        base_identity=base_identity,
+        base_selection=None,
+        train_config=train_config,
+    )
+
+    assert payload["result_label"] == "Diagnostic"
+    assert payload["training"]["mode"] == "diagnostic"
+    assert payload["training"]["experiment_tag"] == "b_scaled_lr"
+
+
+def test_diagnostic_learning_rate_passes_policy_preset_validation() -> None:
+    config = _policy_config()
+    config.optimizer_lr = 1.25e-5
+
+    c1_training.validate_c1_policy_preset(
+        config,
+        expected_learning_rate=1.25e-5,
+    )
+    with pytest.raises(ValueError, match="Optimizer preset mismatch"):
+        c1_training.validate_c1_policy_preset(config)
+
+    config.optimizer_lr = 1e-4
+    c1_training.validate_c1_policy_preset(config)
+
+
+def test_run_config_records_data_parallel_layout(tmp_path: Path) -> None:
+    arguments = dataclasses.replace(
+        _fresh_arguments(tmp_path),
+        mode="formal",
+        num_processes=4,
+        batch_size=2,
+    )
+    split = load_target_split(SPLIT_FILE)
+    dataset_audit = SimpleNamespace(
+        fps=10,
+        features={"observation.image": {"shape": [3, 256, 256]}},
+    )
+    train_config = SimpleNamespace(
+        to_dict=lambda: {"optimizer": {"type": "adamw"}, "scheduler": {"type": "cosine"}},
+        use_policy_training_preset=True,
+    )
+    base_identity = BasePolicyIdentity(
+        requested="policies/smolvla_or_pi0/smolvla_base",
+        source_type="local",
+        resolved_revision=None,
+        files_sha256={},
+    )
+
+    payload = build_run_config(
+        arguments=arguments,
+        split=split,
+        dataset_audit=dataset_audit,
+        base_identity=base_identity,
+        base_selection=None,
+        train_config=train_config,
+    )
+
+    assert payload["training"]["data_parallel_layout"] == "4x2"
+    assert payload["training"]["global_batch_size"] == 8
+
+
+def test_resume_rejects_changed_world_size() -> None:
+    training = {
+        "world_size": 8,
+        "per_gpu_batch_size": 1,
+        "global_batch_size": 8,
+    }
+    with pytest.raises(ValueError, match="world_size"):
+        c1_training.validate_resume_batch_contract(
+            requested_world_size=4,
+            training=training,
+        )
+    c1_training.validate_resume_batch_contract(
+        requested_world_size=8,
+        training=training,
+    )
+
+
+def test_resume_formal_contract_allows_any_legal_layout() -> None:
+    training = {
+        "world_size": 4,
+        "per_gpu_batch_size": 2,
+        "global_batch_size": 8,
+        "mixed_precision": "bf16",
+        "steps": FORMAL_STEPS,
+        "save_freq": FORMAL_SAVE_FREQ,
+    }
+    c1_training.validate_resume_batch_contract(
+        requested_world_size=4,
+        training=training,
+    )
+    c1_training.validate_resume_formal_contract(training)
+    with pytest.raises(ValueError, match="global_batch_size"):
+        c1_training.validate_resume_formal_contract(dict(training, global_batch_size=4))
 
 
 def test_train_config_uses_only_target_train_episodes(tmp_path: Path) -> None:
@@ -216,6 +490,9 @@ def test_shell_prints_one_command_formal_accelerate_launch(tmp_path: Path) -> No
         [
             "bash",
             str(SCRIPT),
+            "--mode=formal",
+            "--dataset-root=datasets/lerobot/lerobot/libero",
+            f"--split-file={SPLIT_FILE}",
             f"--output-dir={tmp_path / 'formal'}",
             "--print-command",
         ],
@@ -240,3 +517,29 @@ def test_shell_prints_one_command_formal_accelerate_launch(tmp_path: Path) -> No
     assert "--multi_gpu" in command
     assert "robot_practice.experiments.smolvla_libero.train_c1" in command
     assert FORMAL_GLOBAL_BATCH_SIZE == 8
+
+
+def test_shell_prints_four_gpu_two_batch_accelerate_launch(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--mode=formal",
+            "--dataset-root=datasets/lerobot/lerobot/libero",
+            f"--split-file={SPLIT_FILE}",
+            "--num-processes=4",
+            "--batch-size=2",
+            f"--output-dir={tmp_path / 'formal'}",
+            "--print-command",
+        ],
+        cwd=PRACTICE_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert "--num_processes=4" in command
+    assert "--multi_gpu" in command
+    assert "robot_practice.experiments.smolvla_libero.train_c1" in command

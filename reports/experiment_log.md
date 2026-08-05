@@ -588,3 +588,176 @@ Use one section per run. Record incomplete or failed runs too.
   - `outputs/smolvla_libero/smoke/hf_libero_goal_task1_20260730_013110_http/videos/libero_goal_1/eval_episode_0.mp4`
   - `outputs/smolvla_libero/smoke/hf_libero_goal_task1_20260730_013110_http/videos/libero_goal_1/contact_sheet.png`
 - Modes: Closed-loop / Smoke
+
+## 2026-08-03 — PushT E6 RF7 Route Field Held-out Audit
+
+- Date: 2026-08-03
+- Task suite: PushT，`lerobot/pusht` revision `7628202a…`
+- Dataset size: 206 episodes；165 train / 20 development / 21 audit；训练 20610 帧
+- Observation keys: 96×96 RGB、二维 agent position（历史长度 2）；外加 4×7×7 route field
+  （occupancy / progress / direction_x / direction_y），整条 episode 锁存不变
+- Action space: 二维绝对 target position
+- Action horizon: 内部 16，闭环执行 8 步（300 步 = 38 次 replan）
+- Control frequency: 10 Hz
+- Policy: `route_field_diffusion`，选中 step 100000（development 8 个 checkpoint 中
+  成功率最高的 0.20）；DDPM full sampling 100 步；`train_seed=1000`；`policy_seed=0`；
+  初始状态为 dataset 第一帧重建
+- Train loss: 200k step 处 0.003（约 621 epoch）
+- Open-loop action error: normalized 0.04886 / denormalized 2991.26
+- Closed-loop success rate: oracle 1/21（4.8%，Wilson 95% [0.85%, 22.7%]）；
+  reversed 2/19、permuted 0/5 属反号服从度读数，非性能指标
+- Latency: replan 均值 597.2 ms、p95 607.9 ms
+- Failure cases: 20/21 条 oracle rollout timeout；`obeyed_rate` 0/19 与 0/5；
+  逆序配对中 13/19 因路线过短而结构上不可判定；permuted mean max reward 仅 0.2782
+- Notes: 45/45 条闭环 rollout 完成，21/21 首帧重建通过。离线闸门显示条件确实进入模型
+  （固定 observation + 固定噪声下逆序使 action chunk 移动 113.6 px、末端 54.1 px），
+  因此负结论是"读到了但没当成指令"。原始产物两处指标缺陷已修正并从同一批 rollout
+  重导出：`final_rotation_error_deg` 参考角由 0 rad 改为目标块角 π/4（oracle 均值
+  102.192° → 89.503°），并补充服从度可判定性口径；两项修正均不改变冻结判据结论。
+  引用旋转误差须使用 `_corrected` 产物。audit run 的 repository commit 为 null，
+  code provenance 未验证。
+- Result artifacts:
+  - `outputs/pusht_diffusion/pilot/route_field_oracle_checkpoint_selection/metrics.json`
+  - `outputs/pusht_diffusion/pilot/route_field_condition_gate/metrics.json`
+  - `outputs/pusht_diffusion/pilot/route_field_held_out_eval/route_field_held_out_eval/metrics.json`
+  - `outputs/pusht_diffusion/pilot/route_field_held_out_eval_corrected/metrics.json`
+  - `reports/2026-08-03-RF7 路线条件遵循正式评测结论.md`
+- Modes: Closed-loop / Formal（闸门与重导出为 Offline）
+
+## 2026-07-31 — SmolVLA LIBERO B0 37-task Domain Adaptation
+
+- Date: 2026-07-31（训练与选模）/ 2026-08-01（held-out test）
+- Task suite: LIBERO-Goal 背景 37 任务（`lerobot/libero`，排除目标任务全局
+  `task_index` 10/17/18，即仿真侧 libero_goal 本地 8/1/4）
+- Dataset size: 1,412 train episodes / 236,470 frames；另有 138 / 23,004 作离线 validation
+- Observation keys: 两路 256×256 RGB（`observation.images.image`、`image2`）+ 8 维
+  `observation.state`
+- Action space: 7 维相对末端动作
+- Action horizon: `chunk_size=50`，执行 `n_action_steps=10`
+- Control frequency: 10 Hz
+- Policy: 从本地 materialized `smolvla_base` 出发；`freeze_vision_encoder=True`、
+  `train_expert_only=True`、`train_state_proj=True`、PEFT 关闭；8 卡 × batch 8 = global 64；
+  BF16；AdamW LR 1e-4 / betas (0.9,0.95) / eps 1e-8 / wd 1e-10 / grad clip 10；
+  warmup 1,000 + cosine 30,000 → 2.5e-6；train seed 1000
+- Train loss: 30,000 updates，首步 0.607，末 1,000 步均值 0.064；loss/grad norm/LR 全程
+  有限，LR 峰值 9.990e-5 出现在 step 999，step 30000 为 2.5e-6
+- Open-loop action error: 未评测（本阶段不做离线动作误差）
+- Closed-loop success rate: background validation 选模 840 条 rollout，winner `025000`
+  macro success 0.8643（121/140）；selected B0 在保留的 test init states 上 210 条 rollout，
+  macro success 0.8714（183/210）
+- Latency: test 集 macro 模型查询延迟 p50 253.2 ms、p95 348.9 ms
+- Failure cases: test 失败 27 条全部为 `time_limit`；最弱任务是 libero_goal 本地 3
+  “open the top drawer and put the bowl inside”，test 0.50（15/30），选模阶段亦最弱（10/20）
+- Notes: 选模用 6 checkpoint × 7 任务 × 20 validation init states；每任务 20/30
+  validation/test init states 互斥且合并覆盖官方 0..49。25000 与 30000 主指标并列，按注册
+  顺序由成功 episode 平均步数分出 25000（120.85 < 122.21）；配对诊断 25k→30k exact
+  McNemar p=1.0、净增益 0，未改动 winner。第一个 tie-breaker `mean_max_reward_desc` 在
+  LIBERO 稀疏 0/1 奖励下恒等于成功率，实际不起作用。**held-out 只针对 init state**：这 7 个
+  任务都在 B0 的 37 个训练任务内，结果为同任务未见初始状态表现，不是跨任务泛化。
+  49 个 job 的 `task.language` 与 split `canonical` 逐条一致，确认两套 task 编号命名空间
+  没有串用。
+- Result artifacts:
+  - `outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/run_config.json`
+  - `outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/train_metrics.jsonl`
+  - `outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoint_selection/checkpoint_results.json`
+  - `outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoint_selection/selected_checkpoint.json`
+  - `outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoint_selection/validation_paired_analysis.json`
+  - `outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/background_test/test_results.json`
+  - `reports/guides/smolvla_libero/02_b0_domain_adaptation.md`
+- Modes: Formal / Offline（训练）；Formal / Closed-loop / Validation（选模）；
+  Formal / Closed-loop / Test（held-out test）
+
+## 2026-08-04 — SmolVLA LIBERO Z0 Baseline and C1 Target Protocol Test
+
+- Date: 2026-08-04
+- Task suite: LIBERO-Goal 三个目标任务（本地编号 1 / 4 / 8；`lerobot/libero` 全局
+  `task_index` 17 / 18 / 10）
+- Dataset size: C1 训练 113 条 demonstration / 11,022 帧；离线 validation 30 条 / 2,969 帧。
+  Z0 不训练
+- Observation keys: 两路 256×256 RGB（`observation.images.image`、`image2`）+ 8 维
+  `observation.state`
+- Action space: 7 维相对末端动作
+- Action horizon: `chunk_size=50`，执行 `n_action_steps=10`
+- Control frequency: 10 Hz
+- Policy: Z0 = selected B0 `025000` 原样零样本；C1 = 从同一 selected B0 出发训练 30,000 步后
+  选出的 `030000`。C1 训练为 `data_parallel_layout=8x1`（全局 batch 8）、BF16、
+  AdamW LR 1e-4 / betas (0.9,0.95) / eps 1e-8 / wd 1e-10 / clip 10、warmup 1,000 +
+  cosine 30,000 → 2.5e-6、seed 1000；`freeze_vision_encoder=True`、`train_expert_only=True`、
+  PEFT 关闭
+- Train loss: C1 30,000 updates，首步 0.1599、末 1,000 步均值 0.01739；grad norm 峰值 9.42；
+  8 个 rank 状态均为 `complete`。Z0 无训练
+- Open-loop action error: C1 选中 checkpoint 归一化 0.309668 / 去归一化 0.040252（30 条离线
+  validation demonstration 的 2,969 帧，固定 flow-noise）。Z0 未评测
+- Closed-loop success rate: C1 validation macro 0.9833（59/60）。test 三套协议——
+  canonical Z0 0/90 对 C1 87/90（0.0% 对 96.7%）；held-out paraphrase Z0 2/90 对 C1 30/90
+  （2.2% 对 33.3%）；prompt compliance Z0 0/30 对 C1 18/30（0.0% 对 60.0%）
+- Latency: 模型查询 p50 / p95 —— Z0 310.1 / 471.3 ms，C1 285.3 / 443.2 ms（各 21 个 job 均值）
+- Failure cases: Z0 canonical 90 条全部 `time_limit`，prompt swap 30 条全部
+  `no_goal_reached`；C1 canonical 3 条 `time_limit`、held-out paraphrase 60 条 `time_limit`、
+  prompt swap 12 条 `no_goal_reached`（其中 stove 指令 10 条全失败且无一跑向其他目标）
+- Notes: 两次评测用同一冻结协议，`contract` 中仅 `model_label` / `policy_path` /
+  `policy_config_sha256` / `jobs`（只差 `output_dir` 与 `log_path`）不同，init states、
+  episode seeds、指令文本完全一致，因此可比。C1 选模中三个 checkpoint 在 0.9833 并列，由第二
+  判据（macro 归一化开环 MSE）分出 `030000`。`para_gap`（canonical 减 held-out paraphrase）
+  点估计 +0.6333、90 个配对 case 上 bootstrap 95% CI `[0.5222, 0.7333]`，不含 0。
+  **prompt compliance 60% 不是均匀听懂六成**：cabinet 10/10、plate 8/10、stove 0/10。
+  同一份 B0 权重以 `checkpoints/025000` 与 `checkpoints/selected` 两个路径各跑一次
+  （sha256 同为 `811bd1a7ba06c32b…`），四个指标块逐值相同，附带验证了确定性。
+  test 的 30 个初始状态与训练摆放同属约 3 cm 范围的同一分布，衡量的是同任务未被使用过的
+  摆放，不是远距离泛化。未记录评测机器源码 commit。
+- Result artifacts:
+  - `outputs/smolvla_libero/pilot/c1_default_non_peft/checkpoint_selection/checkpoint_results.json`
+  - `outputs/smolvla_libero/pilot/c1_default_non_peft/checkpoint_selection/selected_checkpoint.json`
+  - `outputs/smolvla_libero/eval/z0_b0_zero_shot/metrics.json`
+  - `outputs/smolvla_libero/eval/c1_default_non_peft/metrics.json`
+  - `outputs/smolvla_libero/eval/c1_default_non_peft/prompt_goal_confusion.csv`
+  - `reports/2026-08-04-Z0基线与C1目标适配正式评测结论.md`
+- Modes: Formal / Offline（C1 训练）；Formal / Closed-loop / Validation（C1 选模）；
+  Formal / Closed-loop / Test（Z0 与 C1 的 210 条协议评测）
+
+## 2026-08-05 — SmolVLA LIBERO C2 Canonical LoRA Target and Background Test
+
+- Date: 2026-08-05
+- Task suite: LIBERO-Goal 三个目标任务（本地编号 1 / 4 / 8）用于目标协议；7 个背景任务
+  （本地编号 0 / 2 / 3 / 5 / 6 / 7 / 9）用于回退评测
+- Dataset size: 训练 113 条 demonstration / 11,022 帧；离线 validation 30 条 / 2,969 帧
+- Observation keys: 两路 256×256 RGB + 8 维 `observation.state`
+- Action space: 7 维相对末端动作
+- Action horizon: `chunk_size=50`，执行 `n_action_steps=10`
+- Control frequency: 10 Hz
+- Policy: 从 selected B0 `025000` 出发的 LoRA 适配，rank 32 / alpha 8 / dropout 0，target 覆盖
+  `lm_expert` 的 q/v 投影与 `state_proj`、`action_in_proj`、`action_out_proj`、
+  `action_time_mlp_{in,out}`；`data_parallel_layout=8x1`（全局 batch 8）、BF16、30,000 步、
+  每 5,000 步保存；AdamW LR 1e-4 / betas (0.9,0.95) / eps 1e-8 / wd 1e-10 / clip 10；
+  warmup 1,000 + cosine 30,000 → 2.5e-6；seed 1000。选中 checkpoint 为 `020000`
+- Train loss: 30,000 updates，首步 0.1568、末 1,000 步均值 0.06798（C1 同项 0.01739）；
+  grad norm 峰值 0.64（C1 为 9.42）；8 个 rank 状态均为 `complete`
+- Open-loop action error: 选中 checkpoint 归一化 0.371719（C1 为 0.309668）
+- Closed-loop success rate: validation macro 0.9667（58/60）。目标协议 test——canonical
+  87/90 = 96.7%（与 C1 相同）、held-out paraphrase 19/90 = 21.1%（C1 为 33.3%）、
+  prompt compliance 18/30 = 60.0%（与 C1 相同）。背景回退 test——8/210 = 3.8%
+  （C1 为 0/210，B0 记录为 183/210）
+- Latency: 模型查询 p50 376.8 ms、p95 541.4 ms（21 个 job 均值；C1 为 285.3 / 443.2 ms）
+- Failure cases: canonical 3 条 `time_limit`；held-out paraphrase 71 条 `time_limit`；
+  prompt swap 12 条 `no_goal_reached`（stove 指令 10 条全失败）；背景任务 202 条 `time_limit`，
+  七个背景任务中四个为 0/30
+- Notes: 目标协议 contract 与 C1、Z0 仅差 `model_label` / `policy_path` /
+  `policy_config_sha256` / `jobs`（后者只差输出路径），其余 sha256 与 seed 全部相同，因此三者
+  可比。选模中三个 checkpoint 在 0.9667 并列，由第二判据（macro 归一化开环 MSE）分出 `020000`；
+  C2 的最优 step 是 20000 而非终点，且 005000 就已达 0.9667（C1 同期 0.8833），LoRA 收敛更快。
+  **两条负结果**：一是语言泛化更差，`para_gap` 从 C1 的 +0.6333 升到 +0.7556，bootstrap 95% CI
+  `[0.6667, 0.8444]` 与 C1 的 `[0.5222, 0.7333]` 不重叠；二是 LoRA 未防住灾难性遗忘，背景
+  8/210 相对 B0 的保留率仅 4.4%，因此 C1 guide 的 TODO-2 假设验证为负。在数据、LR、步数、
+  batch、seed 全部相同的对照下，遗忘程度对参数化方式不敏感，指向根因是训练数据里没有背景任务。
+  C2 的推理延迟与动作抖动均高于 C1（jerk 0.0588 对 0.0285，gripper 切换 10.52 对 3.76）。
+  B0 背景基线 183/210 取自文档记录，原始产物已丢失且未重跑，故只能做非配对比较。
+  未记录评测机器源码 commit。
+- Result artifacts:
+  - `outputs/smolvla_libero/pilot/c2_canonical_lora/checkpoint_selection/checkpoint_results.json`
+  - `outputs/smolvla_libero/pilot/c2_canonical_lora/checkpoint_selection/selected_checkpoint.json`
+  - `outputs/smolvla_libero/eval/c2_canonical_lora/metrics.json`
+  - `outputs/smolvla_libero/eval/c2_canonical_lora/prompt_goal_confusion.csv`
+  - `outputs/smolvla_libero/eval/background_regression/c2_selected/test_results.json`
+  - `reports/2026-08-05-C2 Canonical LoRA 正式评测结论.md`
+- Modes: Formal / Offline（训练）；Formal / Closed-loop / Validation（选模）；
+  Formal / Closed-loop / Test（目标协议 210 条与背景回退 210 条）

@@ -13,13 +13,24 @@
 #     --num-gpus=8 \
 #     --libero-assets-dir=datasets/raw/libero_assets
 #
+# Direct policy run (skips B0 selection provenance; used for the background
+# regression comparison of an arbitrary finetuned policy):
+#   bash scripts/experiments/smolvla_libero/eval_b0_test.sh \
+#     --run-dir=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline \
+#     --policy-path=outputs/smolvla_libero/pilot/c1_default_non_peft/checkpoints/selected/pretrained_model \
+#     --model-label=c1_selected \
+#     --num-gpus=8 \
+#     --libero-assets-dir=datasets/raw/libero_assets \
+#     --output-dir=outputs/smolvla_libero/eval/background_regression/c1_selected
+#
 # Resume after interruption by repeating the same command with --resume.
 # Validate the frozen workload without launching GPU jobs with --print-command.
 #
 # Outputs (default):
 #   <run-dir>/checkpoint_selection/validation_paired_analysis.json
 #   <run-dir>/checkpoint_selection/validation_paired_analysis.md
-#   <run-dir>/background_test/test_results.json
+#   <output-dir>/test_results.json
+#   <output-dir>/episodes.parquet
 #   <run-dir>/background_test/test_manifest.json
 #   <run-dir>/background_test/metrics.md
 #   <run-dir>/background_test/jobs/task_*/metrics.json

@@ -1,0 +1,43 @@
+{
+  "episode_length": 300,
+  "env_seed": 1000,
+  "held_out_assignment": "test_state_order_modulo_five_v1",
+  "n_action_steps": 10,
+  "paraphrases_sha256": "4f4891da2570f3bf580df32f07583b3f76e7592a2e20400456df711990d3cac3",
+  "policy_seed": 2000,
+  "prompt_swap": {
+    "goal_classifier": "libero_bowl_three_goal_predicate_v1",
+    "prompts": {
+      "cabinet": "put the bowl on top of the cabinet",
+      "plate": "put the bowl on the plate",
+      "stove": "put the bowl on the stove"
+    },
+    "reference_init_state_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      7,
+      9,
+      10,
+      11,
+      12
+    ],
+    "reference_task_id": 1
+  },
+  "protocols": [
+    "canonical",
+    "held_out_paraphrase",
+    "prompt_swap"
+  ],
+  "schema_version": 1,
+  "suite": "libero_goal",
+  "target_split_sha256": "f323688693cba9190b84181ab69e7f21ad707d290d6538aa2480785138901069",
+  "task_ids": [
+    1,
+    4,
+    8
+  ],
+  "total_rollouts": 210
+}

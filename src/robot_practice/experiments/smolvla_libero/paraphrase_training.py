@@ -21,6 +21,14 @@ from .target_training import TargetSplit
 INSTRUCTION_SAMPLING_CONTRACT = "blake2b_seed_step_rank_batch_index_v1"
 CANONICAL_PROBABILITY = 0.25
 PARAPHRASE_PROBABILITY = 0.75
+# The draw is the first 8 digest bytes as a 64-bit unsigned integer, so comparing it against
+# CANONICAL_PROBABILITY * 2**64 is the integer form of ``draw / 2**64 < CANONICAL_PROBABILITY``.
+# The threshold is frozen by INSTRUCTION_SAMPLING_CONTRACT: to change the ratio, bump the
+# contract version instead of editing CANONICAL_PROBABILITY.
+CANONICAL_DRAW_THRESHOLD = 1 << 62
+assert CANONICAL_DRAW_THRESHOLD == int(CANONICAL_PROBABILITY * (1 << 64)), (
+    "CANONICAL_PROBABILITY drifted from the frozen v1 canonical draw threshold"
+)
 SNAPSHOT_SCHEMA_VERSION = 1
 SNAPSHOT_PREFIX = "instruction_counts_step"
 SUMMARY_FILENAME = "instruction_counts.json"
@@ -145,7 +153,7 @@ def choose_instruction(
         task_id=task.task_id,
     )
     canonical_draw = int.from_bytes(digest[:8], byteorder="big", signed=False)
-    if canonical_draw < (1 << 62):
+    if canonical_draw < CANONICAL_DRAW_THRESHOLD:
         return task.canonical, "canonical"
     paraphrase_index = int.from_bytes(digest[8:], byteorder="big", signed=False) % len(
         task.train_paraphrases
@@ -154,9 +162,7 @@ def choose_instruction(
 
 
 def instruction_snapshot_path(run_dir: str | Path, *, step: int, rank: int) -> Path:
-    return resolve_repository_path(run_dir) / (
-        f"{SNAPSHOT_PREFIX}_{step:06d}_rank_{rank}.json"
-    )
+    return resolve_repository_path(run_dir) / (f"{SNAPSHOT_PREFIX}_{step:06d}_rank_{rank}.json")
 
 
 def _batch_values(value: Any, *, field: str) -> list[Any]:
@@ -194,11 +200,12 @@ def _snapshot_counts(
             or canonical_count < 0
         ):
             raise ValueError(f"C3 task {task_id} canonical count is invalid")
-        if not isinstance(train_counts, list) or len(train_counts) != len(
-            task.train_paraphrases
-        ):
+        if not isinstance(train_counts, list) or len(train_counts) != len(task.train_paraphrases):
             raise ValueError(f"C3 task {task_id} train count vector is invalid")
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in train_counts):
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in train_counts
+        ):
             raise ValueError(f"C3 task {task_id} train counts are invalid")
         observed_total = canonical_count + sum(train_counts)
         if total != observed_total:
@@ -306,9 +313,7 @@ class InstructionSelectionTracker:
             if task is None:
                 raise ValueError(f"C3 encountered non-target task index {combined_index}")
             if current_task != task.canonical:
-                raise ValueError(
-                    f"C3 dataset task text for task {task.task_id} is not canonical"
-                )
+                raise ValueError(f"C3 dataset task text for task {task.task_id} is not canonical")
             instruction, instruction_id = choose_instruction(
                 task,
                 seed=self.seed,
@@ -341,8 +346,7 @@ class InstructionSelectionTracker:
             counts = self._counts[task_id]
             canonical_count = int(counts["canonical"])
             train_counts = [
-                int(counts[f"train_{index}"])
-                for index in range(len(task.train_paraphrases))
+                int(counts[f"train_{index}"]) for index in range(len(task.train_paraphrases))
             ]
             task_total = canonical_count + sum(train_counts)
             canonical_total += canonical_count
@@ -509,8 +513,7 @@ def aggregate_instruction_counts(
         counts = aggregate[task_id]
         canonical_count = int(counts["canonical"])
         train_counts = [
-            int(counts[f"train_{index}"])
-            for index in range(len(task.train_paraphrases))
+            int(counts[f"train_{index}"]) for index in range(len(task.train_paraphrases))
         ]
         task_total = canonical_count + sum(train_counts)
         canonical_total += canonical_count

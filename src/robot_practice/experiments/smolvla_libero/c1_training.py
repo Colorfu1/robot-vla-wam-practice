@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import torch
 
 from .b0_training import (
     CAMERA_RENAME_MAP,
@@ -59,9 +61,9 @@ DEFAULT_DATASET_ROOT = "datasets/lerobot/lerobot/libero"
 DEFAULT_SPLIT_FILE = "configs/experiments/smolvla_libero/target_split.json"
 DEFAULT_OUTPUT_DIR = "outputs/smolvla_libero/pilot/c1_default_non_peft"
 DEFAULT_SMOKE_OUTPUT_DIR = "outputs/smolvla_libero/debug/c1_default_non_peft_smoke"
-FORMAL_WORLD_SIZE = 8
-FORMAL_BATCH_SIZE = 1
-FORMAL_GLOBAL_BATCH_SIZE = FORMAL_WORLD_SIZE * FORMAL_BATCH_SIZE
+DEFAULT_WORLD_SIZE = 8
+DEFAULT_BATCH_SIZE = 1
+FORMAL_GLOBAL_BATCH_SIZE = DEFAULT_WORLD_SIZE * DEFAULT_BATCH_SIZE
 
 _FRESH_ONLY_OPTIONS = {
     "--mode",
@@ -75,6 +77,8 @@ _FRESH_ONLY_OPTIONS = {
     "--train-seed",
     "--num-workers",
     "--output-dir",
+    "--overwrite",
+    "--experiment-tag",
 }
 
 
@@ -99,6 +103,8 @@ class C1FreshArguments:
     num_workers: int
     mixed_precision: str
     output_dir: Path
+    overwrite: bool = False
+    experiment_tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -178,10 +184,10 @@ def parse_arguments(
 ) -> C1FreshArguments | C1ResumeArguments | LaunchInspection:
     raw = tuple(sys.argv[1:] if argv is None else argv)
     parser = _UsageParser(description=__doc__)
-    parser.add_argument("--mode", choices=("smoke", "formal"), default="formal")
+    parser.add_argument("--mode", choices=("smoke", "formal", "diagnostic"))
     parser.add_argument("--base-policy", default=DEFAULT_B0_SELECTED_REFERENCE)
-    parser.add_argument("--dataset-root", type=Path, default=Path(DEFAULT_DATASET_ROOT))
-    parser.add_argument("--split-file", type=Path, default=Path(DEFAULT_SPLIT_FILE))
+    parser.add_argument("--dataset-root", type=Path)
+    parser.add_argument("--split-file", type=Path)
     parser.add_argument("--num-processes", type=_positive_integer)
     parser.add_argument("--batch-size", type=_positive_integer)
     parser.add_argument("--steps", type=_positive_integer)
@@ -191,6 +197,18 @@ def parse_arguments(
     parser.add_argument("--num-workers", type=_nonnegative_integer, default=4)
     parser.add_argument("--mixed-precision", choices=("bf16",))
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--experiment-tag",
+        help=(
+            "Short label required by --mode=diagnostic; written into run_config "
+            "so diagnostic runs can never be mistaken for formal results"
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Delete and recreate --output-dir so a fresh run replaces previous artifacts",
+    )
     parser.add_argument("--resume-from", type=Path)
     parser.add_argument("--inspect-launch", action="store_true", help=argparse.SUPPRESS)
     _reject_duplicate_options(parser, raw)
@@ -215,6 +233,18 @@ def parse_arguments(
         )
 
     formal = namespace.mode == "formal"
+    if namespace.mode is None:
+        parser.error("--mode is required for a fresh run")
+    if namespace.mode == "diagnostic" and namespace.experiment_tag is None:
+        parser.error("diagnostic mode requires --experiment-tag")
+    if namespace.mode != "diagnostic" and namespace.experiment_tag is not None:
+        parser.error("--experiment-tag is only valid in diagnostic mode")
+    if namespace.dataset_root is None:
+        parser.error("--dataset-root is required for a fresh run")
+    if namespace.split_file is None:
+        parser.error("--split-file is required for a fresh run")
+    if namespace.output_dir is None:
+        parser.error("--output-dir is required for a fresh run")
     output_dir = namespace.output_dir or Path(
         DEFAULT_OUTPUT_DIR if formal else DEFAULT_SMOKE_OUTPUT_DIR
     )
@@ -225,42 +255,68 @@ def parse_arguments(
         split_file=resolve_repository_path(namespace.split_file),
         num_processes=namespace.num_processes
         if namespace.num_processes is not None
-        else (FORMAL_WORLD_SIZE if formal else 1),
-        batch_size=namespace.batch_size or FORMAL_BATCH_SIZE,
+        else (DEFAULT_WORLD_SIZE if formal else 1),
+        batch_size=namespace.batch_size or DEFAULT_BATCH_SIZE,
         steps=namespace.steps if namespace.steps is not None else (FORMAL_STEPS if formal else 2),
         save_freq=namespace.save_freq
         if namespace.save_freq is not None
         else (FORMAL_SAVE_FREQ if formal else 2),
         learning_rate=namespace.learning_rate or FORMAL_LEARNING_RATE,
-        train_seed=namespace.train_seed
-        if namespace.train_seed is not None
-        else FORMAL_TRAIN_SEED,
+        train_seed=namespace.train_seed if namespace.train_seed is not None else FORMAL_TRAIN_SEED,
         num_workers=namespace.num_workers,
         mixed_precision=namespace.mixed_precision or FORMAL_MIXED_PRECISION,
         output_dir=resolve_repository_path(output_dir),
+        overwrite=namespace.overwrite,
+        experiment_tag=namespace.experiment_tag,
     )
-    validate_fresh_contract(arguments)
+    validate_fresh_contract(arguments, check_gpu_capacity=not namespace.inspect_launch)
     if namespace.inspect_launch:
         return LaunchInspection(arguments.num_processes, arguments.mixed_precision)
     return arguments
 
 
-def validate_fresh_contract(arguments: C1FreshArguments) -> None:
-    if arguments.output_dir.exists():
+def validate_fresh_contract(
+    arguments: C1FreshArguments,
+    *,
+    check_gpu_capacity: bool = True,
+) -> None:
+    if arguments.output_dir.exists() and not arguments.overwrite:
         raise FileExistsError(f"Output directory already exists: {arguments.output_dir}")
     if arguments.save_freq > arguments.steps:
         raise ValueError("save frequency cannot exceed total steps")
-    if arguments.learning_rate != FORMAL_LEARNING_RATE:
+    if arguments.mode != "diagnostic" and arguments.learning_rate != FORMAL_LEARNING_RATE:
         raise ValueError(f"C1 requires learning_rate={FORMAL_LEARNING_RATE}")
     if arguments.train_seed != FORMAL_TRAIN_SEED:
         raise ValueError(f"C1 requires train_seed={FORMAL_TRAIN_SEED}")
-    if arguments.batch_size != FORMAL_BATCH_SIZE:
-        raise ValueError(f"C1 requires per-GPU batch_size={FORMAL_BATCH_SIZE}")
+    if check_gpu_capacity and arguments.num_processes > torch.cuda.device_count():
+        raise ValueError(
+            f"Requested --num-processes={arguments.num_processes} but only "
+            f"{torch.cuda.device_count()} CUDA GPU(s) are visible; select GPUs with "
+            "CUDA_VISIBLE_DEVICES"
+        )
+    if arguments.mode == "diagnostic":
+        if arguments.train_seed != FORMAL_TRAIN_SEED:
+            raise ValueError(f"Diagnostic C1 requires train_seed={FORMAL_TRAIN_SEED}")
+        if arguments.mixed_precision != FORMAL_MIXED_PRECISION:
+            raise ValueError(f"Diagnostic C1 requires mixed_precision={FORMAL_MIXED_PRECISION}")
+        if arguments.save_freq != FORMAL_SAVE_FREQ:
+            raise ValueError(f"Diagnostic C1 requires save_freq={FORMAL_SAVE_FREQ}")
+        if arguments.batch_size * arguments.num_processes != FORMAL_GLOBAL_BATCH_SIZE:
+            raise ValueError(
+                "Diagnostic C1 requires global batch size "
+                f"{FORMAL_GLOBAL_BATCH_SIZE} (legal layouts: 8x1, 4x2, 2x4, 1x8); "
+                f"got {arguments.num_processes}x{arguments.batch_size}"
+            )
+        return
     if arguments.mode != "formal":
         return
+    if arguments.batch_size * arguments.num_processes != FORMAL_GLOBAL_BATCH_SIZE:
+        raise ValueError(
+            "Formal C1 requires global batch size "
+            f"{FORMAL_GLOBAL_BATCH_SIZE} (legal layouts: 8x1, 4x2, 2x4, 1x8); "
+            f"got {arguments.num_processes}x{arguments.batch_size}"
+        )
     expected = {
-        "num_processes": FORMAL_WORLD_SIZE,
-        "batch_size": FORMAL_BATCH_SIZE,
         "steps": FORMAL_STEPS,
         "save_freq": FORMAL_SAVE_FREQ,
         "learning_rate": FORMAL_LEARNING_RATE,
@@ -271,8 +327,6 @@ def validate_fresh_contract(arguments: C1FreshArguments) -> None:
         actual = getattr(arguments, field)
         if actual != value:
             raise ValueError(f"Formal C1 requires {field}={value!r}, got {actual!r}")
-    if arguments.batch_size * arguments.num_processes != FORMAL_GLOBAL_BATCH_SIZE:
-        raise ValueError(f"Formal C1 requires global batch size {FORMAL_GLOBAL_BATCH_SIZE}")
 
 
 def _resolve_vlm_assets(policy: Any) -> Path:
@@ -282,8 +336,7 @@ def _resolve_vlm_assets(policy: Any) -> Path:
     candidate = resolve_repository_path(reference)
     if not candidate.is_dir():
         fallback = resolve_repository_path(
-            Path("policies/smolvla_or_pi0/smolvla_base")
-            / OFFLINE_VLM_ASSETS_DIRNAME
+            Path("policies/smolvla_or_pi0/smolvla_base") / OFFLINE_VLM_ASSETS_DIRNAME
         )
         if fallback.is_dir():
             candidate = fallback
@@ -294,8 +347,7 @@ def _validate_selection(root: Path) -> dict[str, Any]:
     selection_path = root.parent / "selected_checkpoint.json"
     if not selection_path.is_file():
         raise FileNotFoundError(
-            "Formal C1 requires the selected B0 checkpoint copy; "
-            f"missing {selection_path}"
+            f"Formal C1 requires the selected B0 checkpoint copy; missing {selection_path}"
         )
     selection = load_json_object(selection_path)
     if selection.get("status") != "complete":
@@ -319,7 +371,11 @@ def resolve_c1_base_policy(reference: str, *, require_selection: bool) -> C1Base
 
     root = resolve_repository_path(reference)
     if not root.is_dir():
-        raise FileNotFoundError(f"Selected B0 pretrained_model is missing: {root}")
+        raise FileNotFoundError(
+            f"Selected B0 pretrained_model is missing: {root}; publish it first with "
+            "scripts/experiments/smolvla_libero/publish_selected_b0.sh. Do not point "
+            "--base-policy at checkpoints/last or an arbitrary step"
+        )
     required = (
         "config.json",
         "model.safetensors",
@@ -330,7 +386,10 @@ def resolve_c1_base_policy(reference: str, *, require_selection: bool) -> C1Base
     missing = [filename for filename in required if not (root / filename).is_file()]
     if missing:
         raise FileNotFoundError(
-            f"Selected B0 pretrained_model is incomplete; missing {', '.join(missing)}"
+            f"Selected B0 pretrained_model is incomplete; missing {', '.join(missing)}. "
+            "Publish the trusted selection with "
+            "scripts/experiments/smolvla_libero/publish_selected_b0.sh instead of "
+            "pointing --base-policy at an arbitrary step"
         )
     policy = PreTrainedConfig.from_pretrained(root)
     if not isinstance(policy, SmolVLAConfig):
@@ -386,12 +445,16 @@ def configure_c1_policy(
     policy.output_features = {
         "action": PolicyFeature(type=FeatureType.ACTION, shape=(EXPECTED_ACTION_DIM,))
     }
-    validate_c1_policy_preset(policy)
+    validate_c1_policy_preset(policy, expected_learning_rate=learning_rate)
     return policy
 
 
-def validate_c1_policy_preset(policy: Any) -> None:
-    validate_policy_preset(policy)
+def validate_c1_policy_preset(
+    policy: Any,
+    *,
+    expected_learning_rate: float | None = None,
+) -> None:
+    validate_policy_preset(policy, expected_learning_rate=expected_learning_rate)
     if policy.use_peft is not False:
         raise ValueError("C1 must not use PEFT")
     if policy.train_expert_only is not True or policy.freeze_vision_encoder is not True:
@@ -449,20 +512,24 @@ def build_run_config(
             "selection_set": base_selection["selection_set"],
             "policy_seed": base_selection.get("policy_seed"),
             "provenance_sha256": sha256_file(
-                resolve_repository_path(arguments.base_policy).parent
-                / "selected_checkpoint.json"
+                resolve_repository_path(arguments.base_policy).parent / "selected_checkpoint.json"
             ),
         }
     return {
         "schema_version": 1,
         "experiment": EXPERIMENT_NAME,
         "experiment_name": RESULT_NAME,
-        "result_label": "Formal" if arguments.mode == "formal" else "Smoke",
+        "result_label": (
+            "Formal"
+            if arguments.mode == "formal"
+            else ("Diagnostic" if arguments.mode == "diagnostic" else "Smoke")
+        ),
         "inputs": {
             "dataset_repo_id": DATASET_REPO_ID,
             "dataset_root": portable_path(arguments.dataset_root),
             "split_file": portable_path(split.source),
             "split_sha256": split.sha256,
+            "overwrite": arguments.overwrite,
             "base_policy": dataclasses.asdict(base_identity),
             "base_selection": selection_summary,
         },
@@ -483,9 +550,11 @@ def build_run_config(
         },
         "training": {
             "mode": arguments.mode,
+            "experiment_tag": getattr(arguments, "experiment_tag", None),
             "world_size": arguments.num_processes,
             "per_gpu_batch_size": arguments.batch_size,
             "global_batch_size": arguments.num_processes * arguments.batch_size,
+            "data_parallel_layout": f"{arguments.num_processes}x{arguments.batch_size}",
             "mixed_precision": arguments.mixed_precision,
             "steps": arguments.steps,
             "save_freq": arguments.save_freq,
@@ -520,6 +589,41 @@ def inspect_resume_launch(resume_from: str | Path) -> tuple[int, str]:
     return world_size, mixed_precision
 
 
+def validate_resume_batch_contract(
+    *,
+    requested_world_size: int,
+    training: Mapping[str, Any],
+) -> None:
+    """Enforce the recorded batch contract without hard-coding the world size."""
+
+    world_size = training.get("world_size")
+    per_gpu_batch = training.get("per_gpu_batch_size")
+    if not isinstance(world_size, int) or not isinstance(per_gpu_batch, int):
+        raise TypeError("C1 run_config batch contract is invalid")
+    _require_equal(
+        training.get("global_batch_size"),
+        world_size * per_gpu_batch,
+        field="global_batch_size",
+    )
+    _require_equal(requested_world_size, world_size, field="world_size")
+
+
+def validate_resume_formal_contract(training: Mapping[str, Any]) -> None:
+    """Check frozen formal settings while allowing any legal data-parallel layout."""
+
+    _require_equal(
+        training.get("global_batch_size"),
+        FORMAL_GLOBAL_BATCH_SIZE,
+        field="global_batch_size",
+    )
+    for field, expected in {
+        "mixed_precision": FORMAL_MIXED_PRECISION,
+        "steps": FORMAL_STEPS,
+        "save_freq": FORMAL_SAVE_FREQ,
+    }.items():
+        _require_equal(training.get(field), expected, field=field)
+
+
 def validate_resume(arguments: C1ResumeArguments) -> C1ResumeContext:
     checkpoint_dir = arguments.resume_from
     run_dir = checkpoint_run_dir(checkpoint_dir)
@@ -538,36 +642,21 @@ def validate_resume(arguments: C1ResumeArguments) -> C1ResumeContext:
     dataset_record = run_config.get("dataset")
     if not all(isinstance(value, dict) for value in (training, inputs, dataset_record)):
         raise TypeError("C1 run_config lacks training, inputs, or dataset settings")
-    _require_equal(arguments.num_processes, training.get("world_size"), field="world_size")
+    validate_resume_batch_contract(
+        requested_world_size=arguments.num_processes,
+        training=training,
+    )
     _require_equal(
         arguments.mixed_precision,
         training.get("mixed_precision"),
         field="mixed_precision",
-    )
-    world_size = training.get("world_size")
-    per_gpu_batch = training.get("per_gpu_batch_size")
-    if not isinstance(world_size, int) or not isinstance(per_gpu_batch, int):
-        raise TypeError("C1 run_config batch contract is invalid")
-    _require_equal(
-        training.get("global_batch_size"),
-        world_size * per_gpu_batch,
-        field="global_batch_size",
     )
     _require_equal(training.get("seed"), FORMAL_TRAIN_SEED, field="train_seed")
     mode = training.get("mode")
     if mode not in {"smoke", "formal"}:
         raise ValueError("C1 run_config mode is invalid")
     if mode == "formal":
-        formal_contract = {
-            "world_size": FORMAL_WORLD_SIZE,
-            "per_gpu_batch_size": FORMAL_BATCH_SIZE,
-            "global_batch_size": FORMAL_GLOBAL_BATCH_SIZE,
-            "mixed_precision": FORMAL_MIXED_PRECISION,
-            "steps": FORMAL_STEPS,
-            "save_freq": FORMAL_SAVE_FREQ,
-        }
-        for field, expected in formal_contract.items():
-            _require_equal(training.get(field), expected, field=field)
+        validate_resume_formal_contract(training)
     validate_base_policy_identity(inputs.get("base_policy"))
     _require_equal(dataset_record.get("sampler"), SAMPLING_STRATEGY, field="sampler")
 

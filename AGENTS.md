@@ -23,6 +23,10 @@ this repository.
 - `policies/` is organized by policy family: `bc`, `act`, `diffusion_policy`,
   `smolvla_or_pi0`, and `wam_tiny`.
 - `eval/` holds rollout, metric, and perturbation utilities.
+- `plans/` is the single entry point for work that still needs to be executed. It
+  replaces the former `docs/superpowers/plans/`; see `plans/README.md` for the
+  naming, status vocabulary, and required sections. Plans describe what to run and
+  how to judge completion; they do not carry results or report prose.
 - `reports/experiment_log.md` is the required experiment record.
 - `data/` remains for compatibility with the earlier workspace, but new datasets
   should use `datasets/`.

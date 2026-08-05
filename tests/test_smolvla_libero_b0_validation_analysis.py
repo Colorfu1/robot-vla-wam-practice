@@ -134,9 +134,7 @@ def _analysis_arguments(tmp_path: Path) -> analysis.ValidationAnalysisArguments:
             "mean_successful_episode_steps": 110.0,
         },
     ]
-    (selection_dir / "selected_checkpoint.json").write_text(
-        json.dumps(selected), encoding="utf-8"
-    )
+    (selection_dir / "selected_checkpoint.json").write_text(json.dumps(selected), encoding="utf-8")
     (selection_dir / "checkpoint_results.json").write_text(
         json.dumps({"status": "complete", "ranking": ranking}), encoding="utf-8"
     )
@@ -167,9 +165,7 @@ def test_validation_analysis_compares_20k_25k_and_30k_without_rollouts(
 
     assert result["num_paired_cases"] == 140
     assert result["selected_checkpoint_step"] == 25000
-    pairs = {
-        (item["from_step"], item["to_step"]): item for item in result["pairwise"]
-    }
+    pairs = {(item["from_step"], item["to_step"]): item for item in result["pairwise"]}
     assert pairs[(20000, 25000)]["gains"] == 14
     assert pairs[(20000, 25000)]["regressions"] == 0
     assert pairs[(25000, 30000)]["gains"] == 7

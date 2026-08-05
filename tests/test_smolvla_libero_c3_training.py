@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import shlex
 import subprocess
@@ -8,7 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from robot_practice.experiments.smolvla_libero.c2_training import C2FreshArguments
+from robot_practice.experiments.smolvla_libero import c3_training
+from robot_practice.experiments.smolvla_libero.b0_training import BasePolicyIdentity
+from robot_practice.experiments.smolvla_libero.c1_training import DEFAULT_WORLD_SIZE
+from robot_practice.experiments.smolvla_libero.c2_training import (
+    C2FreshArguments,
+    PeftInspection,
+    requested_peft_config,
+)
 from robot_practice.experiments.smolvla_libero.c2_training import (
     build_train_config as build_c2_train_config,
 )
@@ -17,9 +25,9 @@ from robot_practice.experiments.smolvla_libero.c3_training import (
     DEFAULT_PARAPHRASES_FILE,
     FORMAL_GLOBAL_BATCH_SIZE,
     FORMAL_LORA_RANK,
-    FORMAL_WORLD_SIZE,
     C3FreshArguments,
     LaunchInspection,
+    build_run_config,
     build_train_config,
     parse_arguments,
 )
@@ -100,6 +108,15 @@ def _batch(spec, task_id: int, dataset_index: int) -> dict:
         "task_index": [task.combined_task_index],
         "index": [dataset_index],
         "task": [task.canonical],
+    }
+
+
+def _batch_multi(spec, task_id: int, dataset_indices: list[int]) -> dict:
+    task = spec.tasks[task_id]
+    return {
+        "task_index": [task.combined_task_index] * len(dataset_indices),
+        "index": list(dataset_indices),
+        "task": [task.canonical] * len(dataset_indices),
     }
 
 
@@ -346,7 +363,7 @@ def test_no_argument_cli_resolves_frozen_formal_launch(tmp_path: Path) -> None:
     )
 
     assert isinstance(inspection, LaunchInspection)
-    assert inspection.num_processes == FORMAL_WORLD_SIZE == 8
+    assert inspection.num_processes == DEFAULT_WORLD_SIZE == 8
     assert inspection.mixed_precision == "bf16"
 
 
@@ -371,6 +388,185 @@ def test_formal_cli_rejects_contract_drift(tmp_path: Path, override: str) -> Non
                 f"--output-dir={tmp_path / 'formal'}",
             ]
         )
+
+
+def test_formal_accepts_four_gpus_two_per_gpu_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c3_training.torch.cuda, "device_count", lambda: 4)
+    arguments = parse_arguments(
+        [
+            "--num-processes=4",
+            "--batch-size=2",
+            f"--output-dir={tmp_path / 'formal'}",
+        ]
+    )
+
+    assert isinstance(arguments, C3FreshArguments)
+    assert arguments.num_processes == 4
+    assert arguments.batch_size == 2
+    assert arguments.num_processes * arguments.batch_size == FORMAL_GLOBAL_BATCH_SIZE
+
+
+def test_formal_rejects_global_batch_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c3_training.torch.cuda, "device_count", lambda: 4)
+    with pytest.raises(ValueError, match=r"8x1, 4x2, 2x4, 1x8"):
+        parse_arguments(
+            [
+                "--num-processes=4",
+                "--batch-size=1",
+                f"--output-dir={tmp_path / 'formal'}",
+            ]
+        )
+
+
+def test_fresh_rejects_more_processes_than_visible_gpus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c3_training.torch.cuda, "device_count", lambda: 1)
+    with pytest.raises(ValueError, match="CUDA_VISIBLE_DEVICES"):
+        parse_arguments(
+            [
+                "--num-processes=2",
+                "--batch-size=4",
+                f"--output-dir={tmp_path / 'formal'}",
+            ]
+        )
+
+
+def test_run_config_records_data_parallel_layout(tmp_path: Path) -> None:
+    arguments = dataclasses.replace(
+        _fresh_arguments(tmp_path),
+        mode="formal",
+        num_processes=4,
+        batch_size=2,
+    )
+    split = load_target_split(SPLIT_FILE)
+    dataset_audit = SimpleNamespace(
+        fps=10,
+        features={"observation.image": {"shape": [3, 256, 256]}},
+    )
+    train_config = SimpleNamespace(
+        to_dict=lambda: {"optimizer": {"type": "adamw"}, "scheduler": {"type": "cosine"}},
+        use_policy_training_preset=True,
+        peft=requested_peft_config(32),
+    )
+    base_identity = BasePolicyIdentity(
+        requested="policies/smolvla_or_pi0/smolvla_base",
+        source_type="local",
+        resolved_revision=None,
+        files_sha256={},
+    )
+    peft_inspection = PeftInspection(
+        total_parameters=1,
+        trainable_parameters=1,
+        trainable_parameter_names=(),
+        effective_config={},
+    )
+    paraphrase_spec = load_paraphrase_training_spec(PARAPHRASES_FILE, split)
+
+    payload = build_run_config(
+        arguments=arguments,
+        split=split,
+        dataset_audit=dataset_audit,
+        base_identity=base_identity,
+        base_selection=None,
+        train_config=train_config,
+        peft_inspection=peft_inspection,
+        paraphrase_spec=paraphrase_spec,
+    )
+
+    assert payload["training"]["data_parallel_layout"] == "4x2"
+    assert payload["training"]["global_batch_size"] == 8
+
+
+def test_resume_rejects_changed_world_size() -> None:
+    training = {
+        "world_size": 8,
+        "per_gpu_batch_size": 1,
+        "global_batch_size": 8,
+    }
+    with pytest.raises(ValueError, match="world_size"):
+        c3_training.validate_resume_batch_contract(
+            requested_world_size=4,
+            training=training,
+        )
+    c3_training.validate_resume_batch_contract(
+        requested_world_size=8,
+        training=training,
+    )
+
+
+def test_resume_formal_contract_allows_any_legal_layout() -> None:
+    training = {
+        "world_size": 4,
+        "per_gpu_batch_size": 2,
+        "global_batch_size": 8,
+        "mixed_precision": "bf16",
+        "steps": 30000,
+        "save_freq": 5000,
+    }
+    c3_training.validate_resume_batch_contract(
+        requested_world_size=4,
+        training=training,
+    )
+    c3_training.validate_resume_formal_contract(training)
+    with pytest.raises(ValueError, match="global_batch_size"):
+        c3_training.validate_resume_formal_contract(dict(training, global_batch_size=4))
+
+
+def test_instruction_snapshots_scale_with_world_size_and_keep_global_total(
+    tmp_path: Path,
+) -> None:
+    split = load_target_split(SPLIT_FILE)
+    spec = load_paraphrase_training_spec(PARAPHRASES_FILE, split)
+    for world_size, batch_size in ((4, 2), (8, 1)):
+        run_dir = tmp_path / f"world_{world_size}"
+        run_dir.mkdir()
+        for rank in range(world_size):
+            tracker = InstructionSelectionTracker(
+                spec=spec,
+                split=split,
+                seed=1000,
+                rank=rank,
+                world_size=world_size,
+                batch_size=batch_size,
+                initial_step=0,
+                total_steps=3,
+                save_freq=3,
+                output_dir=run_dir,
+                attempt_id=0,
+            )
+            for step, task_id in enumerate((1, 4, 8), start=1):
+                tracker.apply(
+                    _batch_multi(
+                        spec,
+                        task_id,
+                        dataset_indices=[
+                            rank * 100 + step * 10 + batch_index
+                            for batch_index in range(batch_size)
+                        ],
+                    )
+                )
+                tracker.complete_step()
+            tracker.ensure_complete()
+
+        summary = aggregate_instruction_counts(
+            run_dir=run_dir,
+            spec=spec,
+            split=split,
+            seed=1000,
+            step=3,
+            world_size=world_size,
+            batch_size=batch_size,
+        )
+        assert summary["total_selections"] == 24
+        assert len(summary["rank_snapshots"]) == world_size
 
 
 def test_c3_train_config_matches_c2_except_for_job_name(tmp_path: Path) -> None:
@@ -430,3 +626,26 @@ def test_shell_prints_one_command_formal_accelerate_launch(tmp_path: Path) -> No
     assert "--multi_gpu" in command
     assert "robot_practice.experiments.smolvla_libero.train_c3" in command
     assert FORMAL_GLOBAL_BATCH_SIZE == 8
+
+
+def test_shell_prints_four_gpu_two_batch_accelerate_launch(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--num-processes=4",
+            "--batch-size=2",
+            f"--output-dir={tmp_path / 'formal'}",
+            "--print-command",
+        ],
+        cwd=PRACTICE_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert "--num_processes=4" in command
+    assert "--multi_gpu" in command
+    assert "robot_practice.experiments.smolvla_libero.train_c3" in command

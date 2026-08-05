@@ -46,9 +46,7 @@ from robot_practice.experiments.smolvla_libero.train_b0 import (
 )
 
 PRACTICE_ROOT = Path(__file__).resolve().parents[1]
-SPLIT_FILE = (
-    PRACTICE_ROOT / "configs/experiments/smolvla_libero/background_split.json"
-)
+SPLIT_FILE = PRACTICE_ROOT / "configs/experiments/smolvla_libero/background_split.json"
 SCRIPT = PRACTICE_ROOT / "scripts/experiments/smolvla_libero/train_b0.sh"
 
 
@@ -163,6 +161,54 @@ def test_fresh_cli_defaults_to_materialized_local_base_policy(tmp_path: Path) ->
     assert arguments.base_policy == LOCAL_BASE_POLICY_REFERENCE
 
 
+def test_fresh_cli_overwrite_flag_allows_existing_output_dir(tmp_path: Path) -> None:
+    output_dir = tmp_path / "smoke"
+    output_dir.mkdir()
+    base_args = [
+        "--mode=smoke",
+        "--dataset-root=datasets/lerobot/lerobot/libero",
+        f"--split-file={SPLIT_FILE}",
+        f"--output-dir={output_dir}",
+    ]
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        parse_arguments(base_args)
+
+    arguments = parse_arguments([*base_args, "--overwrite"])
+    assert isinstance(arguments, FreshArguments)
+    assert arguments.overwrite is True
+
+
+def test_fresh_run_overwrite_replaces_previous_artifacts(tmp_path: Path) -> None:
+    output_dir = tmp_path / "run"
+    output_dir.mkdir()
+    (output_dir / "run_config.json").write_text('{"stale": true}', encoding="utf-8")
+    (output_dir / "stale_marker.txt").write_text("old", encoding="utf-8")
+    staging = tmp_path / ".run.run_config.json"
+    staging.write_text('{"stale": true}', encoding="utf-8")
+
+    with train_b0_module._attempt_artifacts(
+        output_dir=output_dir,
+        attempt_id=0,
+        initial_step=0,
+        run_config={"experiment": "smoke", "overwrite": True},
+        resume=False,
+        overwrite=True,
+        enabled=True,
+    ):
+        # Training creates the output directory (checkpoints land there); the
+        # staging files are published into it afterwards.
+        output_dir.mkdir()
+
+    assert (output_dir / "run_config.json").is_file()
+    assert (output_dir / "train_metrics.jsonl").is_file()
+    assert (output_dir / "train.log").is_file()
+    assert not (output_dir / "stale_marker.txt").exists()
+    assert not staging.exists()
+    payload = json.loads((output_dir / "run_config.json").read_text(encoding="utf-8"))
+    assert payload == {"experiment": "smoke", "overwrite": True}
+
+
 def test_explicit_missing_local_base_policy_fails_without_hub_lookup(tmp_path: Path) -> None:
     missing = tmp_path / "missing_base_policy"
 
@@ -203,18 +249,17 @@ def test_local_vlm_assets_are_resolved_without_hub_calls(
     monkeypatch.setattr(
         AutoConfig,
         "from_pretrained",
-        lambda path, *, local_files_only: calls.append(
-            ("config", Path(path), local_files_only)
-        )
-        or SimpleNamespace(model_type="smolvlm"),
+        lambda path, *, local_files_only: (
+            calls.append(("config", Path(path), local_files_only))
+            or SimpleNamespace(model_type="smolvlm")
+        ),
     )
     monkeypatch.setattr(
         AutoProcessor,
         "from_pretrained",
-        lambda path, *, local_files_only: calls.append(
-            ("processor", Path(path), local_files_only)
-        )
-        or object(),
+        lambda path, *, local_files_only: (
+            calls.append(("processor", Path(path), local_files_only)) or object()
+        ),
     )
 
     assert validate_local_vlm_assets(assets) == assets.resolve()
@@ -438,14 +483,18 @@ def test_failed_fresh_attempt_publishes_diagnostics_after_checkpoint_dir_exists(
     tmp_path: Path,
 ) -> None:
     output_dir = tmp_path / "run"
-    with pytest.raises(RuntimeError, match="training failed"), _attempt_artifacts(
-        output_dir=output_dir,
-        attempt_id=0,
-        initial_step=0,
-        run_config={"experiment": "test"},
-        resume=False,
-        enabled=True,
-    ) as sink:
+    with (
+        pytest.raises(RuntimeError, match="training failed"),
+        _attempt_artifacts(
+            output_dir=output_dir,
+            attempt_id=0,
+            initial_step=0,
+            run_config={"experiment": "test"},
+            resume=False,
+            overwrite=False,
+            enabled=True,
+        ) as sink,
+    ):
         assert sink is not None
         sink.write({"record_type": "start", "step": 0})
         output_dir.mkdir()
@@ -588,8 +637,7 @@ def test_resume_restores_latest_complete_checkpoint_contract(
         encoding="utf-8",
     )
     (arguments.output_dir / "train_metrics.jsonl").write_text(
-        json.dumps({"record_type": "train_step", "attempt_id": 0, "step": 2})
-        + "\n",
+        json.dumps({"record_type": "train_step", "attempt_id": 0, "step": 2}) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(b0_training, "load_background_split", lambda _: split)
@@ -617,24 +665,15 @@ def test_resume_rebases_legacy_paths_and_keeps_new_checkpoint_paths_relative(
 
     config = SimpleNamespace(
         policy=SimpleNamespace(
-            vlm_model_name=(
-                "/remote/practice/policies/smolvla_or_pi0/"
-                "smolvla_base/vlm_assets"
-            ),
-            pretrained_path=(
-                "/remote/practice/policies/smolvla_or_pi0/smolvla_base"
-            ),
+            vlm_model_name=("/remote/practice/policies/smolvla_or_pi0/smolvla_base/vlm_assets"),
+            pretrained_path=("/remote/practice/policies/smolvla_or_pi0/smolvla_base"),
         ),
-        dataset=SimpleNamespace(
-            root="/remote/practice/datasets/lerobot/lerobot/libero"
-        ),
+        dataset=SimpleNamespace(root="/remote/practice/datasets/lerobot/lerobot/libero"),
         output_dir=Path("/remote/practice/outputs/smolvla_libero/run"),
         resume=False,
     )
     run_dir = PRACTICE_ROOT / "outputs/smolvla_libero/run"
-    config_path = (
-        run_dir / "checkpoints/005000/pretrained_model/train_config.json"
-    )
+    config_path = run_dir / "checkpoints/005000/pretrained_model/train_config.json"
     context = SimpleNamespace(
         config_path=config_path,
         run_dir=run_dir,
@@ -653,8 +692,7 @@ def test_resume_rebases_legacy_paths_and_keeps_new_checkpoint_paths_relative(
     monkeypatch.setattr(
         train_b0_module,
         "validate_local_vlm_assets",
-        lambda _: PRACTICE_ROOT
-        / "policies/smolvla_or_pi0/smolvla_base/vlm_assets",
+        lambda _: PRACTICE_ROOT / "policies/smolvla_or_pi0/smolvla_base/vlm_assets",
     )
 
     (
@@ -683,8 +721,7 @@ def test_resume_rebases_legacy_paths_and_keeps_new_checkpoint_paths_relative(
     assert saved_step == 5000
     assert run_config is None
     assert resume_config_path == Path(
-        "outputs/smolvla_libero/run/checkpoints/005000/"
-        "pretrained_model/train_config.json"
+        "outputs/smolvla_libero/run/checkpoints/005000/pretrained_model/train_config.json"
     )
     assert returned_context is context
 

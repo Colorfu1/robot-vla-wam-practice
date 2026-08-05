@@ -26,6 +26,7 @@ from robot_practice.policies.mode_conditioning import (
     PROTOTYPE_ID,
     validate_and_latch_prototype,
 )
+from robot_practice.policies.route_field_conditioning import ROUTE_FIELD
 
 from .noise import (
     full_sampling_reverse_noise_seed,
@@ -57,7 +58,9 @@ DIFFUSION_SAMPLING_PROTOCOLS = frozenset(
         FULL_DDPM_SAMPLING,
     }
 )
-DIFFUSION_POLICY_TYPES = frozenset({"diffusion", "mode_diffusion"})
+DIFFUSION_POLICY_TYPES = frozenset(
+    {"diffusion", "mode_diffusion", "route_field_diffusion"}
+)
 
 
 def is_diffusion_sampling_policy(policy: torch.nn.Module) -> bool:
@@ -168,6 +171,8 @@ class ExplicitChunkExecutor:
         }
         if PROTOTYPE_ID in current_batch:
             frozen[PROTOTYPE_ID] = current_batch[PROTOTYPE_ID]
+        if ROUTE_FIELD in current_batch:
+            frozen[ROUTE_FIELD] = current_batch[ROUTE_FIELD]
         return frozen
 
     def _query_chunk(

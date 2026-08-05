@@ -43,8 +43,12 @@ Fresh options:
   --split-file=FILE            Default: target_split.json.
   --paraphrases=FILE           Default: paraphrases.json bound by split SHA-256.
   --canonical-probability=0.25 Frozen canonical instruction probability.
-  --num-processes=N            Formal: 8; smoke: 1.
-  --batch-size=1               C3 is frozen to batch 1 per GPU.
+  --num-processes=N            Formal defaults to 8; smoke to 1. Must not exceed
+                               the visible GPUs; select cards with
+                               CUDA_VISIBLE_DEVICES.
+  --batch-size=N               Per-GPU batch. Formal requires N x num-processes = 8
+                               (legal layouts: 8x1, 4x2, 2x4, 1x8); smoke defaults
+                               to 1.
   --steps=N                    Formal: 30000; smoke: 2.
   --save-freq=N                Formal: 5000; smoke: 2.
   --learning-rate=0.0001       Frozen optimizer peak learning rate.

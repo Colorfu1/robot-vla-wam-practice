@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -70,6 +71,17 @@ def _staging_path(output_dir: Path, filename: str) -> Path:
     return output_dir.parent / f".{output_dir.name}.{filename}"
 
 
+def _clear_run_artifacts(output_dir: Path) -> None:
+    """Remove a previous fresh run so ``--overwrite`` can start cleanly."""
+
+    if output_dir.is_dir():
+        shutil.rmtree(output_dir)
+    for filename in _RUN_ARTIFACT_FILENAMES:
+        staging = _staging_path(output_dir, filename)
+        if staging.exists():
+            staging.unlink()
+
+
 def _publish_staging_files(output_dir: Path, filenames: tuple[str, ...]) -> None:
     if not output_dir.is_dir():
         return
@@ -91,6 +103,7 @@ def _attempt_artifacts(
     initial_step: int,
     run_config: dict[str, Any] | None,
     resume: bool,
+    overwrite: bool,
     enabled: bool,
 ) -> Any:
     if not enabled:
@@ -107,6 +120,8 @@ def _attempt_artifacts(
         metrics_mode = "a"
         log_mode = "a"
     else:
+        if overwrite:
+            _clear_run_artifacts(output_dir)
         run_config_path = _staging_path(output_dir, "run_config.json")
         metrics_path = _staging_path(output_dir, "train_metrics.jsonl")
         log_path = _staging_path(output_dir, "train.log")
@@ -243,8 +258,7 @@ def _validate_accelerator(
 
     if accelerator.num_processes != expected_processes:
         raise RuntimeError(
-            f"Expected {expected_processes} Accelerate processes, "
-            f"found {accelerator.num_processes}"
+            f"Expected {expected_processes} Accelerate processes, found {accelerator.num_processes}"
         )
     if accelerator.mixed_precision != expected_mixed_precision:
         raise RuntimeError(
@@ -297,8 +311,7 @@ def _fresh_training(
             learning_rate=arguments.learning_rate,
         )
         print(
-            "Offline SmolVLA base-policy preflight passed "
-            f"({parameter_count:,} parameters)",
+            f"Offline SmolVLA base-policy preflight passed ({parameter_count:,} parameters)",
             flush=True,
         )
     accelerator.wait_for_everyone()
@@ -412,6 +425,7 @@ def run_training(arguments: FreshArguments | ResumeArguments) -> None:
             initial_step=initial_step,
             run_config=run_config,
             resume=resume,
+            overwrite=(arguments.overwrite if isinstance(arguments, FreshArguments) else False),
             enabled=accelerator.is_main_process,
         ) as sink:
             try:

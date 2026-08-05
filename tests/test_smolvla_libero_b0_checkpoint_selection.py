@@ -87,9 +87,7 @@ def test_discovery_requires_every_frozen_checkpoint(tmp_path: Path) -> None:
 
 def test_explicit_candidate_paths_cover_the_complete_frozen_set(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
-    policies = {
-        step: _complete_checkpoint(run_dir, step) for step in (5000, 10000, 15000)
-    }
+    policies = {step: _complete_checkpoint(run_dir, step) for step in (5000, 10000, 15000)}
 
     discovered = selection.discover_candidate_checkpoints(
         run_dir=run_dir,
@@ -221,6 +219,113 @@ def test_selected_checkpoint_publication_never_renames_a_directory(
     )
 
     assert (selected_dir / "pretrained_model" / "model.safetensors").is_file()
+
+
+def _selection_json(tmp_path: Path, *, step: int = 25000, source_checkpoint: Path) -> Path:
+    selection_file = tmp_path / "selected_checkpoint.json"
+    selection_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "complete",
+                "selection_set": "background_validation",
+                "selected_checkpoint_step": step,
+                "source_checkpoint": str(source_checkpoint),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return selection_file
+
+
+def test_publish_only_validates_and_copies_selection(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    policy = _complete_checkpoint(run_dir, 25000)
+    selection_file = _selection_json(
+        tmp_path,
+        source_checkpoint=policy.parent,
+    )
+    selected_dir = run_dir / "checkpoints" / "selected"
+
+    selection.publish_selected_checkpoint(
+        selection_file=selection_file,
+        selected_dir=selected_dir,
+        overwrite=False,
+    )
+
+    assert (selected_dir / "pretrained_model" / "model.safetensors").is_file()
+    published = json.loads((selected_dir / "selected_checkpoint.json").read_text(encoding="utf-8"))
+    assert published["selected_checkpoint_step"] == 25000
+    assert published["status"] == "complete"
+
+
+def test_publish_only_rejects_sha256_mismatch(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    policy = _complete_checkpoint(run_dir, 25000)
+    selected_dir = run_dir / "checkpoints" / "selected"
+    target = selected_dir / "pretrained_model" / "model.safetensors"
+    target.parent.mkdir(parents=True)
+    target.write_text("different weights", encoding="utf-8")
+    selection_file = _selection_json(
+        tmp_path,
+        source_checkpoint=policy.parent,
+    )
+
+    with pytest.raises(ValueError, match="do not match"):
+        selection.publish_selected_checkpoint(
+            selection_file=selection_file,
+            selected_dir=selected_dir,
+            overwrite=False,
+        )
+
+
+def test_publish_only_requires_overwrite_when_target_exists(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    policy = _complete_checkpoint(run_dir, 25000)
+    selection_file = _selection_json(
+        tmp_path,
+        source_checkpoint=policy.parent,
+    )
+    selected_dir = run_dir / "checkpoints" / "selected"
+    selected_dir.mkdir(parents=True)
+
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        selection.publish_selected_checkpoint(
+            selection_file=selection_file,
+            selected_dir=selected_dir,
+            overwrite=False,
+        )
+
+    selection.publish_selected_checkpoint(
+        selection_file=selection_file,
+        selected_dir=selected_dir,
+        overwrite=True,
+    )
+    assert (selected_dir / "pretrained_model" / "model.safetensors").is_file()
+
+
+def test_publish_only_copies_peft_adapter_checkpoint(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    policy = run_dir / "checkpoints" / "025000" / "pretrained_model"
+    policy.mkdir(parents=True)
+    (policy / "config.json").write_text("{}", encoding="utf-8")
+    (policy / "adapter_config.json").write_text("{}", encoding="utf-8")
+    (policy / "adapter_model.safetensors").write_text("adapter", encoding="utf-8")
+    selection_file = _selection_json(
+        tmp_path,
+        source_checkpoint=policy.parent,
+    )
+    selected_dir = run_dir / "checkpoints" / "selected"
+
+    selection.publish_selected_checkpoint(
+        selection_file=selection_file,
+        selected_dir=selected_dir,
+        overwrite=False,
+    )
+
+    assert not (selected_dir / "pretrained_model" / "model.safetensors").exists()
+    assert (selected_dir / "pretrained_model" / "adapter_model.safetensors").is_file()
+    assert (selected_dir / "pretrained_model" / "adapter_config.json").is_file()
 
 
 def test_selection_fails_fast_and_terminates_other_gpu_jobs(

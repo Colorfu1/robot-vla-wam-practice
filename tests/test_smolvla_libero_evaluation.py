@@ -201,9 +201,7 @@ def test_local_load_rebases_vlm_and_tokenizer_paths_without_rewriting_checkpoint
         chunk_size=50,
         n_action_steps=10,
     )
-    config.vlm_model_name = (
-        "/remote/practice/policies/smolvla_or_pi0/smolvla_base/vlm_assets"
-    )
+    config.vlm_model_name = "/remote/practice/policies/smolvla_or_pi0/smolvla_base/vlm_assets"
     captured: dict[str, object] = {}
     manifest = SimpleNamespace(path=Path("relative/checkpoint"))
 
@@ -220,13 +218,15 @@ def test_local_load_rebases_vlm_and_tokenizer_paths_without_rewriting_checkpoint
     monkeypatch.setattr(
         smol,
         "_local_manifest",
-        lambda path, **kwargs: captured.update(
-            {
-                "manifest_path": path,
-                "manifest_kwargs": kwargs,
-            }
-        )
-        or manifest,
+        lambda path, **kwargs: (
+            captured.update(
+                {
+                    "manifest_path": path,
+                    "manifest_kwargs": kwargs,
+                }
+            )
+            or manifest
+        ),
     )
     monkeypatch.setattr(smol, "_checkpoint_rename_map", lambda _: None)
     monkeypatch.setattr(
@@ -253,9 +253,7 @@ def test_local_load_rebases_vlm_and_tokenizer_paths_without_rewriting_checkpoint
     assert config.vlm_model_name == str(assets)
     assert captured["manifest_kwargs"] == {
         "policy_reference": "outputs/run/checkpoints/030000/pretrained_model",
-        "vlm_assets_reference": (
-            "policies/smolvla_or_pi0/smolvla_base/vlm_assets"
-        ),
+        "vlm_assets_reference": ("policies/smolvla_or_pi0/smolvla_base/vlm_assets"),
     }
     processor_kwargs = captured["processor_kwargs"]
     assert processor_kwargs["pretrained_path"] == str(checkpoint)

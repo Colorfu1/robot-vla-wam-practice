@@ -21,6 +21,24 @@ seed。唯一训练差异是 tokenizer 前的 task text：25% 使用 canonical�
 - B0 checkpoint selection 已生成自包含的 `selected/pretrained_model`
 - 正式解释 C3 结果前，C2 必须完成同一 validation protocol
 
+## 本实验用到的数据
+
+三个目标任务是 `libero_goal` 本地编号 1 / 4 / 8，被完整排除在 B0 训练之外。
+
+- 训练：113 条 demonstration / 11,022 帧（38 + 36 + 39），离线 validation 不进训练。
+- 选模主判据（`Validation`）：每任务 20 个初始状态 = 60 个 case，六个 checkpoint 各跑一遍，
+  `6 × 3 × 20 = 360` 条闭环 rollout。
+- 选模第二判据：30 条离线 validation demonstration / 2,969 帧上的开环动作误差。
+- 最终成绩（`Test`）：只跑冻结的 winner，用每任务 30 个此前保留的初始状态。目标协议评测由
+  三套协议组成，共 21 个 job / 210 条 rollout：canonical `3 × 30 = 90`；held-out paraphrase
+  每任务 5 条改写句、按状态序号模 5 各分 6 个状态，`3 × 5 × 6 = 90`；prompt swap 3 个目标
+  各 10 个参考状态，`3 × 10 = 30`。
+- 指令：训练按 25/75 抽 canonical 与同任务 8 条 train paraphrases；5 条 held-out paraphrases 训练时不出现，只作评测期 Held-out Paraphrase 协议的指令。
+
+test 初始状态与 held-out paraphrases 都不得进入选模。held-out 只针对初始状态——这 3 个任务
+正是本实验训练的任务，且摆放随机化范围约 3 cm，所以 test 测的是同任务同分布、未被使用过的
+摆放。完整清单见[实验族总览](README.md#结果类别标签与数据分工)。
+
 ## 固定配置
 
 ```text
@@ -70,7 +88,8 @@ bash scripts/experiments/smolvla_libero/train_c3.sh
 - `configs/experiments/smolvla_libero/target_split.json`
 - `configs/experiments/smolvla_libero/paraphrases.json`
 - 25% canonical / 75% train paraphrase 和 rank-32 LoRA
-- 8 个 Accelerate processes、每卡 batch 1、全局 batch 8
+- 默认 8 个 Accelerate processes、每卡 batch 1、全局 batch 8（合法布局：
+  8×1、4×2、2×4、1×8）
 - 30,000 steps、每 5,000 steps 保存、BF16、seed 1000、LR `1e-4`
 - 全离线 Hugging Face/Transformers/Datasets 模式
 
@@ -87,12 +106,25 @@ bash scripts/experiments/smolvla_libero/train_c3.sh --print-command
 
 - 无参数正式入口是单机 8 卡：Accelerate 使用 8 个 process、`--gpu_ids=all` 和
   `--multi_gpu`，每张卡对应一个训练进程。
-- C3 正式协议冻结为 world size 8、每卡 batch 1、全局 batch 8；少于 8 卡不能继续标记为
-  同一份正式 C3 结果。
-- Smoke/debug 可通过 `--num-processes=N` 使用单卡或多卡；`CUDA_VISIBLE_DEVICES` 暴露的
-  GPU 数必须不少于 `N`。
-- 续训从原始 `run_config.json` 恢复 world size 和 BF16，并要求同一 step 的所有 rank
-  instruction snapshots 完整，因此不能在 resume 时改变卡数。
+- C3 正式协议冻结的是**全局 batch 8**（同时冻结 30,000 steps、每 5,000 保存、
+  LR `1e-4`、seed 1000、BF16、LoRA rank 32、25/75 instruction 契约）。卡数可配置为
+  8×1、4×2、2×4、1×8 任一合法布局；`--num-processes=N` 必须满足
+  `N × --batch-size = 8`，且不能超过可见 GPU 数。
+- 不同卡数的 run **协议等价但不是逐位复现**：sampler 分片与数据顺序随 world size
+  改变。报告必须写明 `data_parallel_layout`（如 `4x2`）。
+- **C1/C2/C3 三方对照必须使用同一个 `data_parallel_layout`**：全局 batch 相同的不同布局
+  数据顺序不同，混用布局会把布局差异算进模型差异里。
+- **C3 的 instruction 序列随布局改变**：选择哈希包含 `rank` 与 `batch_index`，换布局必然
+  换序列；25/75 只在期望意义上成立。聚合 instruction 总数仍是 `steps × 8`，快照数量等于
+  world size。报告需写明布局与实际 canonical 占比。
+- 少于 8 卡时每卡 batch 上升（1 卡需 batch 8），LoRA 仍需前向整个冻结主干并保存部分
+  activation，显存不一定比 C1 低；OOM 时按 `N_A.json` 契约记录，不缩小模型、不降全局
+  batch。
+- `--num-processes` 超过可见 GPU 数会立即失败并提示用 `CUDA_VISIBLE_DEVICES` 选卡
+  （launcher 固定 `--gpu_ids=all`）。
+- 续训从原始 `run_config.json` 恢复 world size、每卡 batch 与 BF16，并要求同一 step 的
+  所有 rank instruction snapshots 完整，因此不能在 resume 时改变卡数
+  （`world_size × per_gpu_batch_size` 仍必须等于 8）。
 - 当前 launcher 支持单机多卡，不包含跨节点 rendezvous 配置。
 
 单卡两步 Smoke：
@@ -129,7 +161,7 @@ bash scripts/experiments/smolvla_libero/train_c3.sh \
 回退，也不能在续训时替换 paraphrase 文件。
 
 VS Code 可选择 `SmolVLA LIBERO C3: train (1-step offline paraphrase debug)` 做单卡单步
-调试；每次必须填写新的 output directory。
+调试；它使用固定 output 目录并带 `--overwrite`，每次重跑直接覆盖上一次 debug 结果。
 
 ## C1/C2 兼容性边界
 
@@ -153,7 +185,25 @@ C2 的 PEFT hook 和 C3 的 instruction hook 只在各自训练调用的 context
 Held-out test paraphrases 不允许参与 checkpoint selection。若需要语言诊断，必须单独准备
 不属于 test 的 validation paraphrases，并在查看 test 前冻结。
 
-以下 selection 入口仍属于 `Planned / CLI 未实现 / 当前不可运行`：
+该入口已实现（`scripts/experiments/smolvla_libero/select_checkpoint.sh`），判据与固定条件：
+
+1. 三任务 macro canonical closed-loop SR（高优先）；
+2. 平局时比较 macro **normalized** offline action error（低优先；denormalized 同时记录，
+   只作参考）；
+3. 仍平局时选择更早 checkpoint。
+
+Open-loop error 使用相同 frame（30 条 offline validation demonstration 的全部
+2,969 帧）、固定 flow-noise seed（按 task/episode/frame 派生，跨 checkpoint 相同）和
+相同 action horizon（chunk 50、取前 10 步）；先按任务求均值，再 macro average。闭环
+规模为 `6 × 3 × 20 = 360` 条 rollout；`ranking_audit` 在
+`checkpoint_selection/ranking_audit.json`。
+
+开环误差按 checkpoint 并行评测：每个 checkpoint 分派到一张 GPU（并行度 =
+`min(num_gpus, checkpoint 数)`），6 卡下预计约 12 分钟（单卡串行约 69 分钟）。子进程日志
+在 `checkpoint_selection/logs/open_loop_checkpoint_<step>.log`（首行为完整命令），中间结果
+在 `checkpoint_selection/jobs/open_loop/checkpoint_<step>.json`；`--resume` 会复用
+`checkpoint_id` / `split_sha256` / `max_frames_per_task` 一致的已完成结果。并行调度不改
+抽帧、噪声派生与误差公式，数值与串行逐值相同。
 
 ```bash
 bash scripts/experiments/smolvla_libero/select_checkpoint.sh \

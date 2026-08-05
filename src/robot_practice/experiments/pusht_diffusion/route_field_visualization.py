@@ -51,7 +51,9 @@ def _plot_route(
                 0.92,
                 facecolor=color,
                 edgecolor="black",
-                alpha=0.35 + 0.15 * order,
+                # Cap the alpha so the last cell of a 6-cell route (order=5)
+                # stays inside matplotlib's [0, 1] range.
+                alpha=min(0.35 + 0.15 * order, 0.95),
                 linewidth=1.5,
             )
         )

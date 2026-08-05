@@ -76,8 +76,7 @@ def _validate_accelerator(
 
     if accelerator.num_processes != expected_processes:
         raise RuntimeError(
-            f"Expected {expected_processes} Accelerate processes, "
-            f"found {accelerator.num_processes}"
+            f"Expected {expected_processes} Accelerate processes, found {accelerator.num_processes}"
         )
     if accelerator.mixed_precision != expected_mixed_precision:
         raise RuntimeError(
@@ -347,6 +346,7 @@ def run_training(arguments: C2FreshArguments | C2ResumeArguments) -> None:
             initial_step=initial_step,
             run_config=run_config,
             resume=resume,
+            overwrite=(arguments.overwrite if isinstance(arguments, C2FreshArguments) else False),
             enabled=accelerator.is_main_process,
         ) as sink:
             try:

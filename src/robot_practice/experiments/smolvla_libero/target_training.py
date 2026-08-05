@@ -204,8 +204,7 @@ def validate_target_dataset(dataset_root: str | Path, split: TargetSplit) -> Dat
     observed_train_frames = 0
     observed_validation_frames = 0
     expected_combined_indices = {
-        task_id: int(TARGET_TASKS[task_id]["combined_task_index"])
-        for task_id in split.task_ids
+        task_id: int(TARGET_TASKS[task_id]["combined_task_index"]) for task_id in split.task_ids
     }
     for task_id in split.task_ids:
         combined_index = expected_combined_indices[task_id]
@@ -303,8 +302,7 @@ class UniformTaskEpisodeSampler:
         observed_frames = sum(len(indices) for indices in relative_indices.values())
         if observed_frames != split.train_frames:
             raise ValueError(
-                f"Balanced sampler expected {split.train_frames} frames, "
-                f"found {observed_frames}"
+                f"Balanced sampler expected {split.train_frames} frames, found {observed_frames}"
             )
         self._task_ids = split.task_ids
         self._episodes_by_task = {

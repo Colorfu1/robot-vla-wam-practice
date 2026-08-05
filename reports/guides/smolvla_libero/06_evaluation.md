@@ -2,14 +2,15 @@
 
 ## 实验目标
 
-在互斥 test init states 上比较 C1/C2/C3 的 canonical performance、held-out language
-泛化和 Prompt Swap 语言服从性。
+在互斥 test init states 上比较 B0/C1/C2/C3 的 canonical performance、held-out
+language 泛化和 Prompt Swap 语言服从性。B0 `025000` 是只见过 background tasks 的
+domain-adapted zero-shot baseline；四个模型必须共用同一评测入口和协议文件。
 
 结果类别：`Closed-loop / Pilot`。
 
 ## 实验思路
 
-C1/C2/C3 使用相同 test states、prompt 分配、policy seed 和 full 300-step episode。
+B0/C1/C2/C3 使用相同 test states、prompt 分配、policy seed 和 full 300-step episode。
 Canonical 与 Paraphrase rollout 必须恢复相同的 flow-noise 随机流。Prompt Swap 在同一个
 reference environment 中恢复完全相同的 simulator state，只改变 prompt，并用独立三目标
 分类器判断 bowl 最终落点。Test 只运行一次，不能根据结果追加同一批状态的实验。
@@ -21,10 +22,9 @@ reference environment 中恢复完全相同的 simulator state，只改变 promp
 - test init-state IDs
 - 每个 state 使用的 held-out paraphrase
 - policy seed；本 Pilot 固定为 2000
-- Prompt Swap reference states
-- 三目标分类器几何阈值
+- 三目标 simulator predicate 分类器及 Prompt Swap reference states
 - cluster bootstrap 实现和随机种子
-- 三个 selected checkpoints
+- B0 `025000` 和三个 selected C1/C2/C3 checkpoints
 
 所有 checkpoint 只能由 validation 选择。Test、held-out paraphrases 和 Prompt Swap
 不能用于选模。
@@ -71,57 +71,65 @@ bash scripts/experiments/smolvla_libero/eval_libero.sh \
 Prompt Swap，因此不能替代以下正式多协议入口。B0 严格选模由
 `select_b0_checkpoint.sh` 读取冻结 split 并调用该底层评测器。
 
-以下 `eval.sh` 仍属于 `Planned / CLI 未实现 / 当前不可运行`。实现后可直接运行三个
-selected checkpoints：
+正式多协议入口为 `eval_target_protocols.sh`。它从
+`target_eval_protocol.json` 读取冻结的 21-job / 210-rollout 协议；B0/C1/C2/C3 只改变
+`--policy-path`、`--model-label` 和 `--output-dir`。先用 B0 检查远端 workload，不启动
+rollout：
 
 ```bash
-C1_POLICY="outputs/smolvla_libero/pilot/c1_default_non_peft/checkpoints/selected/pretrained_model"
-C1_NA="outputs/smolvla_libero/pilot/c1_default_non_peft/N_A.json"
-MODELS=(c2_canonical_lora c3_paraphrase_lora)
-
-if [[ -d "${C1_POLICY}" ]]; then
-  MODELS=(c1_default_non_peft "${MODELS[@]}")
-elif [[ -f "${C1_NA}" ]]; then
-  echo "Skipping C1 according to ${C1_NA}"
-else
-  echo "error: C1 checkpoint and explicit N_A.json are both missing" >&2
-  exit 1
-fi
-
-for MODEL in "${MODELS[@]}"; do
-  case "${MODEL}" in
-    c1_default_non_peft)
-      POLICY_PATH="${C1_POLICY}"
-      ;;
-    c2_canonical_lora)
-      POLICY_PATH="outputs/smolvla_libero/pilot/c2_canonical_lora/checkpoints/selected/pretrained_model"
-      ;;
-    c3_paraphrase_lora)
-      POLICY_PATH="outputs/smolvla_libero/pilot/c3_paraphrase_lora/checkpoints/selected/pretrained_model"
-      ;;
-  esac
-
-  bash scripts/experiments/smolvla_libero/eval.sh \
-    --policy-path="${POLICY_PATH}" \
-    --suite=libero_goal \
-    --task-ids=1,4,8 \
-  --split-file=configs/experiments/smolvla_libero/target_split.json \
-    --paraphrases=configs/experiments/smolvla_libero/paraphrases.json \
-    --protocols=canonical,held_out_paraphrase,prompt_swap \
-    --policy-seed=2000 \
-    --episode-length=300 \
-    --num-visualized-episodes=30 \
-    --output-dir="outputs/smolvla_libero/eval/${MODEL}"
-done
+bash scripts/experiments/smolvla_libero/eval_target_protocols.sh \
+  --policy-path=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoints/025000/pretrained_model \
+  --model-label=b0_domain_adapted_zero_shot \
+  --num-gpus=8 \
+  --libero-assets-dir=datasets/raw/libero_assets \
+  --output-dir=outputs/smolvla_libero/eval/b0_domain_adapted_zero_shot \
+  --print-command
 ```
 
-如果 C1 因显存限制未训练，命令只在检测到显式 `N_A.json` 后跳过 C1，并在结果中标为
-`N/A: OOM`；未知原因的 checkpoint 缺失会直接报错。
+确认输出为 `21 jobs / 210 rollouts` 后，正式运行 B0：
+
+```bash
+bash scripts/experiments/smolvla_libero/eval_target_protocols.sh \
+  --policy-path=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline/checkpoints/025000/pretrained_model \
+  --model-label=b0_domain_adapted_zero_shot \
+  --num-gpus=8 \
+  --libero-assets-dir=datasets/raw/libero_assets \
+  --output-dir=outputs/smolvla_libero/eval/b0_domain_adapted_zero_shot
+```
+
+中断后原命令追加 `--resume`。C1/C2/C3 selected checkpoints 冻结后分别运行：
+
+```bash
+bash scripts/experiments/smolvla_libero/eval_target_protocols.sh \
+  --policy-path=outputs/smolvla_libero/pilot/c1_default_non_peft/checkpoints/selected/pretrained_model \
+  --model-label=c1_default_non_peft \
+  --num-gpus=8 \
+  --libero-assets-dir=datasets/raw/libero_assets \
+  --output-dir=outputs/smolvla_libero/eval/c1_default_non_peft
+
+bash scripts/experiments/smolvla_libero/eval_target_protocols.sh \
+  --policy-path=outputs/smolvla_libero/pilot/c2_canonical_lora/checkpoints/selected/pretrained_model \
+  --model-label=c2_canonical_lora \
+  --num-gpus=8 \
+  --libero-assets-dir=datasets/raw/libero_assets \
+  --output-dir=outputs/smolvla_libero/eval/c2_canonical_lora
+
+bash scripts/experiments/smolvla_libero/eval_target_protocols.sh \
+  --policy-path=outputs/smolvla_libero/pilot/c3_paraphrase_lora/checkpoints/selected/pretrained_model \
+  --model-label=c3_paraphrase_lora \
+  --num-gpus=8 \
+  --libero-assets-dir=datasets/raw/libero_assets \
+  --output-dir=outputs/smolvla_libero/eval/c3_paraphrase_lora
+```
+
+默认不保存逐 episode 视频，避免 210 条正式 rollout 产生大量媒体；每个 job 仍保存一个
+summary `rollout.rrd`。需要诊断媒体时用 `eval_libero.sh` 对已识别的 case 单独复跑，不能
+把诊断复跑计入正式指标。如果 C1 因显存限制未训练，其结果只能显式记录为 `N/A: OOM`。
 
 ## Protocol A：Canonical Prompt
 
-- 每任务 10 个 test init states
-- 共 30 rollouts/模型
+- 每任务使用冻结 split 中全部 30 个 test init states
+- 共 90 rollouts/模型
 - 使用任务 canonical prompt
 - 输出 per-task SR 和三任务 macro SR
 
@@ -132,8 +140,8 @@ State 实验。
 
 - 与 Canonical 使用相同 init states 和 policy seed
 - 每个 state 固定分配一条 held-out paraphrase
-- 五条 held-out 表达在每个任务的 10 个 states 上循环平衡
-- 共 30 rollouts/模型
+- 五条 held-out 表达在每个任务的 30 个 states 上循环平衡，每条正好分配 6 个 states
+- 共 90 rollouts/模型
 
 定义有符号退化：
 
@@ -182,14 +190,25 @@ Failed 必须留在分母。
 
 ## 三目标分类器
 
-分类器阈值必须在 validation 或手工构造状态上冻结，正式 test 前验证：
+冻结分类器为 `libero_bowl_three_goal_predicate_v1`。它不读取 reference task 的单目标
+`check_success()`；而是在 episode 终点对同一个 simulator state 同时计算：
+
+```text
+on(bowl, stove_cook_region)
+on(bowl, cabinet_top_side)
+on(bowl, plate)
+```
+
+正式 test 前已通过真实 1-step Prompt Swap Smoke，验证 classifier 能在 reference task
+success termination 被禁用后读取终局 simulator predicates。正式结果还必须满足：
 
 - 已知 stove/cabinet/plate 成功状态分别只命中一个目标
 - 已知未完成状态进入 Failed
 - 三种成功判定互斥
 - 多目标冲突进入 Failed
 
-不能用 environment 的单目标 `check_success()` 代替三目标终局分类。
+命中零个目标进入 `Failed/no_goal_reached`；同时命中多个目标进入
+`Failed/multi_goal_conflict`。不能用 environment 的单目标 `check_success()` 代替该分类器。
 
 ## 可选 Post-grasp Test
 
@@ -205,6 +224,7 @@ Post-grasp 结果必须单独标为诊断，不与完整闭环 SR 混合。
 
 ```text
 outputs/smolvla_libero/eval/
+├── b0_domain_adapted_zero_shot/
 ├── c1_default_non_peft/
 ├── c2_canonical_lora/
 └── c3_paraphrase_lora/
@@ -212,15 +232,20 @@ outputs/smolvla_libero/eval/
 
 每个目录至少保存：
 
-- `run_config.json`
+- `run_manifest.json`
 - `metrics.json`
 - `metrics.md`
 - `episodes.parquet`
 - `prompt_goal_confusion.csv`
-- `goal_classifier.json`
-- `videos/`
-- `recordings/*.rrd`
-- `failures/`
+- `jobs/canonical/**`
+- `jobs/held_out_paraphrase/**`
+- `jobs/prompt_swap/**`
+- `logs/**`
+
+各 job 目录继续保存底层 evaluator 的 `run_config.json`、`metrics.json`、
+`rollouts.parquet` 和 `rollout.rrd`。`target_eval_protocol.json` 保存 split/paraphrase SHA-256、
+Prompt Swap reference states、分类器、seeds 和总 rollout 数；`--resume` 会拒绝协议不一致的
+已有输出。
 
 训练目录另外提供：
 
@@ -234,6 +259,7 @@ outputs/smolvla_libero/eval/
 
 | 模型 | Canonical SR | Paraphrase SR | Para Gap ↓ | Prompt Compliance ↑ | Trainable Params | Peak VRAM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| B0 Domain-adapted zero-shot | 待运行 | 待运行 | 待运行 | 待运行 | N/A | 已记录于 B0 |
 | C1 Default Non-PEFT | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
 | C2 Canonical LoRA | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
 | C3 LoRA + Para | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
@@ -263,8 +289,9 @@ outputs/smolvla_libero/eval/
 - 相同 batch 下 C2 peak VRAM 不高于 C1，但不强制要求大幅下降
 
 如果 C1 因 OOM 未运行，只能结论为“LoRA 能完成任务适配”，不能声称接近非 PEFT 上限。
-C0 只有一条 contract Smoke，不提供可比较的 base success rate；若要量化相对未适配
-SmolVLA 的提升，必须另行预注册完整的 base closed-loop baseline。
+B0 `025000` 提供“已适配 LIBERO 域、未使用目标任务训练数据”的 zero-shot baseline。
+C0 仍只有一条 contract Smoke；若要分离 B0 background fine-tuning 本身的收益，还需要另行
+预注册原始 SmolVLA base 的完整闭环 baseline。
 
 ### Paraphrase Pilot 晋级信号
 
@@ -273,7 +300,7 @@ SmolVLA 的提升，必须另行预注册完整的 base closed-loop baseline。
 - C3 canonical macro SR 比 C2 下降不超过 5 个百分点
 - 至少两个任务的提升方向一致
 
-30 条 Pilot rollout 的单条分辨率是 3.33 个百分点。提升只有 5～10 个百分点或 CI 跨 0
+90 条 paired rollout 的单条分辨率是 1.11 个百分点。提升只有 5～10 个百分点或 CI 跨 0
 时，结论为“不确定”，不能追加同一 test 改变结论。
 
 ### 语言服从 Pilot 晋级信号

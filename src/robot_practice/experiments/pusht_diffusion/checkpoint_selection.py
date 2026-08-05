@@ -62,6 +62,10 @@ class WorkerConfig:
     prototype_manifest: Path | None = None
     selected_k: int | None = None
     oracle_episodes: tuple[Any, ...] = ()
+    route_manifest: Path | None = None
+    # Protocols that drive one rollout per oracle episode instead of one per
+    # environment seed set this so progress accounting stays exact.
+    rollouts_per_task: int | None = None
 
 
 @dataclass(frozen=True)
@@ -485,6 +489,23 @@ def _evaluate_task(
             device=device,
             event_callback=event_callback,
         )
+    if config.evaluation_protocol == "route_field_oracle":
+        if config.route_manifest is None:
+            raise ValueError("RouteField worker config requires route_manifest")
+        from .route_field_checkpoint_selection import evaluate_route_field_checkpoint
+
+        return evaluate_route_field_checkpoint(
+            model_name=task.model_name,
+            step=task.step,
+            path=task.path,
+            dataset_root=config.dataset_root,
+            route_episodes=config.oracle_episodes,
+            route_manifest=config.route_manifest,
+            train_seed=config.train_seed,
+            code_commit=config.code_commit,
+            device=device,
+            event_callback=event_callback,
+        )
     raise ValueError(f"Unsupported checkpoint evaluation protocol: {config.evaluation_protocol}")
 
 
@@ -514,7 +535,12 @@ def _evaluate_parallel(
         worker.start()
 
     rows: list[dict[str, Any]] = []
-    total_rollouts = len(tasks) * len(config.environment_seeds)
+    rollouts_per_task = (
+        config.rollouts_per_task
+        if config.rollouts_per_task is not None
+        else len(config.environment_seeds)
+    )
+    total_rollouts = len(tasks) * rollouts_per_task
     try:
         with tqdm(
             total=total_rollouts,
@@ -585,8 +611,10 @@ def _evaluate_parallel(
     model_order = {
         "bc_chunk": 0,
         "mode_bc_chunk": 0,
+        "route_field_bc_chunk": 0,
         "diffusion": 1,
         "mode_diffusion": 1,
+        "route_field_diffusion": 1,
     }
     return sorted(
         rows,

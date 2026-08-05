@@ -50,6 +50,12 @@ from robot_practice.evaluation.libero_checkpoint import (
     assess_checkpoint_task,
     log_checkpoint_task_assessment,
 )
+from robot_practice.evaluation.libero_goal_classifier import (
+    GOAL_CLASSIFIER_NAME,
+    GOAL_LABELS,
+    classify_bowl_goal,
+    disable_reference_goal_termination,
+)
 from robot_practice.evaluation.libero_kinematics import PandaSkeletonReconstructor
 from robot_practice.evaluation.libero_tasks import (
     SUPPORTED_SUITES,
@@ -94,6 +100,10 @@ class LiberoEvaluationConfig:
     seed: int = 1000
     policy_seed: int | None = None
     init_state_ids: tuple[int, ...] | None = None
+    episode_seeds: tuple[int, ...] | None = None
+    instruction: str | None = None
+    goal_classifier: str | None = None
+    expected_goal: str | None = None
     libero_assets_dir: Path | None = None
     output_dir: Path | None = None
     overwrite: bool = False
@@ -397,6 +407,38 @@ def validate_config(
         raise ValueError("--seed must be non-negative")
     if config.policy_seed is not None and config.policy_seed < 0:
         raise ValueError("--policy-seed must be non-negative")
+    if config.episode_seeds is not None:
+        if len(config.episode_seeds) != config.n_episodes:
+            raise ValueError(
+                "--episode-seeds must contain exactly --n-episodes values"
+            )
+        if len(set(config.episode_seeds)) != len(config.episode_seeds):
+            raise ValueError("--episode-seeds must not contain duplicates")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in config.episode_seeds
+        ):
+            raise ValueError("--episode-seeds values must be non-negative integers")
+    if config.instruction is not None and not config.instruction.strip():
+        raise ValueError("--instruction must not be empty")
+    if config.goal_classifier is None:
+        if config.expected_goal is not None:
+            raise ValueError("--expected-goal requires --goal-classifier")
+    else:
+        if config.goal_classifier != GOAL_CLASSIFIER_NAME:
+            raise ValueError(
+                f"--goal-classifier must be {GOAL_CLASSIFIER_NAME!r}"
+            )
+        if config.expected_goal not in GOAL_LABELS:
+            raise ValueError(
+                "--expected-goal must be one of " + ", ".join(GOAL_LABELS)
+            )
+        if config.suite != "libero_goal" or config.task_id not in {1, 4, 8}:
+            raise ValueError(
+                "The three-goal bowl classifier requires LIBERO-Goal task 1, 4, or 8"
+            )
+        if config.instruction is None:
+            raise ValueError("--goal-classifier requires an explicit --instruction")
     if config.init_state_ids is not None:
         if len(config.init_state_ids) != config.n_episodes:
             raise ValueError(
@@ -664,9 +706,12 @@ def _prepare_libero_observation(
     *,
     env: gym.vector.VectorEnv,
     env_preprocessor: Any,
+    instruction: str | None = None,
 ) -> PreparedLiberoObservation:
     policy_observation = preprocess_observation(observation)
     policy_observation = add_envs_task(env, policy_observation)
+    if instruction is not None:
+        policy_observation["task"] = [" ".join(instruction.split())]
     policy_observation = env_preprocessor(policy_observation)
     return PreparedLiberoObservation(
         policy_observation=policy_observation,
@@ -855,6 +900,7 @@ def _make_eval_info(
     metrics: dict[str, Any],
     *,
     task: LiberoTaskIdentity,
+    instruction: str | None = None,
     formal: bool,
     elapsed_s: float,
 ) -> dict[str, Any]:
@@ -877,7 +923,8 @@ def _make_eval_info(
         "suite": task.suite,
         "task_id": task.task_id,
         "task_name": task.task_name,
-        "language": task.language,
+        "language": task.language if instruction is None else instruction,
+        "official_language": task.language,
         "is_formal": formal,
         "per_episode": per_episode,
         "aggregated": {
@@ -971,7 +1018,17 @@ def evaluate_libero(
         if config.init_state_ids is not None
         else tuple(range(config.n_episodes))
     )
+    episode_seeds = (
+        config.episode_seeds
+        if config.episode_seeds is not None
+        else tuple(config.seed + episode for episode in range(config.n_episodes))
+    )
     policy_seed = config.seed if config.policy_seed is None else config.policy_seed
+    effective_instruction = (
+        task.language
+        if config.instruction is None
+        else " ".join(config.instruction.split())
+    )
     output_dir = create_output_directory(
         policy_path=config.policy_path,
         mode="libero",
@@ -1029,11 +1086,14 @@ def evaluate_libero(
             "episode_length": task.episode_length,
             "control_frequency_hz": CONTROL_FREQUENCY_HZ,
             "policy_execution": runtime.policy_execution,
-            "seeds": [
-                config.seed + episode for episode in range(config.n_episodes)
-            ],
+            "seeds": list(episode_seeds),
             "init_state_ids": list(init_state_ids),
             "policy_seed": policy_seed,
+            "official_instruction": task.language,
+            "effective_instruction": effective_instruction,
+            "instruction_overridden": config.instruction is not None,
+            "goal_classifier": config.goal_classifier,
+            "expected_goal": config.expected_goal,
             "perturbation": {
                 "name": config.perturbation,
                 "proprio_noise_std": (
@@ -1071,6 +1131,8 @@ def evaluate_libero(
             env_cfg=env_config,
             policy_cfg=loaded.config,
         )
+        if config.goal_classifier is not None:
+            disable_reference_goal_termination(env)
         policy_driver = runtime.make_driver(env_postprocessor)
     except BaseException:
         close_envs(envs)
@@ -1124,7 +1186,7 @@ def evaluate_libero(
             episode_recording = LiberoEpisodeRecording(
                 episode_index=episode_index,
                 seed=(
-                    None if episode_index is None else config.seed + episode_index
+                    None if episode_index is None else episode_seeds[episode_index]
                 ),
                 init_state_id=(
                     None if episode_index is None else init_state_ids[episode_index]
@@ -1141,7 +1203,7 @@ def evaluate_libero(
                 desc=f"{task.suite} task-{task.task_id} rollout",
                 unit="episode",
             ):
-                episode_seed = config.seed + episode_index
+                episode_seed = episode_seeds[episode_index]
                 init_state_id = init_state_ids[episode_index]
                 _set_init_state_id(env, init_state_id)
                 observation, _ = env.reset(seed=[episode_seed])
@@ -1152,6 +1214,7 @@ def evaluate_libero(
                     observation,
                     env=env,
                     env_preprocessor=env_preprocessor,
+                    instruction=effective_instruction,
                 )
                 actions: list[np.ndarray] = []
                 rewards: list[float] = []
@@ -1190,6 +1253,7 @@ def evaluate_libero(
                         next_observation,
                         env=env,
                         env_preprocessor=env_preprocessor,
+                        instruction=effective_instruction,
                     )
                     raw_terminated = bool(np.asarray(terminated, dtype=bool)[0])
                     raw_truncated = bool(np.asarray(truncated, dtype=bool)[0])
@@ -1328,19 +1392,41 @@ def evaluate_libero(
 
                 if termination_reason is None:
                     raise RuntimeError("LIBERO rollout exited without a termination reason")
-                episode_results.append(
-                    {
-                        "episode_index": episode_index,
-                        "seed": episode_seed,
-                        "init_state_id": init_state_id,
-                        "actions": np.stack(actions),
-                        "rewards": np.asarray(rewards, dtype=np.float64),
-                        "success": success_seen,
-                        "termination_reason": termination_reason,
-                        "policy_step_latencies_ms": policy_latencies,
-                        "model_query_latencies_ms": model_latencies,
-                    }
-                )
+                protocol_outcome: dict[str, Any] | None = None
+                if config.goal_classifier is not None:
+                    protocol_outcome = classify_bowl_goal(env)
+                    protocol_outcome["expected_goal"] = config.expected_goal
+                    protocol_outcome["instruction"] = effective_instruction
+                    success_seen = (
+                        protocol_outcome["predicted_goal"] == config.expected_goal
+                    )
+                    protocol_outcome["goal_matches_instruction"] = success_seen
+                    if success_seen:
+                        termination_reason = "success"
+                    elif protocol_outcome["predicted_goal"] in GOAL_LABELS:
+                        termination_reason = "wrong_goal"
+                    else:
+                        termination_reason = str(
+                            protocol_outcome["failure_reason"] or "failed"
+                        )
+                    if rollout_rows:
+                        rollout_rows[-1]["success_so_far"] = success_seen
+                        rollout_rows[-1]["termination_reason"] = termination_reason
+
+                episode_result = {
+                    "episode_index": episode_index,
+                    "seed": episode_seed,
+                    "init_state_id": init_state_id,
+                    "actions": np.stack(actions),
+                    "rewards": np.asarray(rewards, dtype=np.float64),
+                    "success": success_seen,
+                    "termination_reason": termination_reason,
+                    "policy_step_latencies_ms": policy_latencies,
+                    "model_query_latencies_ms": model_latencies,
+                }
+                if protocol_outcome is not None:
+                    episode_result["protocol_outcome"] = protocol_outcome
+                episode_results.append(episode_result)
                 emit_rollout_progress(
                     completed=episode_index + 1,
                     total=config.n_episodes,
@@ -1402,12 +1488,30 @@ def evaluate_libero(
         metrics["checkpoint_task_assessment"] = checkpoint_assessment_payload
         metrics["perturbation"] = config.perturbation
         metrics["perturbation_config"] = input_config["perturbation"]
+        metrics["effective_instruction"] = effective_instruction
+        metrics["official_instruction"] = task.language
+        metrics["instruction_overridden"] = config.instruction is not None
+        metrics["goal_classifier"] = config.goal_classifier
+        metrics["expected_goal"] = config.expected_goal
+        if config.goal_classifier is not None:
+            goal_counts = {goal: 0 for goal in (*GOAL_LABELS, "failed")}
+            for metric_episode, source_episode in zip(
+                metrics["per_episode"], episode_results, strict=True
+            ):
+                outcome = source_episode["protocol_outcome"]
+                metric_episode.update(outcome)
+                goal_counts[str(outcome["predicted_goal"])] += 1
+            metrics["aggregate"]["prompt_compliance"] = metrics["aggregate"][
+                "success_rate"
+            ]
+            metrics["aggregate"]["predicted_goal_counts"] = goal_counts
         metrics["visualized_episodes"] = list(
             range(config.num_visualized_episodes)
         )
         eval_info = _make_eval_info(
             metrics,
             task=task,
+            instruction=effective_instruction,
             formal=formal,
             elapsed_s=elapsed_s,
         )
@@ -1507,6 +1611,20 @@ def _parse_init_state_ids(value: str) -> tuple[int, ...]:
         ) from exc
 
 
+def _parse_episode_seeds(value: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in value.split(",")]
+    if not parts or any(not part for part in parts):
+        raise argparse.ArgumentTypeError(
+            "--episode-seeds must be a non-empty comma-separated integer list"
+        )
+    try:
+        return tuple(int(part) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--episode-seeds must contain integers only"
+        ) from exc
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1569,6 +1687,28 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "Comma-separated official LIBERO init-state IDs; the number of IDs must "
             "equal --n-episodes"
         ),
+    )
+    parser.add_argument(
+        "--episode-seeds",
+        type=_parse_episode_seeds,
+        help=(
+            "Comma-separated simulator seeds paired one-to-one with --init-state-ids; "
+            "defaults to --seed plus episode index"
+        ),
+    )
+    parser.add_argument(
+        "--instruction",
+        help="Override the task instruction supplied to a language-conditioned policy",
+    )
+    parser.add_argument(
+        "--goal-classifier",
+        choices=(GOAL_CLASSIFIER_NAME,),
+        help="Enable simulator-grounded terminal classification for Prompt Swap",
+    )
+    parser.add_argument(
+        "--expected-goal",
+        choices=GOAL_LABELS,
+        help="Prompt target scored by --goal-classifier",
     )
     parser.add_argument(
         "--libero-assets-dir",
