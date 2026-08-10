@@ -406,10 +406,18 @@ def _completed_job_metrics(
         return None
     if tuple(int(item["seed"]) for item in episodes) != job.episode_seeds:
         return None
-    if job.expected_goal is not None and any(
-        item.get("expected_goal") != job.expected_goal for item in episodes
-    ):
-        return None
+    if job.expected_goal is not None:
+        if any(item.get("expected_goal") != job.expected_goal for item in episodes):
+            return None
+        required_goal_fields = {
+            "first_goal_reached",
+            "first_goal_step",
+            "terminal_goal",
+        }
+        if any(not required_goal_fields.issubset(item) for item in episodes):
+            return None
+        if expected_status == "complete" and any(item.get("num_steps") != 300 for item in episodes):
+            return None
     return metrics
 
 
@@ -651,6 +659,7 @@ def collect_episode_records(
     for job in jobs:
         metrics = collected[job.job_id]
         for episode in metrics["per_episode"]:
+            terminal_goal = episode.get("terminal_goal", episode.get("predicted_goal"))
             records.append(
                 {
                     "protocol": job.protocol,
@@ -659,7 +668,12 @@ def collect_episode_records(
                     "prompt_index": job.prompt_index,
                     "instruction": job.instruction,
                     "expected_goal": job.expected_goal,
-                    "predicted_goal": episode.get("predicted_goal"),
+                    # Keep the historical field as a terminal-state alias. The
+                    # first reached goal is the primary Prompt Swap measure.
+                    "predicted_goal": terminal_goal,
+                    "first_goal_reached": episode.get("first_goal_reached"),
+                    "first_goal_step": episode.get("first_goal_step"),
+                    "terminal_goal": terminal_goal,
                     "episode_index": int(episode["episode_index"]),
                     "seed": int(episode["seed"]),
                     "init_state_id": int(episode["init_state_id"]),
@@ -676,7 +690,7 @@ def summarize_results(
     records: list[dict[str, Any]],
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "smoke" if arguments.max_steps is not None else "complete",
         "result_set": "target_protocol_test",
         "model_label": arguments.model_label,
@@ -694,21 +708,42 @@ def summarize_results(
     if canonical and paraphrase:
         result["para_gap"] = _paired_gap(canonical, paraphrase)
     if prompt_swap:
-        matrix = {
-            goal: {column: 0 for column in (*GOAL_LABELS, FAILED_GOAL)} for goal in GOAL_LABELS
-        }
-        for record in prompt_swap:
-            expected = str(record["expected_goal"])
-            predicted = str(record["predicted_goal"] or FAILED_GOAL)
-            if predicted not in matrix[expected]:
-                predicted = FAILED_GOAL
-            matrix[expected][predicted] += 1
-        compliant = sum(matrix[goal][goal] for goal in GOAL_LABELS)
+
+        def confusion(field: str) -> dict[str, dict[str, int]]:
+            matrix = {
+                goal: {column: 0 for column in (*GOAL_LABELS, FAILED_GOAL)} for goal in GOAL_LABELS
+            }
+            for record in prompt_swap:
+                expected = str(record["expected_goal"])
+                if field in record:
+                    value = record[field]
+                else:
+                    value = record.get("predicted_goal")
+                predicted = str(value or FAILED_GOAL)
+                if expected not in matrix:
+                    raise RuntimeError(f"Unknown Prompt Swap expected goal: {expected}")
+                if predicted not in matrix[expected]:
+                    predicted = FAILED_GOAL
+                matrix[expected][predicted] += 1
+            return matrix
+
+        first_matrix = confusion("first_goal_reached")
+        terminal_matrix = confusion("terminal_goal")
+        first_compliant = sum(first_matrix[goal][goal] for goal in GOAL_LABELS)
+        terminal_compliant = sum(terminal_matrix[goal][goal] for goal in GOAL_LABELS)
         result["prompt_swap"] = {
             "num_episodes": len(prompt_swap),
-            "num_compliant": compliant,
-            "prompt_compliance": compliant / len(prompt_swap),
-            "confusion_matrix": matrix,
+            "num_compliant": first_compliant,
+            "prompt_compliance": first_compliant / len(prompt_swap),
+            "first_goal_num_compliant": first_compliant,
+            "first_goal_prompt_compliance": first_compliant / len(prompt_swap),
+            "terminal_goal_num_compliant": terminal_compliant,
+            "terminal_goal_prompt_compliance": terminal_compliant / len(prompt_swap),
+            "num_full_horizon_episodes": sum(
+                int(record.get("num_steps", -1)) == 300 for record in prompt_swap
+            ),
+            "confusion_matrix": first_matrix,
+            "terminal_goal_confusion_matrix": terminal_matrix,
         }
     return result
 
@@ -759,7 +794,12 @@ def _write_metrics_markdown(path: Path, result: dict[str, Any]) -> None:
         swap = result["prompt_swap"]
         lines.append(
             f"| Prompt Swap | {swap['num_episodes']} | {swap['num_compliant']} | "
-            f"{swap['prompt_compliance']:.4f} |"
+            f"{swap['first_goal_prompt_compliance']:.4f} |"
+        )
+        lines.append(
+            f"| Prompt Swap (terminal hold) | {swap['num_episodes']} | "
+            f"{swap['terminal_goal_num_compliant']} | "
+            f"{swap['terminal_goal_prompt_compliance']:.4f} |"
         )
     if isinstance(result.get("para_gap"), dict):
         gap = result["para_gap"]
@@ -789,6 +829,17 @@ def _write_metrics_markdown(path: Path, result: dict[str, Any]) -> None:
             lines.append(
                 f"| {goal} | {row['stove']} | {row['cabinet']} | {row['plate']} | {row['failed']} |"
             )
+        lines.extend(
+            [
+                "",
+                (
+                    "Primary Prompt Swap scoring uses the first reached goal; "
+                    f"terminal-state compliance is "
+                    f"`{result['prompt_swap']['terminal_goal_prompt_compliance']:.4f}` "
+                    "and is a hold-at-end diagnostic."
+                ),
+            ]
+        )
     lines.extend(
         [
             "",

@@ -1,8 +1,14 @@
 # Portable Robot Practice Training Environment
 
 This image contains the CUDA, Conda, Python, LeRobot, PushT, LIBERO, SmolVLA,
-PEFT, and ManiSkill environment only. It does not contain this repository,
-datasets, checkpoints, outputs, caches, or credentials.
+PEFT, and ManiSkill environment. It does not contain this repository, datasets,
+checkpoints, outputs, Hugging Face caches, or credentials. It does contain the
+fixed SAPIEN PhysX GPU runtime required by offline `physx_cuda` evaluation.
+
+The bundled runtime is SAPIEN PhysX `105.1-physx-5.3.1.patch0`, installed at
+`/opt/robot-practice/sapien-cache/physx/<version>/`. The base image exposes it
+through `/home/robot-practice/.sapien`; the Volc MLP derivative exposes the same
+cache through `/root/.sapien`. The release zip is SHA256-verified during build.
 
 ## Generate locks
 
@@ -77,6 +83,10 @@ bash scripts/docker/audit_training_image.sh \
 The verification mounts the repository read-only at a non-default path containing
 spaces, changes directly into the repository, and checks that local imports,
 TorchCodec video decoding, CUDA, and headless simulation work without initialization.
+
+With `--require-gpus`, verification creates a GPU-backed ManiSkill environment
+and checks that the prebundled PhysX library loads without network access. A
+CPU-only verification intentionally continues to use `physx_cpu`.
 
 ## Push
 

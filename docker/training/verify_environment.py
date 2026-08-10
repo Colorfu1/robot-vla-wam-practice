@@ -265,17 +265,32 @@ def _verify_libero() -> None:
     print(f"LIBERO benchmark suites: {sorted(suites)}")
 
 
-def _verify_maniskill() -> None:
+def _verify_maniskill(*, use_gpu: bool) -> None:
     import gymnasium as gym
     import mani_skill.envs  # noqa: F401
-    import sapien  # noqa: F401
+    from sapien import physx
+
+    backend = "gpu" if use_gpu else "cpu"
+    if use_gpu:
+        cache_path = (
+            Path.home()
+            / ".sapien"
+            / "physx"
+            / physx.version()
+            / "libPhysXGpu_64.so"
+        )
+        if not cache_path.is_file():
+            raise RuntimeError(f"SAPIEN PhysX GPU cache is missing: {cache_path}")
+        physx.enable_gpu()
+        if not physx.is_gpu_enabled():
+            raise RuntimeError("SAPIEN PhysX GPU failed to enable")
 
     environment = gym.make(
         "PushCube-v1",
         num_envs=1,
         obs_mode="rgb",
         render_mode="rgb_array",
-        sim_backend="physx_cpu",
+        sim_backend=backend,
     )
     try:
         environment.reset(seed=0)
@@ -283,7 +298,7 @@ def _verify_maniskill() -> None:
         shape = tuple(frame.shape)
         if len(shape) != 4 or shape[-1] != 3:
             raise RuntimeError(f"Unexpected ManiSkill render shape: {shape}")
-        print(f"ManiSkill headless render: shape={shape}")
+        print(f"ManiSkill headless render: backend={backend} shape={shape}")
     finally:
         environment.close()
 
@@ -500,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         _verify_pusht()
         _verify_mujoco()
         _verify_libero()
-        _verify_maniskill()
+        _verify_maniskill(use_gpu=bool(arguments.require_gpus))
     if arguments.repo is not None:
         _verify_repo(arguments.repo.expanduser().resolve(strict=True), arguments.require_gpus)
     if arguments.nccl_world_size:

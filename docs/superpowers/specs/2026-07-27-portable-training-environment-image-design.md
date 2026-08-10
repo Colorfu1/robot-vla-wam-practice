@@ -27,6 +27,11 @@ The image does not contain:
 - a Docker daemon or Kubernetes orchestration logic;
 - an NVIDIA host driver.
 
+It does contain the pinned SAPIEN PhysX GPU runtime library. This is a runtime
+dependency rather than a user or experiment cache: SAPIEN otherwise downloads
+it lazily from GitHub the first time `physx_cuda` is used, which is not viable on
+offline workers.
+
 The registry destination is supplied at build or push time. It is not hard-coded
 in tracked files.
 

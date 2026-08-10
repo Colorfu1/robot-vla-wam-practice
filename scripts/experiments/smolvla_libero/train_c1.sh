@@ -10,6 +10,18 @@
 #     --split-file=configs/experiments/smolvla_libero/target_split.json \
 #     --output-dir=outputs/smolvla_libero/pilot/c1_default_non_peft
 #
+# Diagnostic C1 with 4/8 background replay and 4/8 target fine-tune data:
+#   bash scripts/experiments/smolvla_libero/train_c1.sh \
+#     --mode=diagnostic \
+#     --experiment-tag=replay_k4 \
+#     --background-replay=4 \
+#     --dataset-root=datasets/lerobot/lerobot/libero \
+#     --split-file=configs/experiments/smolvla_libero/target_split.json \
+#     --num-processes=8 --batch-size=1 \
+#     --steps=30000 --save-freq=5000 \
+#     --learning-rate=0.0001 \
+#     --output-dir=outputs/smolvla_libero/diagnostic/c1_replay_k4
+#
 # Validate and print the exact Accelerate command without training:
 #   bash scripts/experiments/smolvla_libero/train_c1.sh --print-command
 #
@@ -31,7 +43,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  train_c1.sh --mode=smoke|formal --dataset-root=DIR --split-file=FILE \
+  train_c1.sh --mode=smoke|formal|diagnostic --dataset-root=DIR --split-file=FILE \
     --output-dir=DIR [fresh options] [--print-command]
   train_c1.sh --resume-from=CHECKPOINT_DIR [--print-command]
 
@@ -43,6 +55,11 @@ Fresh options:
                           never be used as formal results.
   --experiment-tag=LABEL  Short diagnostic label; required only for
                           --mode=diagnostic.
+  --background-replay=K   Diagnostic-only background samples per global batch
+                          of 8 (0..7); target samples fill the remainder.
+  --background-split-file=FILE
+                          B0 background split; default:
+                          configs/experiments/smolvla_libero/background_split.json.
   --dataset-root=DIR      Required.
   --split-file=FILE       Required.
   --output-dir=DIR        Required.

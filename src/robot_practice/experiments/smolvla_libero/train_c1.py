@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import time
 from pathlib import Path
 from typing import Any
 
 from .b0_training import (
+    BackgroundSplit,
     instrument_update_policy,
+    load_background_split,
     portable_path,
     resolve_repository_path,
     runtime_path,
     runtime_payload,
     utc_now,
+    validate_dataset,
     validate_local_vlm_assets,
     write_json_atomic,
 )
@@ -23,6 +27,7 @@ from .c1_training import (
     C1ResumeArguments,
     C1ResumeContext,
     LaunchInspection,
+    background_replay_k,
     base_policy_identity,
     build_run_config,
     build_train_config,
@@ -32,6 +37,7 @@ from .c1_training import (
     validate_resume,
 )
 from .target_training import (
+    SAMPLING_STRATEGY,
     TargetSplit,
     load_target_split,
     override_target_training_sampler,
@@ -116,9 +122,19 @@ def _validate_offline_c1_policy_load(
 def _fresh_training(
     arguments: C1FreshArguments,
     accelerator: Any,
-) -> tuple[Any, Path, int, int, dict[str, Any] | None, TargetSplit]:
+) -> tuple[Any, Path, int, int, dict[str, Any] | None, TargetSplit, BackgroundSplit | None]:
     split = load_target_split(arguments.split_file)
     dataset_audit = validate_target_dataset(arguments.dataset_root, split)
+    background_split: BackgroundSplit | None = None
+    replay_k = background_replay_k(arguments)
+    if replay_k > 0:
+        background_split = load_background_split(arguments.background_split_file)
+        validate_dataset(arguments.dataset_root, background_split)
+        dataset_audit = dataclasses.replace(
+            dataset_audit,
+            train_episodes=len(split.train_episodes) + len(background_split.train_episodes),
+            train_frames=split.train_frames + background_split.train_frames,
+        )
     with accelerator.main_process_first():
         base = resolve_c1_base_policy(
             arguments.base_policy,
@@ -139,7 +155,7 @@ def _fresh_training(
         device="cuda",
         learning_rate=arguments.learning_rate,
     )
-    config = build_train_config(arguments, split, policy)
+    config = build_train_config(arguments, split, policy, background_split)
     run_config = None
     if accelerator.is_main_process:
         run_config = build_run_config(
@@ -149,8 +165,9 @@ def _fresh_training(
             base_identity=base_policy_identity(arguments, base),
             base_selection=base.selection,
             train_config=config,
+            background_split=background_split,
         )
-    return config, arguments.output_dir, 0, 0, run_config, split
+    return config, arguments.output_dir, 0, 0, run_config, split, background_split
 
 
 def _resume_training(
@@ -164,6 +181,7 @@ def _resume_training(
     Path,
     C1ResumeContext,
     TargetSplit,
+    BackgroundSplit | None,
 ]:
     from lerobot.configs.train import TrainPipelineConfig
     from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig as _SmolVLAConfig
@@ -189,6 +207,7 @@ def _resume_training(
         Path(portable_path(context.config_path)),
         context,
         context.split,
+        context.background_split,
     )
 
 
@@ -242,10 +261,15 @@ def run_training(arguments: C1FreshArguments | C1ResumeArguments) -> None:
     resume_config_path: Path | None = None
     resume_context: C1ResumeContext | None = None
     if isinstance(arguments, C1FreshArguments):
-        config, output_dir, attempt_id, initial_step, run_config, split = _fresh_training(
-            arguments,
-            accelerator,
-        )
+        (
+            config,
+            output_dir,
+            attempt_id,
+            initial_step,
+            run_config,
+            split,
+            background_split,
+        ) = _fresh_training(arguments, accelerator)
         resume = False
     else:
         (
@@ -257,8 +281,14 @@ def run_training(arguments: C1FreshArguments | C1ResumeArguments) -> None:
             resume_config_path,
             resume_context,
             split,
+            background_split,
         ) = _resume_training(arguments)
         resume = True
+
+    if isinstance(arguments, C1FreshArguments):
+        replay_k = background_replay_k(arguments)
+    else:
+        replay_k = int(resume_context.run_config["dataset"].get("background_replay_k", 0))
 
     accelerator.wait_for_everyone()
     tokenizer_path = validate_local_vlm_assets(config.policy.vlm_model_name)
@@ -280,11 +310,20 @@ def run_training(arguments: C1FreshArguments | C1ResumeArguments) -> None:
         ) as sink:
             try:
                 if sink is not None:
+                    effective_run_config = run_config
+                    if effective_run_config is None and resume_context is not None:
+                        effective_run_config = resume_context.run_config
+                    sampler_name = (
+                        effective_run_config.get("dataset", {}).get("sampler", SAMPLING_STRATEGY)
+                        if effective_run_config is not None
+                        else SAMPLING_STRATEGY
+                    )
                     start_record: dict[str, Any] = {
                         "record_type": "resume" if resume else "start",
                         "timestamp": utc_now(),
                         "step": initial_step,
-                        "sampler": "uniform_task_then_uniform_episode",
+                        "sampler": sampler_name,
+                        "background_replay_k": replay_k,
                     }
                     if resume_context is not None:
                         start_record.update(
@@ -314,6 +353,10 @@ def run_training(arguments: C1FreshArguments | C1ResumeArguments) -> None:
                         lerobot_train,
                         split,
                         seed=config.seed,
+                        background_split=background_split,
+                        background_replay_k=replay_k,
+                        num_processes=arguments.num_processes,
+                        batch_size=arguments.batch_size,
                     ),
                     _upstream_resume_argv(resume_config_path),
                 ):

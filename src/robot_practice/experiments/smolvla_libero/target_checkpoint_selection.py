@@ -28,6 +28,7 @@ import threading
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -464,12 +465,44 @@ def summarize_target_checkpoint(
     }
 
 
-def checkpoint_rank_key(result: dict[str, Any]) -> tuple[float, float, int]:
+def _exact_macro_success_rate(result: dict[str, Any]) -> Fraction:
+    """Return the macro success rate without binary-float tie artifacts."""
+
+    per_task = result.get("per_task")
+    if isinstance(per_task, dict) and per_task:
+        task_rates: list[Fraction] = []
+        for task in per_task.values():
+            if not isinstance(task, dict):
+                break
+            successes = task.get("num_successes")
+            episodes = task.get("num_episodes")
+            if (
+                isinstance(successes, int)
+                and not isinstance(successes, bool)
+                and isinstance(episodes, int)
+                and not isinstance(episodes, bool)
+                and episodes > 0
+            ):
+                task_rates.append(Fraction(successes, episodes))
+            else:
+                break
+        else:
+            return sum(task_rates, Fraction(0)) / len(task_rates)
+
+    # Keep legacy/unit-test rows usable when only the serialized macro value is
+    # available. Limiting the denominator removes representation noise without
+    # changing the protocol's meaningful precision.
+    return Fraction(str(float(result["macro_success_rate"]))).limit_denominator(1_000_000)
+
+
+def checkpoint_rank_key(result: dict[str, Any]) -> tuple[Fraction, float, int]:
     """Three-level key; the third level is the checkpoint step itself."""
 
+    offline_mse = result.get("offline_normalized_action_mse")
+
     return (
-        -float(result["macro_success_rate"]),
-        float(result["offline_normalized_action_mse"] or float("inf")),
+        -_exact_macro_success_rate(result),
+        float("inf") if offline_mse is None else float(offline_mse),
         int(result["checkpoint_step"]),
     )
 
@@ -485,7 +518,7 @@ def build_ranking_audit(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         if rank > 1:
             previous = results[rank - 2]
-            if result["macro_success_rate"] != previous["macro_success_rate"]:
+            if _exact_macro_success_rate(result) != _exact_macro_success_rate(previous):
                 level = 1
                 note = "macro closed-loop success rate"
             elif (

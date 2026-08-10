@@ -53,6 +53,7 @@ from robot_practice.evaluation.libero_checkpoint import (
 from robot_practice.evaluation.libero_goal_classifier import (
     GOAL_CLASSIFIER_NAME,
     GOAL_LABELS,
+    GoalClassificationTracker,
     classify_bowl_goal,
     disable_reference_goal_termination,
 )
@@ -526,6 +527,16 @@ def extract_terminal_success(info: dict[str, Any], *, terminal: bool) -> bool:
     if nested_mask is not None and not bool(np.asarray(nested_mask, dtype=bool)[0]):
         raise RuntimeError("Terminal LIBERO final_info has a false _is_success mask")
     return bool(success_values[0])
+
+
+def configure_goal_classifier_termination(
+    env: gym.vector.VectorEnv,
+    goal_classifier: str | None,
+) -> None:
+    """Apply Prompt Swap-only termination changes without touching native eval."""
+
+    if goal_classifier is not None:
+        disable_reference_goal_termination(env)
 
 
 def emit_rollout_progress(
@@ -1131,8 +1142,7 @@ def evaluate_libero(
             env_cfg=env_config,
             policy_cfg=loaded.config,
         )
-        if config.goal_classifier is not None:
-            disable_reference_goal_termination(env)
+        configure_goal_classifier_termination(env, config.goal_classifier)
         policy_driver = runtime.make_driver(env_postprocessor)
     except BaseException:
         close_envs(envs)
@@ -1207,6 +1217,9 @@ def evaluate_libero(
                 init_state_id = init_state_ids[episode_index]
                 _set_init_state_id(env, init_state_id)
                 observation, _ = env.reset(seed=[episode_seed])
+                # Re-apply after every reset in case a future LIBERO bridge
+                # reconstructs its inner domain environment during reset.
+                configure_goal_classifier_termination(env, config.goal_classifier)
                 policy_driver.reset_episode()
                 if runtime.reset_policy_rng is not None:
                     runtime.reset_policy_rng(policy_seed)
@@ -1222,6 +1235,12 @@ def evaluate_libero(
                 model_latencies: list[float] = []
                 success_seen = False
                 termination_reason: str | None = None
+                goal_tracker = (
+                    GoalClassificationTracker()
+                    if config.goal_classifier is not None
+                    else None
+                )
+                terminal_goal_outcome: dict[str, Any] | None = None
                 episode_recording = episode_recording_by_index.get(episode_index)
                 visualized = episode_recording is not None
                 video_frames: list[np.ndarray] = []
@@ -1249,6 +1268,12 @@ def evaluate_libero(
                     next_observation, reward, terminated, truncated, info = env.step(
                         action_numpy
                     )
+                    if goal_tracker is not None:
+                        terminal_goal_outcome = classify_bowl_goal(env)
+                        goal_tracker.observe(
+                            terminal_goal_outcome,
+                            step=step_index + 1,
+                        )
                     next_prepared = _prepare_libero_observation(
                         next_observation,
                         env=env,
@@ -1393,17 +1418,20 @@ def evaluate_libero(
                 if termination_reason is None:
                     raise RuntimeError("LIBERO rollout exited without a termination reason")
                 protocol_outcome: dict[str, Any] | None = None
-                if config.goal_classifier is not None:
-                    protocol_outcome = classify_bowl_goal(env)
+                if goal_tracker is not None:
+                    if terminal_goal_outcome is None:
+                        raise RuntimeError(
+                            "Prompt Swap rollout has no terminal goal-classifier observation"
+                        )
+                    protocol_outcome = dict(terminal_goal_outcome)
+                    protocol_outcome.update(goal_tracker.as_dict())
                     protocol_outcome["expected_goal"] = config.expected_goal
                     protocol_outcome["instruction"] = effective_instruction
-                    success_seen = (
-                        protocol_outcome["predicted_goal"] == config.expected_goal
-                    )
+                    success_seen = goal_tracker.first_goal_reached == config.expected_goal
                     protocol_outcome["goal_matches_instruction"] = success_seen
                     if success_seen:
                         termination_reason = "success"
-                    elif protocol_outcome["predicted_goal"] in GOAL_LABELS:
+                    elif goal_tracker.first_goal_reached in GOAL_LABELS:
                         termination_reason = "wrong_goal"
                     else:
                         termination_reason = str(
@@ -1494,17 +1522,34 @@ def evaluate_libero(
         metrics["goal_classifier"] = config.goal_classifier
         metrics["expected_goal"] = config.expected_goal
         if config.goal_classifier is not None:
-            goal_counts = {goal: 0 for goal in (*GOAL_LABELS, "failed")}
+            terminal_goal_counts = {goal: 0 for goal in (*GOAL_LABELS, "failed")}
+            first_goal_counts = {goal: 0 for goal in (*GOAL_LABELS, "failed")}
+            first_goal_compliant = 0
+            terminal_goal_compliant = 0
             for metric_episode, source_episode in zip(
                 metrics["per_episode"], episode_results, strict=True
             ):
                 outcome = source_episode["protocol_outcome"]
                 metric_episode.update(outcome)
-                goal_counts[str(outcome["predicted_goal"])] += 1
+                terminal_goal_counts[str(outcome["terminal_goal"])] += 1
+                first_goal = str(outcome["first_goal_reached"] or "failed")
+                first_goal_counts[first_goal] += 1
+                if first_goal == config.expected_goal:
+                    first_goal_compliant += 1
+                if str(outcome["terminal_goal"]) == config.expected_goal:
+                    terminal_goal_compliant += 1
             metrics["aggregate"]["prompt_compliance"] = metrics["aggregate"][
                 "success_rate"
             ]
-            metrics["aggregate"]["predicted_goal_counts"] = goal_counts
+            metrics["aggregate"]["predicted_goal_counts"] = terminal_goal_counts
+            metrics["aggregate"]["first_goal_counts"] = first_goal_counts
+            metrics["aggregate"]["terminal_goal_counts"] = terminal_goal_counts
+            metrics["aggregate"]["first_goal_prompt_compliance"] = (
+                first_goal_compliant / len(episode_results)
+            )
+            metrics["aggregate"]["terminal_goal_prompt_compliance"] = (
+                terminal_goal_compliant / len(episode_results)
+            )
         metrics["visualized_episodes"] = list(
             range(config.num_visualized_episodes)
         )

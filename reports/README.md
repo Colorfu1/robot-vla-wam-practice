@@ -13,7 +13,8 @@
 - [实验指南总览](guides/README.md)
 - [ACT 实验指南](guides/act/README.md)
 - [PushT Diffusion Pilot](guides/pusht_diffusion/README.md)
-- [SmolVLA LIBERO LoRA 与语言增强（B0 域适配已完成正式评测；C1/C2/C3 待运行）](guides/smolvla_libero/README.md)
+- [SmolVLA LIBERO LoRA 与语言增强（目标协议已完成；C3 background retention 待补）](guides/smolvla_libero/README.md)
+- [ManiSkill M0 PickCube 端到端探针](guides/maniskill/README.md)
 
 实验指南负责说明实验目标、实验设计、完整命令、结果落点和判断标准。实际运行后，
 还需要在 [实验运行记录](experiment_log.md) 中补充对应条目。
@@ -29,3 +30,8 @@
 - [2026-07-29 PushT E2 闭环采样结果](daily/2026-07-29-PushT-E2闭环采样结果.md)
 - [2026-07-30 PushT E5 原型条件实验阶段性成果](daily/2026-07-30-PushT-E5原型条件实验实现.md)
 - [2026-07-31 PushT 路线条件与 SmolVLA LIBERO 训练基建](daily/2026-07-31-PushT路线条件与SmolVLA-LIBERO训练基建.md)
+
+- [2026-08-06 Prompt Swap 修复后合并结果](2026-08-06-PromptSwap修复后合并结果.md)
+- [2026-08-06 C1 学习率缩放遗忘权衡诊断结论](2026-08-06-C1学习率缩放遗忘权衡诊断结论.md)
+- [2026-08-06 C1 遗忘诊断与背景数据回放结论](2026-08-06-C1遗忘诊断与背景数据回放结论.md)
+- [2026-08-07 C3 改写增强 LoRA 正式评测结论](daily/2026-08-07-C3改写增强LoRA正式评测结论.md)

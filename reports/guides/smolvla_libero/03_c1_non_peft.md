@@ -1,5 +1,22 @@
 # SmolVLA LIBERO：C1 Default Non-PEFT
 
+<!-- PROMPT_SWAP_MERGE_NOTICE:BEGIN -->
+## Prompt Swap 修复后当前结果
+
+**C1/Z0 Prompt Swap 已合并；本文旧 Prompt Swap 数值仅为历史快照。**
+
+以下是当前有效的结果；本文其余位置中修复前的 Prompt Swap 数值、混淆矩阵和由此得到的结论，均只保留作历史审计，不得继续引用。
+
+| Model | First-goal compliance | Terminal-goal compliance | Full horizon |
+| --- | ---: | ---: | ---: |
+| z0_b0_zero_shot | 0/30 = 0.0% | 0/30 = 0.0% | 30/30 |
+| c1_default_non_peft | 29/30 = 96.7% | 27/30 = 90.0% | 30/30 |
+
+主指标是每一步 simulator predicate 的 `first_goal_reached`；`terminal_goal` 只表示达成后的保持性诊断。
+这次合并只替换 Prompt Swap 的 job/rollout/episode 与汇总结果，canonical、held-out paraphrase、训练和 checkpoint selection 结论不变。
+详细合并报告：`reports/2026-08-06-PromptSwap修复后合并结果.md`。
+<!-- PROMPT_SWAP_MERGE_NOTICE:END -->
+
 ## 实验目标
 
 建立与 LoRA 配置共享数据、训练步数和优化设置的非 PEFT 对照，判断 C2 是否接近 SmolVLA
@@ -219,7 +236,7 @@ loss 首步 0.1599、末 1,000 步均值 0.01739，grad norm 峰值 9.42，LR �
 |---|---:|---:|
 | canonical | 0/90 = **0.0%** | 87/90 = **96.7%** |
 | held-out paraphrase | 2/90 = 2.2% | 30/90 = 33.3% |
-| prompt compliance | 0/30 = 0.0% | 18/30 = 60.0% |
+| prompt compliance | 0/30 = 0.0% | 29/30 = 96.7% |
 
 逐任务 canonical：C1 为 29/30、29/30、29/30；Z0 三任务全 0/30，90 条全部 `time_limit`。
 
@@ -233,9 +250,12 @@ loss 首步 0.1599、末 1,000 步均值 0.01739，grad norm 峰值 9.42，LR �
 - **C1 学到的是指令与动作的固定绑定，不是语言理解。** canonical 96.7% 掉到改写句 33.3%，
   `para_gap` 点估计 +0.6333、bootstrap 95% CI `[0.5222, 0.7333]`，不含 0。这正是 C3 要针对的
   问题，本次为它提供了基线。
-- **prompt compliance 60% 不能读成"六成听懂"。** 混淆矩阵是 cabinet 10/10、plate 8/10、
-  stove 0/10，且 stove 的 10 条失败没有一条跑向其他目标——是做不到，不是听错。60% 是
-  "两个目标能听、一个目标不可达"的合成值。
+- **Prompt Swap 修复后，C1 首次达成率为 29/30（96.7%）。** 首次达成混淆矩阵为 stove 9/10、
+  cabinet 10/10、plate 10/10；终态保持率为 27/30（90.0%），其中 2 条 plate episode 在首次
+  达成后没有保持到第 300 步。
+- 修复前的 18/30 与 stove 0/10 是参考场景原生目标成功后 reset 导致的判定错误，不能再用来说明
+  stove 不可达或模型“不听指令”。当前 Prompt Swap 主指标使用 `first_goal_reached`，
+  `terminal_goal` 只作保持性诊断。
 
 最后，test 的 30 个初始状态与训练摆放同属约 3 cm 范围的同一分布，所以 96.7% 衡量的是同任务、
 未被使用过的摆放，不是远距离泛化。
@@ -272,16 +292,86 @@ loss 首步 0.1599、末 1,000 步均值 0.01739，grad norm 峰值 9.42，LR �
 饱和，后 15000 步对目标任务毫无贡献却继续漂离背景能力。这两条由
 [C1 遗忘权衡曲线诊断](../../../plans/2026-08-05-C1遗忘权衡曲线诊断.md) 定量回答。
 
-### TODO：尚未尝试的缓解方向
+## 遗忘缓解诊断与后续方向
 
-以下两项**均未执行**，不构成任何结论，仅记录为后续设计选项。它们比早停与降 LR 更根本，但
-成本也更高。
+早停与按 batch 缩放 LR 已完成 A/B 诊断；背景回放的 `k=4/8` 探针也已完成。完整对比见
+[C1 遗忘诊断与背景数据回放结论](../../2026-08-06-C1遗忘诊断与背景数据回放结论.md)。这些结果都属于
+diagnostic scope，不改变正式 C1 的 target protocol 结果，也不产生可直接发布的 checkpoint。
 
-**TODO-1：背景数据回放。** 把 B0 的背景 demonstration 按一定比例混进 C1 训练，让损失函数里
-真正存在保留旧行为的项。这是唯一能约束漂移方向而非仅降低漂移速度的做法——只降 LR 的话，
-背景能力仍会随步数流失，只是慢一些。代价：新增「目标 : 背景」采样比例这个超参，背景侧有
-236,470 帧（目标侧只有 11,022 帧），比例怎么定需要单独扫；且混入后目标任务的收敛速度与
-饱和点都会变，选模协议要重新校准。做之前需要先有权衡曲线，否则不知道该往哪个方向调。
+### Diagnostic 训练命令
+
+以下命令只允许写入 `outputs/smolvla_libero/diagnostic/`，不能覆盖正式 C1 目录。
+
+同配置复跑 A：
+
+```bash
+bash scripts/experiments/smolvla_libero/train_c1.sh \
+  --mode=diagnostic \
+  --experiment-tag=a_same_config \
+  --num-processes=8 --batch-size=1 \
+  --steps=30000 --save-freq=5000 \
+  --learning-rate=0.0001 \
+  --output-dir=outputs/smolvla_libero/diagnostic/c1_a_same_config
+```
+
+按 global batch 线性缩放 LR 的 B：
+
+```bash
+bash scripts/experiments/smolvla_libero/train_c1.sh \
+  --mode=diagnostic \
+  --experiment-tag=b_scaled_lr \
+  --num-processes=8 --batch-size=1 \
+  --steps=30000 --save-freq=5000 \
+  --learning-rate=0.0000125 \
+  --output-dir=outputs/smolvla_libero/diagnostic/c1_b_scaled_lr
+```
+
+混入一半 background 数据的 Replay `k=4/8`：
+
+```bash
+bash scripts/experiments/smolvla_libero/train_c1.sh \
+  --mode=diagnostic \
+  --experiment-tag=replay_k4 \
+  --background-replay=4 \
+  --num-processes=8 --batch-size=1 \
+  --steps=30000 --save-freq=5000 \
+  --learning-rate=0.0001 \
+  --output-dir=outputs/smolvla_libero/diagnostic/c1_replay_k4
+```
+
+A/B 的六 checkpoint 目标选模与背景曲线命令见
+[C1 遗忘权衡曲线诊断计划](../../../plans/2026-08-05-C1遗忘权衡曲线诊断.md)；Replay 的选模与
+回放比例扩展命令见[背景数据回放计划](../../../plans/2026-08-05-背景数据回放缓解遗忘.md)。
+
+当前已完成的 Replay selected checkpoint background test 可复现为：
+
+```bash
+bash scripts/experiments/smolvla_libero/eval_b0_test.sh \
+  --run-dir=outputs/smolvla_libero/diagnostic/c1_replay_k4 \
+  --policy-path=outputs/smolvla_libero/diagnostic/c1_replay_k4/checkpoints/selected/pretrained_model \
+  --model-label=c1_replay_k4_selected \
+  --split-file=configs/experiments/smolvla_libero/background_closed_loop_split.json \
+  --num-gpus=8 \
+  --env-seed=1000 \
+  --policy-seed=2000 \
+  --n-action-steps=10 \
+  --libero-assets-dir=datasets/raw/libero_assets \
+  --output-dir=outputs/smolvla_libero/diagnostic/c1_replay_k4/background/selected
+```
+
+**背景数据回放（`k=4/8`，已完成一条探针）。** 在 LR `1e-4` 不变的情况下，将每个 global
+batch 的一半样本取自 B0 background train pool。selected step 20,000 的 target validation 为
+59/60（98.3%），background test 为 149/210（71.0%）；相同 target-only 配置 A 为 0/210，按
+batch 缩放 LR 的 B selected 为 55/210。由于 replay 训练已经见过 background demonstration，
+149/210 是混合训练后的 background 能力/保持结果，不能与 A/B 的纯遗忘读数完全等同。
+
+按回放计划的预注册规则，`k=4/8` 达到继续条件，因此 `k=2/8` 与 `k=6/8` 仍待执行；当前没有
+完整的 replay step 曲线。
+
+**后续设计方向。** Replay 是目前最有希望的缓解方向，但新增了「目标 : 背景」采样比例这个
+超参，背景侧有 236,470 帧（目标侧只有 11,022 帧），比例怎么定需要单独扫；且混入后目标任务
+的收敛速度与饱和点会改变，选模协议需要重新校准。若要把某个 replay 配置变成正式模型，必须
+另起计划、重训，并重新执行完整 target protocol 与 background test。
 
 **~~TODO-2：改用 LoRA（即 C2/C3）~~ → 已验证，结果为负。** C2（Canonical LoRA，rank 32）已完成
 训练、选模与两类正式评测，结论是 **LoRA 没有防住灾难性遗忘**：
@@ -302,7 +392,7 @@ C1 与 C2 的数据、LR、步数、batch、seed 完全相同，唯一差别是�
 保留旧行为的项。换参数化方式改不了这一点。详见
 [C2 Canonical LoRA 正式评测结论](../../2026-08-05-C2%20Canonical%20LoRA%20正式评测结论.md)。
 
-因此可行方向收窄为两条：改数据（TODO-1 回放）或缩短优化路径（早停、降 LR，见
+因此可行方向收窄为两条：改数据（背景回放）或缩短优化路径（早停、降 LR，见
 [C1 遗忘权衡曲线诊断](../../../plans/2026-08-05-C1遗忘权衡曲线诊断.md)）。C3 仍需跑同一份背景
 test，但先验上不应期待它比 C2 好——它与 C2 的差别只在训练指令，不在参数化。
 
@@ -317,6 +407,19 @@ outputs/smolvla_libero/pilot/c1_default_non_peft/
 │   └── selected/
 └── N_A.json
 ```
+
+Diagnostic 结果不写入上述正式目录，分别落在：
+
+```text
+outputs/smolvla_libero/diagnostic/
+├── c1_a_same_config/
+├── c1_b_scaled_lr/
+└── c1_replay_k4/
+    ├── checkpoint_selection/
+    └── background/selected/
+```
+
+完整诊断结果与限制见[C1 遗忘诊断与背景数据回放结论](../../2026-08-06-C1遗忘诊断与背景数据回放结论.md)。
 
 至少记录：
 

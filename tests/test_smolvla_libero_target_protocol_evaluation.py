@@ -12,6 +12,7 @@ from robot_practice.evaluation.libero_assets import REQUIRED_ASSET_DIRECTORIES
 from robot_practice.evaluation.libero_goal_classifier import (
     GOAL_CLASSIFIER_NAME,
     GOAL_PREDICATES,
+    GoalClassificationTracker,
     classify_bowl_goal,
     disable_reference_goal_termination,
 )
@@ -157,17 +158,25 @@ def test_summary_reports_paired_gap_and_prompt_confusion(tmp_path: Path) -> None
                     "init_state_id": index,
                     "expected_goal": goal,
                     "predicted_goal": goal if index < 8 else "failed",
+                    "first_goal_reached": goal if index < 8 else None,
+                    "first_goal_step": 42 if index < 8 else None,
+                    "terminal_goal": goal if index < 8 else "failed",
+                    "num_steps": 300,
                     "success": index < 8,
                 }
             )
 
     result = target_eval.summarize_results(arguments, records)
 
+    assert result["schema_version"] == 2
     assert result["canonical"]["macro_success_rate"] == pytest.approx(0.8)
     assert result["held_out_paraphrase"]["macro_success_rate"] == pytest.approx(0.7)
     assert result["para_gap"]["point_estimate"] == pytest.approx(0.1)
     assert result["para_gap"]["num_paired_cases"] == 90
     assert result["prompt_swap"]["prompt_compliance"] == pytest.approx(0.8)
+    assert result["prompt_swap"]["first_goal_prompt_compliance"] == pytest.approx(0.8)
+    assert result["prompt_swap"]["terminal_goal_prompt_compliance"] == pytest.approx(0.8)
+    assert result["prompt_swap"]["num_full_horizon_episodes"] == 30
     assert result["prompt_swap"]["confusion_matrix"]["stove"] == {
         "stove": 8,
         "cabinet": 0,
@@ -179,12 +188,21 @@ def test_summary_reports_paired_gap_and_prompt_confusion(tmp_path: Path) -> None
 class _FakeRawEnvironment:
     def __init__(self, matches: dict[tuple[str, str, str], bool]) -> None:
         self.matches = matches
+        self.reset_count = 0
         self.object_states_dict = {
             value: object() for predicate in GOAL_PREDICATES.values() for value in predicate[1:]
         }
 
     def check_success(self) -> bool:
+        return self._check_success()
+
+    def _check_success(self) -> bool:
         return True
+
+    def advance_with_reference_termination(self) -> None:
+        if self._check_success():
+            self.reset_count += 1
+            self.matches = {}
 
     def _eval_predicate(self, predicate: list[str]) -> bool:
         return self.matches.get(tuple(predicate), False)
@@ -192,7 +210,8 @@ class _FakeRawEnvironment:
 
 def test_three_goal_classifier_is_independent_of_reference_success() -> None:
     raw = _FakeRawEnvironment({GOAL_PREDICATES["plate"]: True})
-    env = SimpleNamespace(num_envs=1, envs=[SimpleNamespace(_env=raw)])
+    bridge = SimpleNamespace(env=raw, check_success=raw.check_success)
+    env = SimpleNamespace(num_envs=1, envs=[SimpleNamespace(_env=bridge)])
 
     disable_reference_goal_termination(env)
     result = classify_bowl_goal(env)
@@ -200,6 +219,57 @@ def test_three_goal_classifier_is_independent_of_reference_success() -> None:
     assert raw.check_success() is False
     assert result["predicted_goal"] == "plate"
     assert result["failure_reason"] is None
+
+
+def test_reference_goal_patch_prevents_inner_success_reset() -> None:
+    """The fake env mirrors the real bridge -> BDDLBaseDomain call chain."""
+
+    raw = _FakeRawEnvironment({GOAL_PREDICATES["stove"]: True})
+    bridge = SimpleNamespace(env=raw, check_success=raw.check_success)
+    env = SimpleNamespace(num_envs=1, envs=[SimpleNamespace(_env=bridge)])
+
+    disable_reference_goal_termination(env)
+    raw.advance_with_reference_termination()
+
+    assert raw.reset_count == 0
+    assert raw.check_success() is False
+    assert raw._check_success() is False
+    assert classify_bowl_goal(env)["predicted_goal"] == "stove"
+
+
+def test_goal_classifier_patch_is_only_requested_for_classifier_path(monkeypatch) -> None:
+    calls: list[object] = []
+
+    def fake_disable(env: object) -> None:
+        calls.append(env)
+
+    monkeypatch.setattr(libero_act, "disable_reference_goal_termination", fake_disable)
+    env = object()
+
+    libero_act.configure_goal_classifier_termination(env, None)
+    assert calls == []
+
+    libero_act.configure_goal_classifier_termination(env, GOAL_CLASSIFIER_NAME)
+    assert calls == [env]
+
+
+def test_goal_tracker_keeps_first_goal_when_terminal_state_is_different() -> None:
+    tracker = GoalClassificationTracker()
+
+    tracker.observe(
+        {"predicted_goal": "stove", "failure_reason": None},
+        step=76,
+    )
+    tracker.observe(
+        {"predicted_goal": "failed", "failure_reason": "no_goal_reached"},
+        step=300,
+    )
+
+    assert tracker.as_dict() == {
+        "first_goal_reached": "stove",
+        "first_goal_step": 76,
+        "terminal_goal": "failed",
+    }
 
 
 def test_policy_validation_accepts_full_and_lora_checkpoints(tmp_path: Path) -> None:

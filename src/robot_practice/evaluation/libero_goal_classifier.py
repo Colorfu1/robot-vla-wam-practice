@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import gymnasium as gym
@@ -22,6 +23,33 @@ GOAL_PREDICATES: Mapping[str, tuple[str, str, str]] = {
 }
 
 
+@dataclass
+class GoalClassificationTracker:
+    """Keep the first reached goal separate from the terminal simulator state."""
+
+    first_goal_reached: str | None = None
+    first_goal_step: int | None = None
+    terminal_goal: str | None = None
+
+    def observe(self, outcome: Mapping[str, Any], *, step: int) -> None:
+        if step <= 0:
+            raise ValueError("Goal-classifier steps must be positive")
+        predicted_goal = outcome.get("predicted_goal")
+        if predicted_goal not in (*GOAL_LABELS, FAILED_GOAL):
+            raise ValueError(f"Unknown goal-classifier prediction: {predicted_goal!r}")
+        if self.first_goal_reached is None and predicted_goal in GOAL_LABELS:
+            self.first_goal_reached = str(predicted_goal)
+            self.first_goal_step = step
+        self.terminal_goal = str(predicted_goal)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "first_goal_reached": self.first_goal_reached,
+            "first_goal_step": self.first_goal_step,
+            "terminal_goal": self.terminal_goal,
+        }
+
+
 def _raw_libero_environment(env: gym.vector.VectorEnv) -> Any:
     if getattr(env, "num_envs", None) != 1 or not hasattr(env, "envs"):
         raise RuntimeError("Prompt Swap requires one synchronous LIBERO sub-environment")
@@ -32,8 +60,7 @@ def _raw_libero_environment(env: gym.vector.VectorEnv) -> Any:
         (
             candidate
             for candidate in candidates
-            if candidate is not None
-            and callable(getattr(candidate, "_eval_predicate", None))
+            if candidate is not None and callable(getattr(candidate, "_eval_predicate", None))
         ),
         None,
     )
@@ -56,14 +83,23 @@ def _raw_libero_environment(env: gym.vector.VectorEnv) -> Any:
 def disable_reference_goal_termination(env: gym.vector.VectorEnv) -> None:
     """Prevent the reference task goal from resetting a Prompt Swap rollout."""
 
-    _raw_libero_environment(env)
+    raw = _raw_libero_environment(env)
     bridge = getattr(env.envs[0], "_env", None)
     if not callable(getattr(bridge, "check_success", None)):
         raise TypeError("LIBERO environment does not expose check_success")
-    # LeRobot's LIBERO wrapper calls this public method after every raw step and
-    # immediately resets on True. The classifier below calls _eval_predicate
-    # directly, so disabling this one method does not disable terminal scoring.
-    bridge.check_success = lambda: False
+    if not callable(getattr(raw, "_check_success", None)):
+        raise TypeError("LIBERO environment does not expose the inner success predicate")
+
+    def always_false_success(*_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    # LeRobot's LIBERO wrapper calls bridge.check_success() after every raw step
+    # and immediately resets on True. The LIBERO BDDL domain also writes its
+    # success predicate directly into the raw `done` return value through
+    # raw._check_success(). Both paths must be disabled; the classifier below
+    # still evaluates _eval_predicate directly and therefore remains active.
+    bridge.check_success = always_false_success
+    raw._check_success = always_false_success
 
 
 def classify_bowl_goal(env: gym.vector.VectorEnv) -> dict[str, Any]:
@@ -97,6 +133,7 @@ __all__ = [
     "GOAL_CLASSIFIER_NAME",
     "GOAL_LABELS",
     "GOAL_PREDICATES",
+    "GoalClassificationTracker",
     "classify_bowl_goal",
     "disable_reference_goal_termination",
 ]

@@ -6,7 +6,7 @@
 language 泛化和 Prompt Swap 语言服从性。B0 `025000` 是只见过 background tasks 的
 domain-adapted zero-shot baseline；四个模型必须共用同一评测入口和协议文件。
 
-结果类别：`Closed-loop / Pilot`。
+结果类别：`Formal / Closed-loop / Test`（Z0/C1/C2/C3 均已完成目标协议评测）。
 
 ## 实验思路
 
@@ -161,12 +161,13 @@ policy seeds，也不能把同一 state 的重复样本当成独立初始状态�
 2. 恢复完全相同的 policy RNG。
 3. 分别输入 stove、cabinet、plate canonical prompt。
 4. 禁止 reference task 的内部 success 提前终止 rollout。
-5. Episode 结束后独立判断 bowl 与三个目标的空间关系。
+5. 每一步独立判断 bowl 与三个目标的空间关系，记录首次命中的目标与步数；第 300 步再记录
+   `terminal_goal`，用于判断达成后是否保持。
 
 不能分别启动三个 task，再把相同 `init_state_id` 当作同一场景；三个任务的官方 init-state
 数组并不相同。
 
-输出 3×4 confusion matrix：
+输出两份 3×4 confusion matrix：首次达成矩阵是主指标，终态矩阵是保持性诊断。
 
 | Input Prompt | Stove | Cabinet | Plate | Failed |
 | --- | ---: | ---: | ---: | ---: |
@@ -174,16 +175,24 @@ policy seeds，也不能把同一 state 的重复样本当成独立初始状态�
 | Cabinet | | | | |
 | Plate | | | | |
 
-`Failed` 包括：
+两份矩阵的行列定义相同：首次达成矩阵按 `first_goal_reached` 填写，终态矩阵按
+`terminal_goal` 填写。终态矩阵不覆盖首次达成主指标。
+
+首次达成矩阵中的 `Failed` 包括：
 
 - 没有到达任何目标
 - bowl 掉落
 - 超时
 - 多目标判定冲突
 
+终态矩阵中的 `Failed` 还包括曾经达成目标但第 300 步未保持目标的 episode。
+
 ```text
-Prompt Compliance =
-  最终目标与输入 prompt 一致的 rollout 数 / 全部 Prompt-Swap rollout 数
+Prompt Swap Compliance (primary) =
+  first_goal_reached 与输入 prompt 一致的 rollout 数 / 全部 Prompt-Swap rollout 数
+
+Terminal Hold (diagnostic) =
+  terminal_goal 与输入 prompt 一致的 rollout 数 / 全部 Prompt-Swap rollout 数
 ```
 
 Failed 必须留在分母。
@@ -191,7 +200,7 @@ Failed 必须留在分母。
 ## 三目标分类器
 
 冻结分类器为 `libero_bowl_three_goal_predicate_v1`。它不读取 reference task 的单目标
-`check_success()`；而是在 episode 终点对同一个 simulator state 同时计算：
+`check_success()`；而是在每一步、以及 episode 终点，对同一个 simulator state 同时计算：
 
 ```text
 on(bowl, stove_cook_region)
@@ -200,7 +209,7 @@ on(bowl, plate)
 ```
 
 正式 test 前已通过真实 1-step Prompt Swap Smoke，验证 classifier 能在 reference task
-success termination 被禁用后读取终局 simulator predicates。正式结果还必须满足：
+success termination 被禁用后读取 simulator predicates。正式结果还必须满足：
 
 - 已知 stove/cabinet/plate 成功状态分别只命中一个目标
 - 已知未完成状态进入 Failed
@@ -257,12 +266,23 @@ Prompt Swap reference states、分类器、seeds 和总 rollout 数；`--resume`
 
 ## 结果表
 
-| 模型 | Canonical SR | Paraphrase SR | Para Gap ↓ | Prompt Compliance ↑ | Trainable Params | Peak VRAM |
+| 模型 | Canonical SR | Paraphrase SR | Para Gap ↓ | Prompt Swap（首次/终态） | Trainable Params | Peak VRAM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| B0 Domain-adapted zero-shot | 待运行 | 待运行 | 待运行 | 待运行 | N/A | 已记录于 B0 |
-| C1 Default Non-PEFT | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| C2 Canonical LoRA | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
-| C3 LoRA + Para | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 | 待运行 |
+| B0 Domain-adapted zero-shot（Z0） | 0/90 = 0.0% | 2/90 = 2.2% | -0.0222 | 0/30 = 0.0% / 0/30 = 0.0% | N/A | 已记录于 B0 |
+| C1 Default Non-PEFT | 87/90 = 96.7% | 30/90 = 33.3% | +0.6333 | 29/30 = 96.7% / 27/30 = 90.0% | 已记录于 C1 | 已记录于 C1 |
+| C2 Canonical LoRA | 87/90 = 96.7% | 19/90 = 21.1% | +0.7556 | 28/30 = 93.3% / 28/30 = 93.3% | 已记录于 C2 | 已记录于 C2 |
+| C3 LoRA + Para（selected 015000） | 88/90 = 97.8% | 67/90 = 74.4% | +0.2333 | 30/30 = 100.0% / 29/30 = 96.7% | 1,485,312 / 451,531,488 | 1.68 GiB allocated / 1.95 GiB reserved |
+
+Prompt Swap 的第一列是 `first_goal_reached` 主指标，第二列是 `terminal_goal` 保持性诊断；
+两者不能混为一个成功率。完整 C3 结果、失败案例和选模信息见
+[C3 正式评测结论](../../daily/2026-08-07-C3改写增强LoRA正式评测结论.md) 与
+[实验运行记录](../../experiment_log.md)。Z0/C1/C2 的修复后 Prompt Swap 口径见
+[Prompt Swap 修复后合并结果](../../2026-08-06-PromptSwap修复后合并结果.md)。
+
+C3 的 held-out paraphrase 比 C2 提升 53.3 个百分点（19/90 → 67/90），三个任务均提升；
+canonical 与 C2 基本持平（87/90 → 88/90）。C3 Prompt Swap 首次达成达到 30/30，terminal hold
+为 29/30。当前 selected `015000` 的 background retention 尚未重跑，旧的 `c3_selected 0/210`
+不计入 C3 正式结论。
 
 同时记录项目要求的统一字段：
 
@@ -306,7 +326,7 @@ C0 仍只有一条 contract Smoke；若要分离 B0 background fine-tuning 本�
 ### 语言服从 Pilot 晋级信号
 
 - Prompt Swap 对角线高于各行最大非对角项
-- Prompt Compliance 点估计至少 60%
+- 首次达成 Prompt Compliance 点估计至少 60%
 - 按 reference state 做 cluster bootstrap，95% CI 下界高于固定执行单目标的 1/3 基线
 - 视频中 prompt 改变后目标阶段行为随之改变
 

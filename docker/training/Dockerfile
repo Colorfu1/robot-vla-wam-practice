@@ -152,6 +152,8 @@ ARG BUILD_DATE="unknown"
 ARG CONDA_LOCK_SHA256="unknown"
 ARG PYPI_LOCK_SHA256="unknown"
 ARG SOURCE_LOCK_SHA256="unknown"
+ARG SAPIEN_PHYSX_VERSION="105.1-physx-5.3.1.patch0"
+ARG SAPIEN_PHYSX_ZIP_SHA256="167a01aad7381afef963b89169968c289e7b653880a7a823c116d87ee5c00fc6"
 
 ENV HOME=/home/robot-practice \
     PYTHONNOUSERSITE=1 \
@@ -164,6 +166,8 @@ ENV HOME=/home/robot-practice \
     MPLCONFIGDIR=/home/robot-practice/.cache/matplotlib \
     HF_HOME=/home/robot-practice/.cache/huggingface \
     LIBERO_CONFIG_PATH=/opt/robot-practice/libero \
+    ROBOT_PRACTICE_SAPIEN_CACHE=/opt/robot-practice/sapien-cache \
+    ROBOT_PRACTICE_SAPIEN_PHYSX_VERSION=${SAPIEN_PHYSX_VERSION} \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 
@@ -173,6 +177,8 @@ LABEL org.opencontainers.image.title="Robot Practice Training Environment" \
       io.robot-practice.conda-lock-sha256="${CONDA_LOCK_SHA256}" \
       io.robot-practice.pypi-lock-sha256="${PYPI_LOCK_SHA256}" \
       io.robot-practice.source-lock-sha256="${SOURCE_LOCK_SHA256}" \
+      io.robot-practice.sapien-physx-version="${SAPIEN_PHYSX_VERSION}" \
+      io.robot-practice.sapien-physx-zip-sha256="${SAPIEN_PHYSX_ZIP_SHA256}" \
       io.robot-practice.remote-status="verification-pending"
 
 RUN --mount=from=source-wheel-builder,source=/wheelhouse,target=/wheelhouse,ro \
@@ -196,6 +202,19 @@ if actual != expected:
     raise SystemExit(f"Core runtime mismatch: expected={expected}, actual={actual}")
 print(json.dumps(actual, sort_keys=True))
 PY
+
+RUN set -euxo pipefail \
+    && cache_dir="${ROBOT_PRACTICE_SAPIEN_CACHE}/physx/${SAPIEN_PHYSX_VERSION}" \
+    && mkdir -p "${cache_dir}" \
+    && curl --fail --location --retry 5 --retry-all-errors \
+        --connect-timeout 20 --max-time 300 \
+        "https://github.com/sapien-sim/physx-precompiled/releases/download/${SAPIEN_PHYSX_VERSION}/linux-so.zip" \
+        --output /tmp/sapien-physx-linux-so.zip \
+    && echo "${SAPIEN_PHYSX_ZIP_SHA256}  /tmp/sapien-physx-linux-so.zip" \
+        | sha256sum --check --strict \
+    && unzip -q /tmp/sapien-physx-linux-so.zip -d "${cache_dir}" \
+    && test -s "${cache_dir}/libPhysXGpu_64.so" \
+    && rm -f /tmp/sapien-physx-linux-so.zip
 
 COPY docker/training/entrypoint.sh /usr/local/bin/robot-practice-entrypoint
 COPY docker/training/robot-practice-init /usr/local/bin/robot-practice-init
@@ -233,6 +252,9 @@ RUN groupadd --gid "${ROBOT_PRACTICE_GID}" robot-practice \
         /usr/local/bin/robot-practice-init \
         /usr/local/bin/robot-practice-verify \
         /usr/local/bin/watch \
+    && ln -s \
+        "${ROBOT_PRACTICE_SAPIEN_CACHE}" \
+        "${HOME}/.sapien" \
     && dpkg-query -W -f='${Package}\t${Version}\n' \
         > /opt/robot-practice/environment/system-packages.tsv
 

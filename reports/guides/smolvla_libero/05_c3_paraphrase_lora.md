@@ -5,7 +5,10 @@
 验证训练时加入语义等价 instruction 改写，是否能改善 SmolVLA 对 held-out paraphrase 的
 行为泛化，同时保持 canonical task performance，并与 C2 Canonical LoRA 构成单变量对照。
 
-结果类别：训练为 `Offline`，checkpoint selection 为 `Closed-loop`。
+结果类别：训练为 `Formal / Offline`，checkpoint selection 为 `Formal / Closed-loop / Validation`，最终目标协议为 `Formal / Closed-loop / Test`。
+
+当前状态：C3 已完成训练、checkpoint selection 和 210 条目标协议正式评测。完整结论见
+[2026-08-07 C3 改写增强 LoRA 正式评测结论](../../daily/2026-08-07-C3改写增强LoRA正式评测结论.md)。
 
 ## 实验思路
 
@@ -218,6 +221,61 @@ bash scripts/experiments/smolvla_libero/select_checkpoint.sh \
   --selected-dir=outputs/smolvla_libero/pilot/c3_paraphrase_lora/checkpoints/selected
 ```
 
+## 评测命令
+
+选模完成后跑两份正式成绩（都是 8 卡、210 条，协议细节见
+[统一闭环评测](06_evaluation.md)）：
+
+### 1. 目标协议评测（Canonical / Held-out Paraphrase / Prompt Swap）
+
+```bash
+bash scripts/experiments/smolvla_libero/eval_target_protocols.sh \
+  --policy-path=outputs/smolvla_libero/pilot/c3_paraphrase_lora/checkpoints/selected/pretrained_model \
+  --model-label=c3_paraphrase_lora \
+  --num-gpus=8 \
+  --libero-assets-dir=datasets/raw/libero_assets \
+  --output-dir=outputs/smolvla_libero/eval/c3_paraphrase_lora
+```
+
+工作量：canonical 90 + held_out_paraphrase 90 + prompt_swap 30 = 210。
+C3 的 selected checkpoint 是 LoRA adapter 形态，评测端会自动挂载。
+
+### 2. 背景任务回归评测（7 背景任务 × 30 状态 = 210 条）
+
+```bash
+bash scripts/experiments/smolvla_libero/eval_b0_test.sh \
+  --run-dir=outputs/smolvla_libero/pilot/b0_domain_adaptation_offline \
+  --policy-path=outputs/smolvla_libero/pilot/c3_paraphrase_lora/checkpoints/selected/pretrained_model \
+  --model-label=c3_selected \
+  --num-gpus=8 \
+  --libero-assets-dir=datasets/raw/libero_assets \
+  --output-dir=outputs/smolvla_libero/eval/background_regression/c3_selected
+```
+
+`--run-dir` 指 B0 只用于取同一份 background split，不使用 B0 权重；`--policy-path` 直连
+C3 selected，跳过 B0 selection 溯源但仍强制冻结协议。C3 的 checkpoint 为 adapter 形态，
+入口按 adapter pair 校验并直接评测。跑完与 B0 基线（183/210）做配对回退分析。
+
+## 当前结果摘要
+
+C3 的 selected checkpoint 是 `015000`。它与 `025000` 在 validation 主指标上都为 57/60，
+但 `015000` 的 normalized offline action MSE 更低（0.383028 对 0.385061），因此按修正后的
+精确整数成功数 tie-break 规则胜出。
+
+| Protocol | Rollouts | Successes | Rate |
+| --- | ---: | ---: | ---: |
+| Canonical | 90 | 88 | 97.78% |
+| Held-out paraphrase | 90 | 67 | 74.44% |
+| Prompt Swap 首次达成 | 30 | 30 | 100.00% |
+| Prompt Swap terminal hold | 30 | 29 | 96.67% |
+
+相对 C2，C3 的 held-out paraphrase 从 19/90 提升到 67/90，三个任务均改善；canonical 为
+88/90，与 C2 的 87/90 没有可确认的统计差异。Prompt Swap 三行混淆矩阵完全对角；唯一的
+terminal hold 失败发生在 plate，属于首次达成后的保持性问题。
+
+当前 C3 background retention 尚未完成。旧的 `outputs/smolvla_libero/eval/background_regression/c3_selected/`
+是在选模修正前生成的，不能作为 `015000` 的正式结果。
+
 ## 结果落点
 
 ```text
@@ -225,7 +283,6 @@ outputs/smolvla_libero/pilot/c3_paraphrase_lora/
 ├── run_config.json
 ├── train_metrics.jsonl
 ├── train.log
-├── instruction_counts.json
 ├── instruction_counts_step_005000_rank_0.json
 ├── instruction_counts_step_005000_rank_1.json
 ├── ...
@@ -243,13 +300,16 @@ outputs/smolvla_libero/pilot/c3_paraphrase_lora/
     └── 030000/
 ```
 
-`instruction_counts.json` 汇总：
+每个 `instruction_counts_step_<step>_rank_<rank>.json` snapshot 记录：
 
 - 每个 task 的 canonical count
 - 每条 train paraphrase 的 count
 - canonical 实际比例
 - train paraphrase 覆盖率
 - 累计 step、world size、batch 和所有 rank snapshot provenance
+
+当前正式 run 未生成聚合版 `instruction_counts.json`，结论由 8 个 rank 的最终 snapshot
+聚合得到：240,000 次选择中 canonical 为 25.024%，24 条 train paraphrase 全部被采样。
 
 `run_config.json` 额外保存 paraphrase 文件路径、SHA-256、sampling contract、概率、semantic
 review 状态和 held-out hashes。C2/C3 的 resolved LeRobot train config 除 `job_name` 外必须
@@ -267,8 +327,15 @@ C3 训练通过：
 - validation canonical SR 没有灾难性下降
 - selected checkpoint 完全由 canonical validation 选择
 
+当前实测：上述采样与选模条件均满足；目标协议 canonical 88/90、held-out paraphrase 67/90、
+Prompt Swap 首次达成 30/30。训练的 `train_metrics.jsonl` 已记录到 step 30,000，六个 checkpoint
+均完整；但各 rank 的 runtime manifest 在 teardown 阶段记录了
+`Default process group has not been initialized`，因此训练 artifact 可用但 launcher 状态不能
+标记为 clean success。
+
 正式训练 OOM 时生成 `N_A.json`。语言增强是否有效不能只由训练 loss 判断，必须执行
 [闭环评测](06_evaluation.md)。C2 成功而 C3 validation canonical 明显退化时，先检查
 paraphrase 语义和抽样实现，不得直接查看 test。
 
-下一步：[统一闭环评测](06_evaluation.md)。
+下一步：用当前 `015000` selected checkpoint 完成 background retention test；目标协议结论见
+[统一闭环评测](06_evaluation.md)。

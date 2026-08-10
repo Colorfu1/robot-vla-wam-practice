@@ -13,6 +13,7 @@ from robot_practice.experiments.smolvla_libero import c1_training
 from robot_practice.experiments.smolvla_libero.b0_training import (
     CAMERA_RENAME_MAP,
     BasePolicyIdentity,
+    load_background_split,
 )
 from robot_practice.experiments.smolvla_libero.c1_training import (
     DEFAULT_B0_SELECTED_REFERENCE,
@@ -27,10 +28,12 @@ from robot_practice.experiments.smolvla_libero.c1_training import (
     parse_arguments,
 )
 from robot_practice.experiments.smolvla_libero.target_training import (
+    DUAL_POOL_SAMPLING_STRATEGY,
     EXPECTED_TRAIN_EPISODES,
     EXPECTED_TRAIN_FRAMES,
     EXPECTED_VALIDATION_EPISODES,
     EXPECTED_VALIDATION_FRAMES,
+    DualPoolTaskEpisodeSampler,
     UniformTaskEpisodeSampler,
     load_target_split,
     override_target_training_sampler,
@@ -38,6 +41,7 @@ from robot_practice.experiments.smolvla_libero.target_training import (
 
 PRACTICE_ROOT = Path(__file__).resolve().parents[1]
 SPLIT_FILE = PRACTICE_ROOT / "configs/experiments/smolvla_libero/target_split.json"
+BACKGROUND_SPLIT_FILE = PRACTICE_ROOT / "configs/experiments/smolvla_libero/background_split.json"
 SCRIPT = PRACTICE_ROOT / "scripts/experiments/smolvla_libero/train_c1.sh"
 
 
@@ -211,6 +215,49 @@ def test_diagnostic_mode_requires_experiment_tag(tmp_path: Path) -> None:
         parse_arguments(_diagnostic_cli_args(tmp_path))
     with pytest.raises(SystemExit):
         parse_arguments(_formal_cli_args(tmp_path, "--experiment-tag=tag"))
+
+
+def test_background_replay_is_diagnostic_only_and_defaults_to_k0(tmp_path: Path) -> None:
+    frozen_diagnostic = [
+        "--num-processes=1",
+        "--batch-size=8",
+        "--steps=30000",
+        "--save-freq=5000",
+    ]
+    default = parse_arguments(
+        _diagnostic_cli_args(tmp_path, "--experiment-tag=tag", *frozen_diagnostic)
+    )
+    assert isinstance(default, C1FreshArguments)
+    assert default.background_replay_k == 0
+    assert default.background_split_file == BACKGROUND_SPLIT_FILE
+
+    replay = parse_arguments(
+        _diagnostic_cli_args(
+            tmp_path,
+            "--experiment-tag=replay_k4",
+            "--background-replay=4",
+            *frozen_diagnostic,
+        )
+    )
+    assert isinstance(replay, C1FreshArguments)
+    assert replay.background_replay_k == 4
+    assert replay.background_split_file == BACKGROUND_SPLIT_FILE
+
+    with pytest.raises(SystemExit):
+        parse_arguments(
+            _formal_cli_args(
+                tmp_path,
+                "--background-replay=4",
+            )
+        )
+    with pytest.raises(SystemExit):
+        parse_arguments(
+            _diagnostic_cli_args(
+                tmp_path,
+                "--experiment-tag=too_many",
+                "--background-replay=8",
+            )
+        )
 
 
 def test_diagnostic_allows_lr_and_steps_override(tmp_path: Path) -> None:
@@ -415,6 +462,56 @@ def test_train_config_uses_only_target_train_episodes(tmp_path: Path) -> None:
     assert resolved["policy"]["freeze_vision_encoder"] is True
 
 
+def test_replay_train_config_uses_union_and_records_provenance(tmp_path: Path) -> None:
+    target = load_target_split(SPLIT_FILE)
+    background = load_background_split(BACKGROUND_SPLIT_FILE)
+    arguments = dataclasses.replace(
+        _fresh_arguments(tmp_path),
+        mode="diagnostic",
+        experiment_tag="replay_k4",
+        background_replay_k=4,
+        background_split_file=BACKGROUND_SPLIT_FILE,
+        num_processes=8,
+        batch_size=1,
+        steps=30000,
+        save_freq=5000,
+    )
+    config = build_train_config(arguments, target, _policy_config(), background)
+    resolved = config.to_dict()
+    expected_episodes = sorted(set(target.train_episodes) | set(background.train_episodes))
+    assert resolved["dataset"]["episodes"] == expected_episodes
+
+    dataset_audit = SimpleNamespace(
+        fps=10,
+        features={"observation.image": {"shape": [3, 256, 256]}},
+    )
+    train_config = SimpleNamespace(
+        to_dict=lambda: {"optimizer": {"type": "adamw"}, "scheduler": {"type": "cosine"}},
+        use_policy_training_preset=True,
+    )
+    base_identity = BasePolicyIdentity(
+        requested="policies/smolvla_or_pi0/smolvla_base",
+        source_type="local",
+        resolved_revision=None,
+        files_sha256={},
+    )
+    payload = build_run_config(
+        arguments=arguments,
+        split=target,
+        dataset_audit=dataset_audit,
+        base_identity=base_identity,
+        base_selection=None,
+        train_config=train_config,
+        background_split=background,
+    )
+    assert payload["dataset"]["sampler"] == DUAL_POOL_SAMPLING_STRATEGY
+    assert payload["dataset"]["background_replay_k"] == 4
+    assert payload["dataset"]["replay_fraction"] == pytest.approx(0.5)
+    assert payload["dataset"]["target_train_episodes"] == 113
+    assert payload["dataset"]["background_train_episodes"] == 1412
+    assert payload["inputs"]["background_split_sha256"] == background.sha256
+
+
 def test_balanced_sampler_is_deterministic_and_task_balanced() -> None:
     split = load_target_split(SPLIT_FILE)
     one_frame_split = dataclasses.replace(
@@ -454,6 +551,88 @@ def test_balanced_sampler_is_deterministic_and_task_balanced() -> None:
     assert set(counts) == {1, 4, 8}
     for count in counts.values():
         assert count == pytest.approx(3000, abs=150)
+
+
+@pytest.mark.parametrize("num_processes,batch_size", [(8, 1), (4, 2), (2, 4), (1, 8)])
+@pytest.mark.parametrize("background_replay_k", [1, 2, 4, 6, 7])
+def test_dual_pool_sampler_has_exact_global_batch_ratio(
+    num_processes: int,
+    batch_size: int,
+    background_replay_k: int,
+) -> None:
+    target = load_target_split(SPLIT_FILE)
+    background = load_background_split(BACKGROUND_SPLIT_FILE)
+    target = dataclasses.replace(target, train_frames=len(target.train_episodes))
+    background = dataclasses.replace(background, train_frames=len(background.train_episodes))
+    episodes = list(target.train_episodes) + list(background.train_episodes)
+    dataset = type("Dataset", (), {"hf_dataset": {"episode_index": episodes}})()
+    sampler = DualPoolTaskEpisodeSampler(
+        dataset,
+        target,
+        background,
+        background_replay_k=background_replay_k,
+        seed=1000,
+        num_processes=num_processes,
+        batch_size=batch_size,
+        num_samples=8 * 12,
+    )
+    first = list(sampler)
+    second = list(
+        DualPoolTaskEpisodeSampler(
+            dataset,
+            target,
+            background,
+            background_replay_k=background_replay_k,
+            seed=1000,
+            num_processes=num_processes,
+            batch_size=batch_size,
+            num_samples=8 * 12,
+        )
+    )
+    assert first == second
+
+    target_episodes = set(target.train_episodes)
+    background_episodes = set(background.train_episodes)
+    for offset in range(0, len(first), 8):
+        global_batch = [episodes[index] for index in first[offset : offset + 8]]
+        assert (
+            sum(episode in background_episodes for episode in global_batch) == background_replay_k
+        )
+        assert (
+            sum(episode in target_episodes for episode in global_batch) == 8 - background_replay_k
+        )
+        for local_offset in range(0, 8, batch_size):
+            local_batch = global_batch[local_offset : local_offset + batch_size]
+            assert all(episode in target_episodes | background_episodes for episode in local_batch)
+
+
+def test_dual_pool_sampler_rejects_overlap() -> None:
+    target = load_target_split(SPLIT_FILE)
+    background = load_background_split(BACKGROUND_SPLIT_FILE)
+    overlap_episode = target.train_episodes[0]
+    background = dataclasses.replace(
+        background,
+        train_episodes=(overlap_episode, *background.train_episodes[1:]),
+    )
+    dataset = type(
+        "Dataset",
+        (),
+        {
+            "hf_dataset": {
+                "episode_index": list(target.train_episodes) + list(background.train_episodes)
+            }
+        },
+    )()
+    with pytest.raises(ValueError, match="overlap"):
+        DualPoolTaskEpisodeSampler(
+            dataset,
+            target,
+            background,
+            background_replay_k=4,
+            seed=1000,
+            num_processes=8,
+            batch_size=1,
+        )
 
 
 def test_sampler_override_restores_torch_dataloader_before_accelerate_prepare() -> None:
@@ -543,3 +722,38 @@ def test_shell_prints_four_gpu_two_batch_accelerate_launch(tmp_path: Path) -> No
     assert "--num_processes=4" in command
     assert "--multi_gpu" in command
     assert "robot_practice.experiments.smolvla_libero.train_c1" in command
+
+
+def test_shell_prints_replay_accelerate_launch(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--mode=diagnostic",
+            "--experiment-tag=replay_k4",
+            "--background-replay=4",
+            f"--background-split-file={BACKGROUND_SPLIT_FILE}",
+            "--dataset-root=datasets/lerobot/lerobot/libero",
+            f"--split-file={SPLIT_FILE}",
+            "--num-processes=8",
+            "--batch-size=1",
+            "--steps=30000",
+            "--save-freq=5000",
+            "--learning-rate=0.0001",
+            f"--output-dir={tmp_path / 'replay_k4'}",
+            "--print-command",
+        ],
+        cwd=PRACTICE_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = shlex.split(result.stdout)
+    assert "--mode=diagnostic" in command
+    assert "--experiment-tag=replay_k4" in command
+    assert "--background-replay=4" in command
+    assert f"--background-split-file={BACKGROUND_SPLIT_FILE}" in command
+    assert "--num_processes=8" in command
+    assert "--mixed_precision=bf16" in command

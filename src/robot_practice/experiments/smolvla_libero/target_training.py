@@ -18,6 +18,7 @@ from .b0_training import (
     EXPECTED_STATE_DIM,
     EXPECTED_TOTAL_EPISODES,
     EXPECTED_TOTAL_FRAMES,
+    BackgroundSplit,
     DatasetAudit,
     load_json_object,
     resolve_repository_path,
@@ -34,6 +35,9 @@ from .data_preparation import (
 )
 
 SAMPLING_STRATEGY = "uniform_task_then_uniform_episode"
+DUAL_POOL_SAMPLING_STRATEGY = "dual_pool_rank_split_v1"
+GLOBAL_BATCH_SIZE = 8
+MAX_BACKGROUND_REPLAY_K = GLOBAL_BATCH_SIZE - 1
 EXPECTED_TRAIN_EPISODES_BY_TASK = {1: 38, 4: 36, 8: 39}
 EXPECTED_VALIDATION_EPISODES_BY_TASK = {1: 10, 4: 10, 8: 10}
 EXPECTED_TRAIN_FRAMES_BY_TASK = {1: 3809, 4: 3594, 8: 3619}
@@ -330,14 +334,177 @@ class UniformTaskEpisodeSampler:
         return self._num_samples
 
 
+class DualPoolTaskEpisodeSampler:
+    """Sample target and background pools in an exact global-batch ratio.
+
+    The sampler emits samples in the order consumed by Accelerate's default
+    ``BatchSamplerShard``: one local batch for rank 0, then rank 1, and so on.
+    Each group of ``num_processes`` local batches therefore forms one global
+    batch.  The background quota is distributed across ranks with a rotating
+    remainder, so every global batch contains exactly ``background_replay_k``
+    background samples while layouts such as 4x2 and 2x4 mix both pools within
+    each local batch when possible.
+    """
+
+    def __init__(
+        self,
+        dataset: Any,
+        target_split: TargetSplit,
+        background_split: BackgroundSplit,
+        *,
+        background_replay_k: int,
+        seed: int,
+        num_processes: int,
+        batch_size: int,
+        num_samples: int | None = None,
+    ) -> None:
+        if not 1 <= int(background_replay_k) <= MAX_BACKGROUND_REPLAY_K:
+            raise ValueError(
+                f"background_replay_k must be in 1..{MAX_BACKGROUND_REPLAY_K}, "
+                f"got {background_replay_k}"
+            )
+        if int(num_processes) <= 0 or int(batch_size) <= 0:
+            raise ValueError("num_processes and batch_size must be positive")
+        if int(num_processes) * int(batch_size) != GLOBAL_BATCH_SIZE:
+            raise ValueError(
+                "Dual-pool sampler requires global batch size "
+                f"{GLOBAL_BATCH_SIZE}, got {num_processes}x{batch_size}"
+            )
+
+        target_episodes = set(target_split.train_episodes)
+        background_episodes = set(background_split.train_episodes)
+        overlap = sorted(target_episodes & background_episodes)
+        if overlap:
+            raise ValueError(f"Target and background replay train pools overlap: {overlap[:10]}")
+        if set(target_split.combined_task_indices) & set(background_split.tasks):
+            raise ValueError("Target and background replay task pools overlap")
+
+        episode_column: Sequence[Any] = dataset.hf_dataset["episode_index"]
+        relative_indices: dict[int, list[int]] = defaultdict(list)
+        for relative_index, episode_index in enumerate(episode_column):
+            relative_indices[int(episode_index)].append(relative_index)
+        observed = set(relative_indices)
+        expected = target_episodes | background_episodes
+        if observed != expected:
+            missing = sorted(expected - observed)
+            unexpected = sorted(observed - expected)
+            raise ValueError(
+                "Dual-pool sampler dataset episode mismatch: "
+                f"missing={missing[:10]}, unexpected={unexpected[:10]}"
+            )
+        if any(not indices for indices in relative_indices.values()):
+            raise ValueError("Dual-pool sampler found an empty episode")
+        observed_frames = sum(len(indices) for indices in relative_indices.values())
+        expected_frames = target_split.train_frames + background_split.train_frames
+        if observed_frames != expected_frames:
+            raise ValueError(
+                f"Dual-pool sampler expected {expected_frames} frames, found {observed_frames}"
+            )
+
+        target_by_task = {
+            task_id: target_split.train_episodes_by_task[task_id]
+            for task_id in target_split.task_ids
+        }
+        background_by_task = {
+            int(raw_task): tuple(task_payload["train_episode_indices"])
+            for raw_task, task_payload in background_split.payload["tasks"].items()
+        }
+        if not background_by_task or any(not episodes for episodes in background_by_task.values()):
+            raise ValueError("Dual-pool sampler background task pool is empty")
+
+        self._target_task_ids = tuple(target_by_task)
+        self._background_task_ids = tuple(sorted(background_by_task))
+        self._target_episodes_by_task = target_by_task
+        self._background_episodes_by_task = background_by_task
+        self._indices_by_episode = dict(relative_indices)
+        self.background_replay_k = int(background_replay_k)
+        self.num_processes = int(num_processes)
+        self.batch_size = int(batch_size)
+        self._seed = int(seed)
+        self._epoch = 0
+        default_samples = observed_frames - observed_frames % GLOBAL_BATCH_SIZE
+        self._num_samples = default_samples if num_samples is None else int(num_samples)
+        if self._num_samples <= 0:
+            raise ValueError("Dual-pool sampler num_samples must be positive")
+        if self._num_samples % GLOBAL_BATCH_SIZE != 0:
+            raise ValueError(
+                "Dual-pool sampler num_samples must be divisible by global batch size "
+                f"{GLOBAL_BATCH_SIZE}"
+            )
+
+    def set_epoch(self, epoch: int) -> None:
+        self._epoch = int(epoch)
+
+    def _background_count_for_rank(self, *, rank: int, global_batch: int) -> int:
+        base, remainder = divmod(self.background_replay_k, self.num_processes)
+        rotated_rank = (rank - global_batch) % self.num_processes
+        return base + int(rotated_rank < remainder)
+
+    @staticmethod
+    def _sample_from_pool(
+        generator: random.Random,
+        task_ids: tuple[int, ...],
+        episodes_by_task: Mapping[int, tuple[int, ...]],
+        indices_by_episode: Mapping[int, list[int]],
+    ) -> int:
+        task_id = generator.choice(task_ids)
+        episode_index = generator.choice(episodes_by_task[task_id])
+        return generator.choice(indices_by_episode[episode_index])
+
+    def __iter__(self) -> Iterator[int]:
+        generator = random.Random(self._seed + self._epoch)
+        self._epoch += 1
+        num_global_batches = self._num_samples // GLOBAL_BATCH_SIZE
+        for global_batch in range(num_global_batches):
+            for rank in range(self.num_processes):
+                background_count = self._background_count_for_rank(
+                    rank=rank,
+                    global_batch=global_batch,
+                )
+                labels = ["background"] * background_count + ["target"] * (
+                    self.batch_size - background_count
+                )
+                generator.shuffle(labels)
+                for label in labels:
+                    if label == "background":
+                        yield self._sample_from_pool(
+                            generator,
+                            self._background_task_ids,
+                            self._background_episodes_by_task,
+                            self._indices_by_episode,
+                        )
+                    else:
+                        yield self._sample_from_pool(
+                            generator,
+                            self._target_task_ids,
+                            self._target_episodes_by_task,
+                            self._indices_by_episode,
+                        )
+
+    def __len__(self) -> int:
+        return self._num_samples
+
+
 @contextmanager
 def override_target_training_sampler(
     lerobot_train_module: Any,
     split: TargetSplit,
     *,
     seed: int,
+    background_split: BackgroundSplit | None = None,
+    background_replay_k: int = 0,
+    num_processes: int = 1,
+    batch_size: int = 1,
 ) -> Iterator[None]:
-    """Replace LeRobot's frame shuffle with the frozen target-task sampler."""
+    """Replace LeRobot's frame shuffle with the frozen C-family sampler."""
+
+    if background_replay_k < 0 or background_replay_k > MAX_BACKGROUND_REPLAY_K:
+        raise ValueError(
+            f"background_replay_k must be in 0..{MAX_BACKGROUND_REPLAY_K}, "
+            f"got {background_replay_k}"
+        )
+    if background_replay_k > 0 and background_split is None:
+        raise ValueError("background_split is required when background replay is enabled")
 
     original = lerobot_train_module.torch.utils.data.DataLoader
 
@@ -351,7 +518,18 @@ def override_target_training_sampler(
             if kwargs.get("sampler") is not None:
                 raise ValueError("C1 target sampler cannot replace an existing sampler")
             kwargs["shuffle"] = False
-            kwargs["sampler"] = UniformTaskEpisodeSampler(dataset, split, seed=seed)
+            if background_replay_k > 0:
+                kwargs["sampler"] = DualPoolTaskEpisodeSampler(
+                    dataset,
+                    split,
+                    background_split,
+                    background_replay_k=background_replay_k,
+                    seed=seed,
+                    num_processes=num_processes,
+                    batch_size=batch_size,
+                )
+            else:
+                kwargs["sampler"] = UniformTaskEpisodeSampler(dataset, split, seed=seed)
             super().__init__(dataset, *args, **kwargs)
 
     lerobot_train_module.torch.utils.data.DataLoader = BalancedDataLoader

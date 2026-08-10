@@ -24,6 +24,7 @@ from .b0_training import (
     FORMAL_STEPS,
     FORMAL_TRAIN_SEED,
     OFFLINE_VLM_ASSETS_DIRNAME,
+    BackgroundSplit,
     BasePolicyIdentity,
     DatasetAudit,
     _complete_checkpoint,
@@ -34,17 +35,22 @@ from .b0_training import (
     checkpoint_run_dir,
     identify_base_policy,
     latest_complete_checkpoint,
+    load_background_split,
     load_json_object,
     normalize_base_policy_reference,
     package_versions,
     portable_path,
     resolve_repository_path,
     validate_base_policy_identity,
+    validate_dataset,
     validate_local_vlm_assets,
     validate_policy_preset,
 )
 from .data_preparation import sha256_file
 from .target_training import (
+    DUAL_POOL_SAMPLING_STRATEGY,
+    GLOBAL_BATCH_SIZE,
+    MAX_BACKGROUND_REPLAY_K,
     SAMPLING_STRATEGY,
     TargetSplit,
     load_target_split,
@@ -61,9 +67,10 @@ DEFAULT_DATASET_ROOT = "datasets/lerobot/lerobot/libero"
 DEFAULT_SPLIT_FILE = "configs/experiments/smolvla_libero/target_split.json"
 DEFAULT_OUTPUT_DIR = "outputs/smolvla_libero/pilot/c1_default_non_peft"
 DEFAULT_SMOKE_OUTPUT_DIR = "outputs/smolvla_libero/debug/c1_default_non_peft_smoke"
+DEFAULT_BACKGROUND_SPLIT_FILE = "configs/experiments/smolvla_libero/background_split.json"
 DEFAULT_WORLD_SIZE = 8
 DEFAULT_BATCH_SIZE = 1
-FORMAL_GLOBAL_BATCH_SIZE = DEFAULT_WORLD_SIZE * DEFAULT_BATCH_SIZE
+FORMAL_GLOBAL_BATCH_SIZE = GLOBAL_BATCH_SIZE
 
 _FRESH_ONLY_OPTIONS = {
     "--mode",
@@ -79,6 +86,8 @@ _FRESH_ONLY_OPTIONS = {
     "--output-dir",
     "--overwrite",
     "--experiment-tag",
+    "--background-replay",
+    "--background-split-file",
 }
 
 
@@ -105,6 +114,8 @@ class C1FreshArguments:
     output_dir: Path
     overwrite: bool = False
     experiment_tag: str | None = None
+    background_replay_k: int = 0
+    background_split_file: Path = Path(DEFAULT_BACKGROUND_SPLIT_FILE)
 
 
 @dataclass(frozen=True)
@@ -132,6 +143,7 @@ class C1ResumeContext:
     run_config: dict[str, Any]
     split: TargetSplit
     dataset_audit: DatasetAudit
+    background_split: BackgroundSplit | None
 
 
 @dataclass(frozen=True)
@@ -205,6 +217,21 @@ def parse_arguments(
         ),
     )
     parser.add_argument(
+        "--background-replay",
+        type=_nonnegative_integer,
+        default=0,
+        help=(
+            "Number of background-pool samples in each global batch of 8; "
+            f"must be 0..{MAX_BACKGROUND_REPLAY_K} and >0 is diagnostic-only"
+        ),
+    )
+    parser.add_argument(
+        "--background-split-file",
+        type=Path,
+        default=Path(DEFAULT_BACKGROUND_SPLIT_FILE),
+        help="B0 background split used when --background-replay is greater than zero",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Delete and recreate --output-dir so a fresh run replaces previous artifacts",
@@ -245,6 +272,10 @@ def parse_arguments(
         parser.error("--split-file is required for a fresh run")
     if namespace.output_dir is None:
         parser.error("--output-dir is required for a fresh run")
+    if namespace.background_replay > MAX_BACKGROUND_REPLAY_K:
+        parser.error(f"--background-replay must be in 0..{MAX_BACKGROUND_REPLAY_K}")
+    if namespace.background_replay > 0 and namespace.mode != "diagnostic":
+        parser.error("--background-replay>0 requires --mode=diagnostic")
     output_dir = namespace.output_dir or Path(
         DEFAULT_OUTPUT_DIR if formal else DEFAULT_SMOKE_OUTPUT_DIR
     )
@@ -268,6 +299,8 @@ def parse_arguments(
         output_dir=resolve_repository_path(output_dir),
         overwrite=namespace.overwrite,
         experiment_tag=namespace.experiment_tag,
+        background_replay_k=namespace.background_replay,
+        background_split_file=resolve_repository_path(namespace.background_split_file),
     )
     validate_fresh_contract(arguments, check_gpu_capacity=not namespace.inspect_launch)
     if namespace.inspect_launch:
@@ -288,6 +321,10 @@ def validate_fresh_contract(
         raise ValueError(f"C1 requires learning_rate={FORMAL_LEARNING_RATE}")
     if arguments.train_seed != FORMAL_TRAIN_SEED:
         raise ValueError(f"C1 requires train_seed={FORMAL_TRAIN_SEED}")
+    if not 0 <= arguments.background_replay_k <= MAX_BACKGROUND_REPLAY_K:
+        raise ValueError(f"C1 background_replay_k must be in 0..{MAX_BACKGROUND_REPLAY_K}")
+    if arguments.background_replay_k > 0 and arguments.mode != "diagnostic":
+        raise ValueError("C1 background replay requires mode=diagnostic")
     if check_gpu_capacity and arguments.num_processes > torch.cuda.device_count():
         raise ValueError(
             f"Requested --num-processes={arguments.num_processes} but only "
@@ -461,19 +498,51 @@ def validate_c1_policy_preset(
         raise ValueError("C1 must preserve SmolVLA's default expert-only freeze boundary")
 
 
+def background_replay_k(arguments: Any) -> int:
+    """Return the C1 replay quota while keeping C2/C3's k=0 path compatible."""
+
+    value = int(getattr(arguments, "background_replay_k", 0))
+    if not 0 <= value <= MAX_BACKGROUND_REPLAY_K:
+        raise ValueError(f"background_replay_k must be in 0..{MAX_BACKGROUND_REPLAY_K}")
+    return value
+
+
+def training_episodes(
+    split: TargetSplit,
+    background_split: BackgroundSplit | None,
+    *,
+    replay_k: int,
+) -> tuple[int, ...]:
+    if replay_k == 0:
+        if background_split is not None:
+            raise ValueError("background_split must be omitted when replay_k=0")
+        return split.train_episodes
+    if background_split is None:
+        raise ValueError("background_split is required when replay_k>0")
+    target_episodes = set(split.train_episodes)
+    background_episodes = set(background_split.train_episodes)
+    overlap = sorted(target_episodes & background_episodes)
+    if overlap:
+        raise ValueError(f"Target and background training episodes overlap: {overlap[:10]}")
+    return tuple(sorted(target_episodes | background_episodes))
+
+
 def build_train_config(
     arguments: C1FreshArguments,
     split: TargetSplit,
     policy: Any,
+    background_split: BackgroundSplit | None = None,
 ):
     from lerobot.configs.default import DatasetConfig, WandBConfig
     from lerobot.configs.train import TrainPipelineConfig
 
+    replay_k = background_replay_k(arguments)
+    episodes = training_episodes(split, background_split, replay_k=replay_k)
     return TrainPipelineConfig(
         dataset=DatasetConfig(
             repo_id=DATASET_REPO_ID,
             root=portable_path(arguments.dataset_root),
-            episodes=list(split.train_episodes),
+            episodes=list(episodes),
             use_imagenet_stats=True,
         ),
         policy=policy,
@@ -503,8 +572,14 @@ def build_run_config(
     base_identity: BasePolicyIdentity,
     base_selection: dict[str, Any] | None,
     train_config: Any,
+    background_split: BackgroundSplit | None = None,
 ) -> dict[str, Any]:
     resolved_train_config = train_config.to_dict()
+    replay_k = background_replay_k(arguments)
+    episodes = training_episodes(split, background_split, replay_k=replay_k)
+    if replay_k > 0 and background_split is None:
+        raise ValueError("background_split is required when building a replay run_config")
+    sampler = DUAL_POOL_SAMPLING_STRATEGY if replay_k > 0 else SAMPLING_STRATEGY
     selection_summary = None
     if base_selection is not None:
         selection_summary = {
@@ -529,6 +604,12 @@ def build_run_config(
             "dataset_root": portable_path(arguments.dataset_root),
             "split_file": portable_path(split.source),
             "split_sha256": split.sha256,
+            "background_split_file": (
+                portable_path(background_split.source) if background_split is not None else None
+            ),
+            "background_split_sha256": (
+                background_split.sha256 if background_split is not None else None
+            ),
             "overwrite": arguments.overwrite,
             "base_policy": dataclasses.asdict(base_identity),
             "base_selection": selection_summary,
@@ -536,13 +617,30 @@ def build_run_config(
         "dataset": {
             "task_ids": list(split.task_ids),
             "combined_task_indices": list(split.combined_task_indices),
-            "train_episodes": len(split.train_episodes),
-            "train_frames": split.train_frames,
+            "train_episodes": len(episodes),
+            "train_frames": (
+                split.train_frames
+                + (background_split.train_frames if background_split is not None else 0)
+            ),
+            "target_train_episodes": len(split.train_episodes),
+            "target_train_frames": split.train_frames,
+            "background_train_episodes": (
+                len(background_split.train_episodes) if background_split is not None else 0
+            ),
+            "background_train_frames": (
+                background_split.train_frames if background_split is not None else 0
+            ),
+            "background_replay_k": replay_k,
+            "replay_fraction": replay_k / GLOBAL_BATCH_SIZE,
+            "background_split_sha256": (
+                background_split.sha256 if background_split is not None else None
+            ),
             "validation_episodes": len(split.validation_episodes),
             "validation_frames": split.validation_frames,
             "fps": dataset_audit.fps,
             "features": dataset_audit.features,
-            "sampler": SAMPLING_STRATEGY,
+            "sampler": sampler,
+            "training_episode_count": len(episodes),
             "normalization_scope": {
                 "visual": "imagenet",
                 "state_action": "full_dataset_metadata",
@@ -653,12 +751,22 @@ def validate_resume(arguments: C1ResumeArguments) -> C1ResumeContext:
     )
     _require_equal(training.get("seed"), FORMAL_TRAIN_SEED, field="train_seed")
     mode = training.get("mode")
-    if mode not in {"smoke", "formal"}:
+    if mode not in {"smoke", "formal", "diagnostic"}:
         raise ValueError("C1 run_config mode is invalid")
     if mode == "formal":
         validate_resume_formal_contract(training)
     validate_base_policy_identity(inputs.get("base_policy"))
-    _require_equal(dataset_record.get("sampler"), SAMPLING_STRATEGY, field="sampler")
+    replay_k = dataset_record.get("background_replay_k", 0)
+    if isinstance(replay_k, bool) or not isinstance(replay_k, int):
+        raise TypeError("C1 run_config background_replay_k is invalid")
+    if not 0 <= replay_k <= MAX_BACKGROUND_REPLAY_K:
+        raise ValueError("C1 run_config background_replay_k is out of range")
+    if replay_k > 0 and mode != "diagnostic":
+        raise ValueError("C1 background replay runs must use diagnostic mode")
+    expected_sampler = DUAL_POOL_SAMPLING_STRATEGY if replay_k > 0 else SAMPLING_STRATEGY
+    _require_equal(dataset_record.get("sampler"), expected_sampler, field="sampler")
+    if mode == "diagnostic" and not isinstance(training.get("experiment_tag"), str):
+        raise ValueError("Diagnostic C1 run_config requires experiment_tag")
 
     split_value = inputs.get("split_file")
     dataset_root_value = inputs.get("dataset_root")
@@ -669,6 +777,21 @@ def validate_resume(arguments: C1ResumeArguments) -> C1ResumeContext:
     split = load_target_split(split_path)
     _require_equal(split.sha256, inputs.get("split_sha256"), field="split_sha256")
     dataset_audit = validate_target_dataset(dataset_root, split)
+    background_split: BackgroundSplit | None = None
+    if replay_k > 0:
+        background_value = inputs.get("background_split_file")
+        background_sha = inputs.get("background_split_sha256")
+        if not isinstance(background_value, str) or not isinstance(background_sha, str):
+            raise TypeError("C1 replay run_config background split provenance is invalid")
+        background_path = _resolve_recorded_path(background_value, run_dir=run_dir)
+        background_split = load_background_split(background_path)
+        _require_equal(background_split.sha256, background_sha, field="background_split_sha256")
+        validate_dataset(dataset_root, background_split)
+        dataset_audit = dataclasses.replace(
+            dataset_audit,
+            train_episodes=len(split.train_episodes) + len(background_split.train_episodes),
+            train_frames=split.train_frames + background_split.train_frames,
+        )
 
     config_path = checkpoint_dir / "pretrained_model" / "train_config.json"
     training_state_dir = checkpoint_dir / "training_state"
@@ -689,10 +812,9 @@ def validate_resume(arguments: C1ResumeArguments) -> C1ResumeContext:
     dataset = saved_config.get("dataset")
     if not isinstance(dataset, dict):
         raise TypeError("Saved C1 train config lacks dataset")
+    expected_episodes = training_episodes(split, background_split, replay_k=replay_k)
     _require_equal(
-        tuple(sorted(dataset.get("episodes", ()))),
-        split.train_episodes,
-        field="dataset.episodes",
+        tuple(sorted(dataset.get("episodes", ()))), expected_episodes, field="dataset.episodes"
     )
     fixed_fields = {
         "batch_size": training.get("per_gpu_batch_size"),
@@ -737,6 +859,7 @@ def validate_resume(arguments: C1ResumeArguments) -> C1ResumeContext:
         run_config=run_config,
         split=split,
         dataset_audit=dataset_audit,
+        background_split=background_split,
     )
 
 

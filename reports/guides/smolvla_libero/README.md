@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-- 状态：`B0 已完成；C1/C2/C3 训练与统一正式评测待运行`
+- 状态：`Z0/B0、C1、C2、C3 已完成目标协议统一正式评测；C3 background retention 待补`
 - 环境：LIBERO、SmolVLA、PEFT 和 RTX 3090/BF16 基础能力已具备。
 - 已完成：两步 LoRA 训练 Smoke；Hub、本地普通 checkpoint 和本地 PEFT checkpoint
   共用的单任务闭环评测/Rerun 入口；公共 SmolVLA-LIBERO 完整 episode Smoke。
@@ -12,19 +12,26 @@
 - 已完成：B0 37任务 domain adaptation 正式训练、严格 checkpoint selection、冻结
   `025000` 和 background held-out closed-loop test。
 - 已完成：C1 Default Non-PEFT 的目标 Train 白名单、task/episode-balanced sampler、
-  selected-B0 provenance 校验、8卡 BF16 训练/续训入口和单步 VS Code debug 配置；正式训练
-  尚未启动。
+  selected-B0 provenance 校验、8卡 BF16 训练/续训入口和正式训练；统一正式评测已完成。
+- 已完成：C1 遗忘诊断的 A/B 学习率曲线与 `k=4/8` background replay 探针；Replay selected
+  checkpoint 达到目标 59/60、背景 149/210。`k=2/8` 与 `k=6/8` 仍待执行，结果不进入正式 C1。
 - 已完成：C2 Canonical LoRA 的 rank-32 PEFT 预检、同一目标采样协议、8卡 BF16
-  训练/adapter 续训入口和单步 VS Code debug 配置；正式训练尚未启动。
+  训练/adapter 续训入口、正式训练和统一正式评测。
 - 已完成：C3 LoRA + Paraphrase 的 split-bound 25/75 instruction selector、逐 rank
-  checkpoint 计数、adapter 续训入口、8卡 launcher 和单步 VS Code debug 配置；正式训练
-  尚未启动。
+  checkpoint 计数、adapter 续训入口、8卡 launcher、正式训练、checkpoint selection 和
+  210 条目标协议评测；selected checkpoint 为 `015000`。
 - 已完成：B0/C1/C2/C3 共用的 21-job / 210-rollout target protocol evaluator，覆盖
-  Canonical、Held-out Paraphrase、Prompt Swap、多 GPU、断点续跑和冻结协议校验；真实
-  Prompt Swap 1-step Smoke 已通过。
-- 未完成：B0 target baseline 正式运行、C1/C2/C3 正式训练、选模和多协议正式评测。
-- 启动前动作：在训练环境确认 selected B0、其 provenance 和 8 张可见 GPU 均已就位，再运行
-  对应的一键 launcher。
+  Canonical、Held-out Paraphrase、Prompt Swap、多 GPU、断点续跑和冻结协议校验；修复后的
+  evaluator 已用于 C3 正式评测。
+- 当前结果：C1 canonical 87/90（96.7%）、Prompt Swap 首次达成 29/30（96.7%，终态保持
+  27/30）；C2 canonical 87/90（96.7%）、Prompt Swap 首次/终态均 28/30（93.3%）。
+  详细 Prompt Swap 口径见 [修复后合并结果](../../2026-08-06-PromptSwap修复后合并结果.md)。
+- 当前结果：C3 canonical 88/90（97.8%）、held-out paraphrase 67/90（74.4%）、Prompt Swap
+  首次达成 30/30（100.0%，终态保持 29/30）。C3 相比 C2 的 held-out paraphrase 提升 53.3 个百分点，
+  三个任务均改善。完整结论见 [C3 正式评测结论](../../daily/2026-08-07-C3改写增强LoRA正式评测结论.md)。
+- 未完成：当前 selected `015000` 的 background retention；旧的 `c3_selected 0/210` 在选模修正前生成，
+  不作为当前 C3 结论。
+- 下一步：使用当前 `015000` selected checkpoint 重跑 background retention test。
 
 ## 结果类别标签与数据分工
 
@@ -134,8 +141,9 @@ C1 保留 SmolVLA 默认的 `train_expert_only=true` 和
 
 `lerobot/smolvla_base` 只初始化 B0；C1/C2/C3 不得绕过 B0 或使用不同 B0 checkpoint。
 它自身的 state/action processor 与 LIBERO 不匹配，因此不作为闭环 C0。Phase 0/1
-未通过时，不得启动正式训练。统一正式评测入口已经实现；尚未产生的 C1/C2/C3 selected
-checkpoint 仍必须先经过 validation selection，不能用 Test 结果补选。
+未通过时，不得启动正式训练。统一正式评测入口已经实现；C3 selected checkpoint 已经过
+validation selection，不能用 Test 结果补选。当前仍缺的是该 winner 的 background retention，
+而不是目标协议结果。
 
 实际结果统一登记到 [实验运行记录](../../experiment_log.md)，通用指标定义见
 [指标说明](../../metrics.md)。

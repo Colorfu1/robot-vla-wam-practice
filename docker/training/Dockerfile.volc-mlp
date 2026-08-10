@@ -1,6 +1,9 @@
 ARG BASE_IMAGE=robot-practice:latest
 FROM ${BASE_IMAGE}
 
+ARG SAPIEN_PHYSX_VERSION="105.1-physx-5.3.1.patch0"
+ARG SAPIEN_PHYSX_ZIP_SHA256="167a01aad7381afef963b89169968c289e7b653880a7a823c116d87ee5c00fc6"
+
 # Volc MLP owns task command execution, logging bootstrap, and storage setup.
 USER root
 WORKDIR /workspace
@@ -11,13 +14,35 @@ ENV HOME=/root \
     XDG_RUNTIME_DIR=/tmp/runtime-root \
     PYTHONNOUSERSITE=1 \
     PYTHONPATH=./src \
+    ROBOT_PRACTICE_SAPIEN_CACHE=/opt/robot-practice/sapien-cache \
+    ROBOT_PRACTICE_SAPIEN_PHYSX_VERSION=${SAPIEN_PHYSX_VERSION} \
     LD_LIBRARY_PATH=/opt/conda/envs/robot-practice/lib:/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/usr/local/cuda/lib64
+
+LABEL io.robot-practice.sapien-physx-version="${SAPIEN_PHYSX_VERSION}" \
+      io.robot-practice.sapien-physx-zip-sha256="${SAPIEN_PHYSX_ZIP_SHA256}"
 
 COPY docker/training/robot-practice-init /usr/local/bin/robot-practice-init
 COPY docker/training/verify_environment.py /usr/local/lib/robot-practice/verify_environment.py
 COPY docker/training/watch /usr/local/bin/watch
 
-RUN mkdir -p \
+RUN set -euxo pipefail \
+    && cache_dir="${ROBOT_PRACTICE_SAPIEN_CACHE}/physx/${SAPIEN_PHYSX_VERSION}" \
+    && if [[ ! -s "${cache_dir}/libPhysXGpu_64.so" ]]; then \
+        mkdir -p "${cache_dir}"; \
+        curl --fail --location --retry 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 300 \
+            "https://github.com/sapien-sim/physx-precompiled/releases/download/${SAPIEN_PHYSX_VERSION}/linux-so.zip" \
+            --output /tmp/sapien-physx-linux-so.zip; \
+        echo "${SAPIEN_PHYSX_ZIP_SHA256}  /tmp/sapien-physx-linux-so.zip" \
+            | sha256sum --check --strict; \
+        unzip -q /tmp/sapien-physx-linux-so.zip -d "${cache_dir}"; \
+        rm -f /tmp/sapien-physx-linux-so.zip; \
+    fi \
+    && test -s "${cache_dir}/libPhysXGpu_64.so" \
+    && ln -s \
+        "${ROBOT_PRACTICE_SAPIEN_CACHE}" \
+        /root/.sapien \
+    && mkdir -p \
         /root/.cache/huggingface \
         /root/.cache/matplotlib \
         /tmp/runtime-root \

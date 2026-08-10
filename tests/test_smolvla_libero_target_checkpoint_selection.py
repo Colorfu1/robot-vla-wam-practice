@@ -168,6 +168,33 @@ def test_ranking_uses_mse_then_step_and_never_reward() -> None:
     assert audit[2]["tie_breaker_level"] == 3
 
 
+def test_ranking_treats_equal_integer_success_counts_as_a_tie() -> None:
+    def row(step: int, macro_rate: float, mse: float, successes: tuple[int, int, int]) -> dict:
+        return {
+            "checkpoint_step": step,
+            "macro_success_rate": macro_rate,
+            "offline_normalized_action_mse": mse,
+            "num_episodes": 60,
+            "num_successes": sum(successes),
+            "per_task": {
+                str(task_id): {
+                    "num_episodes": 20,
+                    "num_successes": task_successes,
+                }
+                for task_id, task_successes in zip((1, 4, 8), successes, strict=True)
+            },
+        }
+
+    later_float = row(25000, 0.9500000000000001, 0.385061, (19, 20, 18))
+    earlier_float = row(15000, 0.9499999999999998, 0.383028, (18, 20, 19))
+
+    ranked = sorted([later_float, earlier_float], key=target.checkpoint_rank_key)
+
+    assert [result["checkpoint_step"] for result in ranked] == [15000, 25000]
+    audit = target.build_ranking_audit(ranked)
+    assert audit[1]["tie_breaker_level"] == 2
+
+
 def test_validation_overlap_is_rejected(tmp_path: Path) -> None:
     split = json.loads(SPLIT_FILE.read_text(encoding="utf-8"))
     task = split["tasks"]["1"]
@@ -637,6 +664,16 @@ def test_publish_requires_sha_match_and_overwrite(tmp_path: Path) -> None:
             overwrite=False,
             selection_set="target_validation",
         )
+
+    target.publish_selected_checkpoint(
+        selection_file=selection_file,
+        selected_dir=selected_dir,
+        overwrite=True,
+        selection_set="target_validation",
+    )
+    assert (selected_dir / "pretrained_model" / "model.safetensors").read_bytes() == (
+        source / "model.safetensors"
+    ).read_bytes()
 
 
 def test_publish_only_cli_copies_adapter_and_marks_manifest_complete(

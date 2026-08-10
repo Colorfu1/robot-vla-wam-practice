@@ -628,7 +628,11 @@ def publish_selected_checkpoint(
             f"{source_checkpoint / 'pretrained_model'}"
         )
     target_model = selected_dir / "pretrained_model" / source_weights_name
-    if target_model.is_file() and _sha256_file(source_model) != _sha256_file(target_model):
+    if (
+        target_model.is_file()
+        and _sha256_file(source_model) != _sha256_file(target_model)
+        and not overwrite
+    ):
         raise ValueError(
             "Existing selected weights do not match the source checkpoint; refusing to publish"
         )

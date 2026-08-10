@@ -1,5 +1,23 @@
 # SmolVLA LIBERO：C2 Canonical LoRA
 
+<!-- PROMPT_SWAP_MERGE_NOTICE:BEGIN -->
+## Prompt Swap 修复后当前结果
+
+**Z0/C1/C2 Prompt Swap 已合并；本文旧 Prompt Swap 数值仅为历史快照。**
+
+以下是当前有效的结果；本文其余位置中修复前的 Prompt Swap 数值、混淆矩阵和由此得到的结论，均只保留作历史审计，不得继续引用。
+
+| Model | First-goal compliance | Terminal-goal compliance | Full horizon |
+| --- | ---: | ---: | ---: |
+| z0_b0_zero_shot | 0/30 = 0.0% | 0/30 = 0.0% | 30/30 |
+| c1_default_non_peft | 29/30 = 96.7% | 27/30 = 90.0% | 30/30 |
+| c2_canonical_lora | 28/30 = 93.3% | 28/30 = 93.3% | 30/30 |
+
+主指标是每一步 simulator predicate 的 `first_goal_reached`；`terminal_goal` 只表示达成后的保持性诊断。
+这次合并只替换 Prompt Swap 的 job/rollout/episode 与汇总结果，canonical、held-out paraphrase、训练和 checkpoint selection 结论不变。
+详细合并报告：`reports/2026-08-06-PromptSwap修复后合并结果.md`。
+<!-- PROMPT_SWAP_MERGE_NOTICE:END -->
+
 ## 实验目标
 
 验证 SmolVLA 使用 LoRA 后，能否只依靠三个目标任务的 canonical instruction 完成
@@ -239,10 +257,12 @@ LoRA 收敛更快。
 |---|---:|---:|---:|
 | canonical | 0/90 = 0.0% | 87/90 = 96.7% | 87/90 = **96.7%** |
 | held-out paraphrase | 2/90 = 2.2% | 30/90 = 33.3% | 19/90 = **21.1%** |
-| prompt compliance | 0/30 = 0.0% | 18/30 = 60.0% | 18/30 = **60.0%** |
+| prompt compliance | 0/30 = 0.0% | 29/30 = 96.7% | 28/30 = 93.3% |
 
-canonical 与 C1 完全打平（逐任务 C2 为 29/30、30/30、28/30）。Prompt Swap 的混淆矩阵与 C1
-**逐格相同**（cabinet 10/10、plate 8/10、stove 0/10），说明 stove 不可达与训练方案无关。
+canonical 与 C1 完全打平（逐任务 C2 为 29/30、30/30、28/30）。Prompt Swap 修复后，C2 的首次
+达成率为 28/30（93.3%），stove 10/10、cabinet 10/10、plate 8/10；终态保持率同为 28/30。
+C1 的首次达成率为 29/30（stove 9/10、cabinet 10/10、plate 10/10）。修复前的 stove 0/10 与
+18/30 汇总值来自参考场景目标成功后的 reset，不能再说明 stove 不可达或训练方案无关。
 
 **语言泛化差于 C1**：`para_gap` 点估计 +0.7556，bootstrap 95% CI `[0.6667, 0.8444]`，与 C1 的
 `[0.5222, 0.7333]` 不重叠。C1 与 C2 的训练指令相同（都只用 canonical），所以这不是数据差异，

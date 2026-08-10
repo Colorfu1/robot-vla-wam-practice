@@ -690,17 +690,20 @@ Use one section per run. Record incomplete or failed runs too.
   validation demonstration 的 2,969 帧，固定 flow-noise）。Z0 未评测
 - Closed-loop success rate: C1 validation macro 0.9833（59/60）。test 三套协议——
   canonical Z0 0/90 对 C1 87/90（0.0% 对 96.7%）；held-out paraphrase Z0 2/90 对 C1 30/90
-  （2.2% 对 33.3%）；prompt compliance Z0 0/30 对 C1 18/30（0.0% 对 60.0%）
+  （2.2% 对 33.3%）；Prompt Swap 首次达成 Z0 0/30 对 C1 29/30（0.0% 对 96.7%），
+  C1 终态保持 27/30（90.0%，仅作保持性诊断）
 - Latency: 模型查询 p50 / p95 —— Z0 310.1 / 471.3 ms，C1 285.3 / 443.2 ms（各 21 个 job 均值）
-- Failure cases: Z0 canonical 90 条全部 `time_limit`，prompt swap 30 条全部
-  `no_goal_reached`；C1 canonical 3 条 `time_limit`、held-out paraphrase 60 条 `time_limit`、
-  prompt swap 12 条 `no_goal_reached`（其中 stove 指令 10 条全失败且无一跑向其他目标）
+- Failure cases: Z0 canonical 90 条全部 `time_limit`，Prompt Swap 30 条全部未首次达成；
+  C1 canonical 3 条 `time_limit`、held-out paraphrase 60 条 `time_limit`；Prompt Swap 1 条
+  `no_goal_reached`（stove 指令 1 条未首次达成；另有 2 条 plate 在终态保持阶段丢失目标）
 - Notes: 两次评测用同一冻结协议，`contract` 中仅 `model_label` / `policy_path` /
   `policy_config_sha256` / `jobs`（只差 `output_dir` 与 `log_path`）不同，init states、
   episode seeds、指令文本完全一致，因此可比。C1 选模中三个 checkpoint 在 0.9833 并列，由第二
   判据（macro 归一化开环 MSE）分出 `030000`。`para_gap`（canonical 减 held-out paraphrase）
   点估计 +0.6333、90 个配对 case 上 bootstrap 95% CI `[0.5222, 0.7333]`，不含 0。
-  **prompt compliance 60% 不是均匀听懂六成**：cabinet 10/10、plate 8/10、stove 0/10。
+  **Prompt Swap 的首次达成并非均匀**：cabinet 10/10、plate 10/10、stove 9/10；终态保持为
+  cabinet 10/10、stove 9/10、plate 8/10。旧的 18/30 与 stove 0/10 来自判定 reset 问题，
+  不再作为当前模型结论。
   同一份 B0 权重以 `checkpoints/025000` 与 `checkpoints/selected` 两个路径各跑一次
   （sha256 同为 `811bd1a7ba06c32b…`），四个指标块逐值相同，附带验证了确定性。
   test 的 30 个初始状态与训练摆放同属约 3 cm 范围的同一分布，衡量的是同任务未被使用过的
@@ -735,12 +738,13 @@ Use one section per run. Record incomplete or failed runs too.
 - Open-loop action error: 选中 checkpoint 归一化 0.371719（C1 为 0.309668）
 - Closed-loop success rate: validation macro 0.9667（58/60）。目标协议 test——canonical
   87/90 = 96.7%（与 C1 相同）、held-out paraphrase 19/90 = 21.1%（C1 为 33.3%）、
-  prompt compliance 18/30 = 60.0%（与 C1 相同）。背景回退 test——8/210 = 3.8%
+  Prompt Swap 首次达成 28/30 = 93.3%（C1 为 29/30 = 96.7%），终态保持 28/30 = 93.3%。
+  背景回退 test——8/210 = 3.8%
   （C1 为 0/210，B0 记录为 183/210）
 - Latency: 模型查询 p50 376.8 ms、p95 541.4 ms（21 个 job 均值；C1 为 285.3 / 443.2 ms）
 - Failure cases: canonical 3 条 `time_limit`；held-out paraphrase 71 条 `time_limit`；
-  prompt swap 12 条 `no_goal_reached`（stove 指令 10 条全失败）；背景任务 202 条 `time_limit`，
-  七个背景任务中四个为 0/30
+  Prompt Swap 2 条 `no_goal_reached`（均为 plate 指令首次未达成，终态保持同为 28/30）；
+  背景任务 202 条 `time_limit`，七个背景任务中四个为 0/30
 - Notes: 目标协议 contract 与 C1、Z0 仅差 `model_label` / `policy_path` /
   `policy_config_sha256` / `jobs`（后者只差输出路径），其余 sha256 与 seed 全部相同，因此三者
   可比。选模中三个 checkpoint 在 0.9667 并列，由第二判据（macro 归一化开环 MSE）分出 `020000`；
@@ -761,3 +765,105 @@ Use one section per run. Record incomplete or failed runs too.
   - `reports/2026-08-05-C2 Canonical LoRA 正式评测结论.md`
 - Modes: Formal / Offline（训练）；Formal / Closed-loop / Validation（选模）；
   Formal / Closed-loop / Test（目标协议 210 条与背景回退 210 条）
+
+<!-- PROMPT_SWAP_MERGE_LOG:BEGIN -->
+## 2026-08-06 — SmolVLA LIBERO Prompt Swap 判定修复后合并
+
+- Date: 2026-08-06
+- Task suite: LIBERO-Goal Prompt Swap reference task 1，stove/cabinet/plate 三目标
+- Mode: Formal / Closed-loop / Test（只补跑 Prompt Swap；canonical 与 held-out paraphrase 沿用原始结果）
+- 判定口径: `first_goal_reached` 为主指标，`terminal_goal` 为保持性诊断
+- Results:
+  - z0_b0_zero_shot: first-goal 0/30 (0.0%); terminal-goal 0/30 (0.0%); full horizon 30/30
+  - c1_default_non_peft: first-goal 29/30 (96.7%); terminal-goal 27/30 (90.0%); full horizon 30/30
+  - c2_canonical_lora: first-goal 28/30 (93.3%); terminal-goal 28/30 (93.3%); full horizon 30/30
+- Notes: 原始 Prompt Swap 旧值因参考任务成功后 reset 而偏低；合并脚本保留原始 180 条非 Prompt Swap 数据，并将 corrected job/rollout/episodes/metrics 写回原始主题结果目录。
+- Result artifacts:
+  - `outputs/smolvla_libero/eval/z0_b0_zero_shot`
+  - `outputs/smolvla_libero/eval/c1_default_non_peft`
+  - `outputs/smolvla_libero/eval/c2_canonical_lora`
+- Consolidated report: `reports/2026-08-06-PromptSwap修复后合并结果.md`
+<!-- PROMPT_SWAP_MERGE_LOG:END -->
+
+## 2026-08-06 — SmolVLA C1 学习率缩放遗忘权衡诊断
+
+- Date: 2026-08-06
+- Task suite: LIBERO-Goal 目标任务 1/4/8 的 checkpoint validation；背景任务 0/2/3/5/6/7/9 的 held-out test
+- Dataset size: 目标训练 113 episodes / 11,022 frames；offline validation 30 episodes / 2,969 frames；每个背景曲线点 210 条 rollout
+- Observation keys: 两路 256×256 RGB（`observation.images.image`、`observation.images.image2`）+ 8 维 `observation.state`
+- Action space: 7 维相对末端动作
+- Action horizon: `chunk_size=50`，执行 `n_action_steps=10`，每条 episode 最多 300 steps
+- Control frequency: 10 Hz
+- Train loss: A（LR `1e-4`）首步 0.159907、末 1,000 步均值 0.017388；B（LR `1.25e-5`）首步 0.159907、末 1,000 步均值 0.066107；两者均完成 30,000 步
+- Open-loop action error: A step 30,000 normalized MSE 0.309668；B selected step 10,000 normalized MSE 0.381604
+- Closed-loop success rate: A step 30,000 目标 59/60（98.3%）/ 背景 0/210；B step 10,000 目标 58/60（96.7%）/ 背景 55/210（26.2%）
+- Latency: B selected 目标 validation model-query p50 299.3–316.5 ms、p95 437.9–486.4 ms；背景 test p50 271.2 ms、p95 376.6 ms
+- Failure cases: B selected 目标 validation 2 条 `time_limit`；背景 test 155 条 `time_limit`，task 3 和 task 6 均为 0/30
+- Conclusion: 按 batch 缩放 LR 能部分缓解灾难性遗忘；B 的最佳目标/背景权衡点为 step 10,000，但仍远低于 B0 记录的 183/210。该 checkpoint 仍是 diagnostic，不进入正式 C1 结果或正式 210 条目标协议。
+- Result artifacts: `outputs/smolvla_libero/diagnostic/c1_a_same_config/`、`outputs/smolvla_libero/diagnostic/c1_b_scaled_lr/`
+- Report: `reports/2026-08-06-C1学习率缩放遗忘权衡诊断结论.md`
+- Modes: Diagnostic / Offline（训练）；Diagnostic / Closed-loop / Validation（target selection）；Diagnostic / Closed-loop / Test（background retention）
+
+## 2026-08-06 — SmolVLA C1 Background Replay k=4 Diagnostic
+
+- Date: 2026-08-06
+- Task suite: LIBERO-Goal 目标任务 1/4/8 的 checkpoint validation；背景任务 0/2/3/5/6/7/9 的 held-out test
+- Dataset size: 目标训练 113 episodes / 11,022 frames；background replay 1,412 episodes / 236,470 frames；混合训练 1,525 episodes / 247,492 frames；offline validation 30 episodes / 2,969 frames；background test 210 条 rollout
+- Observation keys: 两路 256×256 RGB（`observation.images.image`、`observation.images.image2`）+ 8 维 `observation.state`
+- Action space: 7 维相对末端动作
+- Action horizon: `chunk_size=50`，执行 `n_action_steps=10`，每条 episode 最多 300 steps
+- Control frequency: 10 Hz
+- Policy: selected B0 初始化；Non-PEFT；global batch 8；BF16；seed 1000；LR `1e-4`；`background_replay_k=4`，每个 batch 50% background
+- Train loss: 30,000 updates 完成；末 1,000 步 loss 均值 0.055969
+- Open-loop action error: selected step 20,000 normalized MSE 0.337981 / denormalized MSE 0.043326
+- Closed-loop success rate: target validation 59/60（98.3%）；background test 149/210（71.0%）；相对 B0 记录的 183/210 保留率为 81.4%
+- Latency: background test model-query p50 265.8 ms、p95 375.6 ms
+- Failure cases: background test 61 条 `time_limit`；task 9 为 14/30，是主要剩余短板
+- Notes: `checkpoint_selection/selected_checkpoint.json` 将 selected checkpoint 固定为 step 20,000；direct-policy background runner 的 `Selected checkpoint: 000000` 是占位值。由于 replay 训练见过 background demonstration，该 background 分数是混合训练后的能力/保持结果，不是纯粹的遗忘读数。
+- Conclusion: 在 target 能力保持 59/60 的同时，background 从 target-only C1 的 0/210、降 LR B 的 55/210 提升到 149/210；数据回放比单独降低 LR 更有效，但仍未恢复到 B0 的 183/210。
+- Result artifacts: `outputs/smolvla_libero/diagnostic/c1_replay_k4/`
+- Report: `reports/2026-08-06-C1遗忘诊断与背景数据回放结论.md`
+- Modes: Diagnostic / Offline（训练）；Diagnostic / Closed-loop / Validation（目标选模）；Diagnostic / Closed-loop / Test（背景保留）
+
+## 2026-08-07 — SmolVLA LIBERO C3 LoRA + Paraphrase 正式结论
+
+- Date: 2026-08-07（结果汇总；训练于 2026-08-04 完成 30,000 updates，目标协议于 2026-08-07 完成）
+- Task suite: LIBERO-Goal 目标任务 1 / 4 / 8；Prompt Swap reference task 1 的 stove/cabinet/plate 三目标
+- Dataset size: 训练 113 条 demonstration / 11,022 帧；offline validation 30 条 / 2,969 帧；checkpoint selection 360 条 validation rollout；最终 target protocol 210 条 rollout
+- Observation keys: 两路 256×256 RGB（`observation.images.image`、`observation.images.image2`）+ 8 维 `observation.state`
+- Action space: 7 维相对末端动作
+- Action horizon: `chunk_size=50`，执行 `n_action_steps=10`
+- Control frequency: 10 Hz；正式 episode 最多 300 steps
+- Policy: selected B0 `025000` 初始化；rank-32 LoRA；25% canonical + 75% train paraphrase；BF16；`data_parallel_layout=8x1`；global batch 8；train seed 1000；test policy seed 2000
+- Train loss: step 1 为 0.156775；selected step 15,000 前 1,000 步均值 0.073442；最后 1,000 步均值 0.070925；step 30,000 最后记录 0.066038；grad norm 峰值 0.662
+- Open-loop action error: selected `015000` normalized MSE 0.383028；denormalized MSE 0.051588
+- Closed-loop success rate: target validation winner 57/60（95.0%）；test canonical 88/90（97.8%）；held-out paraphrase 67/90（74.4%）；Prompt Swap 首次达成 30/30（100.0%）；terminal hold 29/30（96.7%）
+- Latency: 21 个 target protocol job 的 job-level 平均模型查询 p50 331.6 ms、p95 479.5 ms；平均 action TV 0.0392、action jerk 0.0496、gripper toggle 3.72
+- Failure cases: canonical 2 条 `time_limit`；held-out paraphrase 23 条 `time_limit`，主要集中在 task 1 prompt 0 和 task 8 prompt 1；Prompt Swap 首次达成无失败，1 条 plate episode 在 terminal hold 阶段丢失目标
+- Notes: C3 相对 C2 的 held-out paraphrase 从 19/90 提升到 67/90（+53.3 个百分点），三个任务均改善；canonical 仅从 87/90 变为 88/90。选模的 `015000` 与 `025000` 都是 57/60，按精确成功数和 normalized MSE 规则选出 `015000`。训练 metrics 与六个 checkpoint 完整，但各 rank runtime manifest 在 teardown 阶段记录 `Default process group has not been initialized`，因此 launcher clean-success 状态仍需修复。当前 winner 的 background retention 尚未重跑，旧的 `c3_selected 0/210` 不计入本条结论。
+- Result artifacts:
+  - `outputs/smolvla_libero/pilot/c3_paraphrase_lora/`
+  - `outputs/smolvla_libero/pilot/c3_paraphrase_lora/checkpoint_selection/`
+  - `outputs/smolvla_libero/pilot/c3_paraphrase_lora/checkpoints/selected/`
+  - `outputs/smolvla_libero/eval/c3_paraphrase_lora/metrics.json`
+  - `reports/daily/2026-08-07-C3改写增强LoRA正式评测结论.md`
+- Modes: Formal / Offline（训练）；Formal / Closed-loop / Validation（选模）；Formal / Closed-loop / Test（目标协议）
+
+## 2026-08-09 — ManiSkill M0 development checkpoint selection
+
+- Date: 2026-08-09（8 卡远端 rollout 完成；selection JSON 后续纯离线补写）
+- Task suite: ManiSkill `PickCube-v1`
+- Dataset size: RL `pd_ee_delta_pose` 7D 主线；固定 development 200 条状态；两个 checkpoint 各评测 200 条，共 400 条候选 rollout
+- Observation keys: 128×128 RGB + 21D student state（9D qpos、9D qvel、3D goal_pos）
+- Action space: 7D `pd_ee_delta_pose`
+- Action horizon: `n_obs_steps=2`、`horizon=16`、`n_action_steps=8`
+- Control frequency: 20 Hz；最大 episode 50 steps；`physx_cuda`
+- Train loss: 本条 selection 未测量；不作为选模指标
+- Open-loop action error: 未测量
+- Closed-loop success rate: `010000` 为 6/200（3.0%）；`020000` 为 120/200（60.0%）
+- Latency: `020000` policy forward p50 约 2179.6 ms、p95 约 2367.7 ms；environment step p50 约 190.5 ms
+- Failure cases: `010000` success 6 / truncated 194；`020000` success 120 / truncated 80；两者均无额外 native fail 计数
+- Conclusion: 按 `success_at_end_rate` 降序、`success_once_rate` 降序、较早 step 作为 tie-breaker，冻结 `020000`。它超过 M0 development ≥50% 门槛，但尚未经过 test 400 条正式泛化评测。初版 selector 只记录 source checkpoint，未发布实体 winner copy；代码已修复，待远端用 `--select-only` 补发布。
+- Result artifacts: `outputs/maniskill/m0_probe/checkpoint_selection/selected_checkpoint.json`、`outputs/maniskill/m0_probe/checkpoint_selection/checkpoint_results.json`、`outputs/maniskill/m0_probe/checkpoint_selection/selected/pretrained_model`（待远端补发布）
+- Report: `reports/2026-08-09-ManiSkill M0 development checkpoint selection结论.md`
+- Modes: Formal / Offline（训练）；Formal / Closed-loop / Validation（checkpoint selection）；Formal / Closed-loop / Test（待执行）

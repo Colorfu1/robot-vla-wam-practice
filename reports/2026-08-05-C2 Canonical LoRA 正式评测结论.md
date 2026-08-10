@@ -2,10 +2,29 @@
 
 ## 重要进展
 
+<!-- PROMPT_SWAP_MERGE_NOTICE:BEGIN -->
+## Prompt Swap 修复后当前结果
+
+**Z0/C1/C2 Prompt Swap 已合并：以 first_goal_reached 为主指标。**
+
+以下是当前有效的结果；本文其余位置中修复前的 Prompt Swap 数值、混淆矩阵和由此得到的结论，均只保留作历史审计，不得继续引用。
+
+| Model | First-goal compliance | Terminal-goal compliance | Full horizon |
+| --- | ---: | ---: | ---: |
+| z0_b0_zero_shot | 0/30 = 0.0% | 0/30 = 0.0% | 30/30 |
+| c1_default_non_peft | 29/30 = 96.7% | 27/30 = 90.0% | 30/30 |
+| c2_canonical_lora | 28/30 = 93.3% | 28/30 = 93.3% | 30/30 |
+
+主指标是每一步 simulator predicate 的 `first_goal_reached`；`terminal_goal` 只表示达成后的保持性诊断。
+这次合并只替换 Prompt Swap 的 job/rollout/episode 与汇总结果，canonical、held-out paraphrase、训练和 checkpoint selection 结论不变。
+详细合并报告：`reports/2026-08-06-PromptSwap修复后合并结果.md`。
+<!-- PROMPT_SWAP_MERGE_NOTICE:END -->
+
 - C2（Canonical LoRA，selected `020000`）完成训练、选模与两类正式评测：目标协议 210 条与
   背景回退 210 条，均 `status=complete`，协议 contract 与 C1/Z0 除策略字段外逐项相同。
-- **目标任务与 C1 打平**：canonical 都是 87/90 = 96.7%，Prompt Swap 依从率都是 18/30，
-  混淆矩阵逐格相同。
+- **目标任务 canonical 与 C1 打平，但 Prompt Swap 略低**：canonical 都是 87/90 = 96.7%；
+  C1 的首次达成率为 29/30（96.7%），C2 为 28/30（93.3%）。C2 的 stove 10/10、cabinet 10/10、
+  plate 8/10；终态保持同为首次达成值，28/30。
 - **语言泛化反而更差**：held-out paraphrase 19/90 = 21.1%，低于 C1 的 30/90 = 33.3%；
   `para_gap` 从 C1 的 +0.6333 升到 +0.7556，两者 bootstrap 95% CI 不重叠
   （C1 `[0.5222, 0.7333]`，C2 `[0.6667, 0.8444]`）。
@@ -24,9 +43,12 @@
 |---|---:|---:|---:|
 | canonical | 0/90 = 0.0% | 87/90 = **96.7%** | 87/90 = **96.7%** |
 | held-out paraphrase | 2/90 = 2.2% | 30/90 = 33.3% | 19/90 = **21.1%** |
-| prompt compliance | 0/30 = 0.0% | 18/30 = 60.0% | 18/30 = 60.0% |
+| prompt compliance | 0/30 = 0.0% | 29/30 = 96.7% | 28/30 = 93.3% |
 
 canonical 完全打平，逐任务分布略有差异：C1 为 29/30、29/30、29/30，C2 为 29/30、30/30、28/30。
+Prompt Swap 修复后的结果不再支持“C1/C2 混淆矩阵逐格相同”：C1 首次达成是 stove 9/10、cabinet 10/10、
+plate 10/10；C2 是 stove 10/10、cabinet 10/10、plate 8/10。修复前的 stove 0/10 与 18/30 汇总值
+来自参考场景目标成功后的 reset，不再作为当前结论。
 
 选模阶段 C2 的 validation 峰值 0.9667（58/60）略低于 C1 的 0.9833（59/60），开环归一化 MSE
 0.3717 高于 C1 的 0.3097；但 test 上的 canonical 成绩一致。另外 C2 在 **step 5000 就达到
@@ -145,11 +167,11 @@ C2 与 C1、Z0 三份 `run_manifest.json` 的 `contract` 仅以下字段不同�
   grad norm 峰值 0.64（C1 为 9.42）；8 个 rank 状态均为 `complete`
 - Open-loop action error：选中 checkpoint 归一化 0.371719（C1 为 0.309668）
 - Closed-loop success rate：validation macro 0.9667（58/60）；test canonical 0.9667（87/90）、
-  held-out paraphrase 0.2111（19/90）、prompt compliance 0.6000（18/30）；
+  held-out paraphrase 0.2111（19/90）、Prompt Swap 首次达成 0.9333（28/30）、终态保持 0.9333（28/30）；
   背景任务 0.0381（8/210）
 - Latency：模型查询 p50 376.8 ms、p95 541.4 ms（21 个 job 均值）
 - Failure cases：canonical 3 条 `time_limit`；held-out paraphrase 71 条 `time_limit`；
-  prompt swap 12 条 `no_goal_reached`（stove 指令 10 条全失败）；背景任务 202 条 `time_limit`
+  Prompt Swap 2 条 `no_goal_reached`（均为 plate 指令）；背景任务 202 条 `time_limit`
 
 ## Pretrain / Provenance
 
@@ -186,18 +208,19 @@ outputs/smolvla_libero/eval/background_regression/c2_selected/
 - "LoRA 在本设置下有实用价值"——它省的是训练成本，不是能力，也不是推理成本；
 - 任何关于 C2 与 C1 canonical 成绩差异的陈述——两者相同；
 - "8/210 说明 LoRA 部分保住了旧能力"——相对 183/210 的保留率只有 4.4%，四个任务仍为零；
-- 关于 C3（LoRA + Paraphrase）的任何推断——尚未训练；
+- 关于 C3（LoRA + Paraphrase）的结论不从本 C2 报告推断；后续正式结果见
+  [C3 改写增强 LoRA 正式评测结论](daily/2026-08-07-C3改写增强LoRA正式评测结论.md)；
 - 背景回退差异的配对显著性——B0 侧无逐 episode 记录，只能做非配对比较。
 
 ## 计划 / 待验证
 
-以下均为**未执行**项：
+以下事项在本报告形成时未执行；后续状态以实验运行记录为准：
 
-- C3（LoRA + Paraphrase）的训练、选模、目标协议评测与背景回退评测。C2 的
-  held-out paraphrase 21.1% 是 C3 要改善的直接目标。
+- C3（LoRA + Paraphrase）的训练、选模和目标协议评测已完成；held-out paraphrase 从 C2 的
+  21.1% 提升到 74.4%。当前 C3 winner 的 background retention 仍待单独重跑。
 - [C1 遗忘权衡曲线诊断](../plans/2026-08-05-C1遗忘权衡曲线诊断.md)：早停与 LR 按 batch 缩放
   能挽回多少背景能力。
 - 背景数据回放（C1 guide 的 TODO-1）。C2 的负结果强化了它的必要性——参数化方式解决不了，
   只能改数据或优化路径。
-- stove 目标不可达的成因诊断。C1 与 C2 的 Prompt Swap 混淆矩阵逐格相同（cabinet 10/10、
-  plate 8/10、stove 0/10），说明这不是某个训练方案的问题。
+- Prompt Swap 判定根因已定位并修复。修复后 C1/C2 的首次达成结果分别为 29/30 与 28/30，
+  不再把 stove 的失败归因于“目标不可达”。
