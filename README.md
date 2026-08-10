@@ -2,37 +2,57 @@
 
 ## 当前工作总览
 
-> 更新时间：2026-08-10。状态只表示顶层任务阶段；详细命令、前置条件和判断标准以各计划/指南为准。
+> 更新时间：2026-08-10。当前只保留三条主线；每条线单独说明实验编号、目的、状态和下一步。
 
-| 实验线 | 总状态 | 已完成 | 当前 / 下一步 | 入口 |
-| --- | --- | --- | --- | --- |
-| LIBERO | **已完成** | B0、C1、C2、C3 训练/选模/正式评测；Prompt Swap 修复 | 补充遗忘诊断不影响主结论，不再作为当前主任务 | [评测指南](reports/guides/smolvla_libero/06_evaluation.md) |
-| PushT | **基本完成，非重点** | 主要 Diffusion、RouteField、条件敏感性结论 | 可能还有 RF7 收尾 TODO，但不再投入主线资源 | [计划目录](plans/README.md) |
-| ManiSkill | **进行中，当前主线** | M0 20k 基线已完成选模和 test；环境、replay、数据转换管路已打通 | M0 50k 训练/选模/test；并行完成论文对齐 4D 基线，然后进入 M1 | [M0 指南](reports/guides/maniskill/00_m0_pickcube.md) |
+### 1. LIBERO：主实验线已完成
 
-### ManiSkill 阶段零：M0–M3
+这里的目标是验证 SmolVLA 在 LIBERO 目标任务上的适配能力、LoRA 效果和语言改写泛化。
 
-| 节点 | 状态 | 主要工作 | 完成后产物 / 闸门 |
+| 编号 | 它是什么 | 为什么做 | 状态 / 结论 |
 | --- | --- | --- | --- |
-| M0：端到端管路 | **进行中** | 7D RL 演示 → RGB replay → LeRobotDataset → Diffusion → ManiSkill 闭环；完成 50k 训练、development 选模和 random / PPO / visual test | 冻结视觉基座、固定 split、可复现闭环评测 |
-| 4D 论文参照基线 | **并行进行中** | motion-planning replay → 4D `pd_ee_delta_pos` → 8 卡训练 → `official_best` 选模 → `holdout_once` | 判断当前管路能否达到论文同量级；不替换 M0 7D 主线 |
-| M1：候选空间审计 | 待开始 | 测 action-chunk 多样性、`first-sample`、`Random@K` 和一次性 `Oracle@K` | 确认候选空间是否值得做 WAM |
-| M2：任务选型 | 待开始 | 按候选差异、`Oracle@K` 增益和任务稳定性选主任务 | 冻结 Mini-WAM 主任务 |
-| M3：策略自采数据 | 待开始 | 用冻结 checkpoint 采集成功/失败 rollout，记录 simulator 原生阶段信号 | 生成 WAM / Residual RL 训练数据 |
+| B0 | 先用背景任务做 domain adaptation，再直接测试目标任务的基座模型 | 提供统一的 zero-shot 基线，作为后续 C1/C2/C3 的起点 | 已完成；已发布 selected B0 |
+| C1 | 用目标任务的 canonical instruction 做全参数微调 | 测量最直接的目标任务适配效果 | 已完成训练、选模和正式评测 |
+| C2 | 用同一批 canonical 数据做 LoRA 微调，冻结大部分基座参数 | 判断低秩适配能否达到 C1 的效果 | 已完成训练、选模和正式评测 |
+| C3 | 在 LoRA 训练中加入目标任务的 paraphrase instruction | 测试对未见过的语言改写是否更鲁棒 | 已完成；修正选模后 winner 为 `015000`，held-out paraphrase 明显改善 |
+| Prompt Swap | 评测工具，不是一个训练阶段；只替换指令，检查模型是否完成被要求的目标 | 检查语言条件是否真的被遵循 | 判定 bug 已修复；旧 stove `0/10` 已废弃 |
 
-入口：[M0 计划](plans/2026-08-06-M0接通ManiSkill端到端探针.md) · [4D 基线指南](reports/guides/maniskill/01_paper_aligned_pickcube_4d.md)。
+学习率缩放、背景回放和 background retention 是补充诊断，不改变 LIBERO 主实验已完成的结论。
 
-### M3 之后的路线
+入口：[LIBERO 评测指南](reports/guides/smolvla_libero/06_evaluation.md) · [C1](reports/guides/smolvla_libero/03_c1_non_peft.md) · [C2](reports/guides/smolvla_libero/04_c2_canonical_lora.md) · [C3](reports/guides/smolvla_libero/05_c3_paraphrase_lora.md) · [C3 结论](reports/daily/2026-08-07-C3改写增强LoRA正式评测结论.md)。
 
-| 路线 | 状态 | 子节点 |
+### 2. PushT：基本完成，降为非重点
+
+| 模块 | 它是什么 | 状态 |
 | --- | --- | --- |
-| Mini-WAM | 待开始 | **W0** 单步 action-conditioned 动力学 → **W1** 多步 open-loop 预测/排序 → **W2** WAM@K 对比 first sample、Random@K、`H=0` → **W3** ensemble、不确定性回退、失败数据聚合 |
-| Residual RL | 待开始 | **R0** 低维 residual → **R1** 视觉/状态 residual → **R2** 单个 LIBERO 任务修正冻结策略 → **R3** 相同真实交互预算对比 Online BC 等 |
-| 组合验证 | 待开始 | **F0** WAM 迁移 → **F1** WAM 与 residual 互补性 → **F2** 真实交互节省 → **F3** 泛化、OOD、恢复和能力保留 |
+| Diffusion baseline | PushT 上的基础 action-chunk policy 与评测管路 | 核心实验已完成 |
+| RouteField / RF7 | 测试模型是否读取路线的顺序和方向条件 | 核心诊断已完成并形成结论 |
+| 后续 RF7 收尾 | 可能还有正式闭环或下一版设计 TODO | 可选，不再占用当前主线资源 |
 
-| 已取消路线 | 原因 |
-| --- | --- |
-| Outcome Model | 需要为每个候选执行完整终局续跑，成本高且不适合训练期使用；候选空间由 M1 审计，`H=0` 由 W2 覆盖。 |
+入口：[PushT 计划目录](plans/README.md) · [RF7 计划](plans/2026-08-03-RF7正式训练与条件遵循评测.md)。
+
+### 3. ManiSkill：当前主线
+
+#### 阶段零：M0–M3
+
+| 节点 | 它是什么 | 当前状态 | 下一步 / 闸门 |
+| --- | --- | --- | --- |
+| M0 | 先把官方演示 replay、RGB 数据、LeRobot 训练和 ManiSkill 闭环全部接通 | 进行中；7D 20k 基线已完成选模和 test | 完成 50k 训练 → development 选模 → random / PPO / visual test |
+| 4D 论文参照基线 | 用 motion-planning、4D `pd_ee_delta_pos`、CPU backend 和论文评测语义跑一条可比基线 | 并行进行中 | 8 卡训练 → `official_best` 选模 → `holdout_once`；不替换 M0 7D 主线 |
+| M1 | 审计同一状态下 action chunk 候选是否足够不同 | 待开始 | 测候选多样性、`first-sample`、`Random@K`、一次性 `Oracle@K` |
+| M2 | 从候选空间和任务稳定性中选出 Mini-WAM 主任务 | 待开始 | `Oracle@K` 增益达到预注册闸门后冻结任务 |
+| M3 | 用冻结策略采集成功/失败轨迹和 simulator 原生阶段信号 | 待开始 | 生成 WAM / Residual RL 的训练数据 |
+
+入口：[M0 计划](plans/2026-08-06-M0接通ManiSkill端到端探针.md) · [M0 指南](reports/guides/maniskill/00_m0_pickcube.md) · [4D 基线指南](reports/guides/maniskill/01_paper_aligned_pickcube_4d.md)。
+
+#### M3 之后：Mini-WAM、Residual RL 和组合验证
+
+| 路线 | 每个节点做什么 | 状态 |
+| --- | --- | --- |
+| Mini-WAM | **W0** 学单步 action-conditioned 动力学；**W1** 验证多步 open-loop 预测与候选排序；**W2** 比较 WAM@K、first sample、Random@K、`H=0`；**W3** 加入 ensemble、不确定性回退和失败数据聚合 | 待开始 |
+| Residual RL | **R0** 低维 residual；**R1** 视觉 residual；**R2** 单个 LIBERO 任务修正冻结策略；**R3** 与 Online BC 等在相同真实交互预算下比较 | 待开始 |
+| 组合验证 | **F0** WAM 迁移；**F1** WAM 与 residual 的互补性；**F2** 真实交互节省；**F3** 泛化、OOD、恢复和能力保留 | 待开始 |
+
+Outcome Model 已取消：它需要为每个候选执行完整终局续跑，成本高且不适合训练期使用；候选空间由 M1 审计，`H=0` 由 W2 覆盖。
 
 详情：[Mini-WAM/Residual RL 总计划](plans/2026-08-06-Mini-WAM与残差RL三阶段实验计划.md)。
 
