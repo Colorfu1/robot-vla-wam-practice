@@ -2,47 +2,37 @@
 
 ## 当前工作总览
 
-> 更新时间：2026-08-10。当前项目分为三条实验线：LIBERO 已完成，PushT 基本完成并降为非重点，
-> ManiSkill 是当前正在推进的主线。详细命令、前置条件和判断标准以各计划/指南为准。
+> 更新时间：2026-08-10。状态只表示顶层任务阶段；详细命令、前置条件和判断标准以各计划/指南为准。
 
-### 1. LIBERO：已完成
+| 实验线 | 总状态 | 已完成 | 当前 / 下一步 | 入口 |
+| --- | --- | --- | --- | --- |
+| LIBERO | **已完成** | B0、C1、C2、C3 训练/选模/正式评测；Prompt Swap 修复 | 补充遗忘诊断不影响主结论，不再作为当前主任务 | [评测指南](reports/guides/smolvla_libero/06_evaluation.md) |
+| PushT | **基本完成，非重点** | 主要 Diffusion、RouteField、条件敏感性结论 | 可能还有 RF7 收尾 TODO，但不再投入主线资源 | [计划目录](plans/README.md) |
+| ManiSkill | **进行中，当前主线** | M0 20k 基线已完成选模和 test；环境、replay、数据转换管路已打通 | M0 50k 训练/选模/test；并行完成论文对齐 4D 基线，然后进入 M1 | [M0 指南](reports/guides/maniskill/00_m0_pickcube.md) |
 
-主实验线已经收尾：
+### ManiSkill 阶段零：M0–M3
 
-- **C1 Default Non-PEFT**：训练、checkpoint selection、canonical test 和 Prompt Swap 已完成。
-- **C2 Canonical LoRA**：训练、选模和正式评测已完成。
-- **C3 LoRA + Paraphrase**：训练、选模修正和 210 条目标协议正式评测已完成；当前 winner 为 `015000`，held-out paraphrase 泛化显著改善。
-- **Prompt Swap**：判定 bug 已修复，stove 旧的 `0/10` 结果已废弃，当前引用首次达成目标的修正版结果。
+| 节点 | 状态 | 主要工作 | 完成后产物 / 闸门 |
+| --- | --- | --- | --- |
+| M0：端到端管路 | **进行中** | 7D RL 演示 → RGB replay → LeRobotDataset → Diffusion → ManiSkill 闭环；完成 50k 训练、development 选模和 random / PPO / visual test | 冻结视觉基座、固定 split、可复现闭环评测 |
+| 4D 论文参照基线 | **并行进行中** | motion-planning replay → 4D `pd_ee_delta_pos` → 8 卡训练 → `official_best` 选模 → `holdout_once` | 判断当前管路能否达到论文同量级；不替换 M0 7D 主线 |
+| M1：候选空间审计 | 待开始 | 测 action-chunk 多样性、`first-sample`、`Random@K` 和一次性 `Oracle@K` | 确认候选空间是否值得做 WAM |
+| M2：任务选型 | 待开始 | 按候选差异、`Oracle@K` 增益和任务稳定性选主任务 | 冻结 Mini-WAM 主任务 |
+| M3：策略自采数据 | 待开始 | 用冻结 checkpoint 采集成功/失败 rollout，记录 simulator 原生阶段信号 | 生成 WAM / Residual RL 训练数据 |
 
-背景遗忘、学习率和 replay 属于补充诊断，不阻塞 LIBERO 主结论，也不再作为当前顶层任务。
+入口：[M0 计划](plans/2026-08-06-M0接通ManiSkill端到端探针.md) · [4D 基线指南](reports/guides/maniskill/01_paper_aligned_pickcube_4d.md)。
 
-详情：[LIBERO 评测指南](reports/guides/smolvla_libero/06_evaluation.md) · [C1](reports/guides/smolvla_libero/03_c1_non_peft.md) · [C2](reports/guides/smolvla_libero/04_c2_canonical_lora.md) · [C3](reports/guides/smolvla_libero/05_c3_paraphrase_lora.md) · [C3 结论](reports/daily/2026-08-07-C3改写增强LoRA正式评测结论.md)。
+### M3 之后的路线
 
-### 2. PushT：基本完成，降为归档/非重点
+| 路线 | 状态 | 子节点 |
+| --- | --- | --- |
+| Mini-WAM | 待开始 | **W0** 单步 action-conditioned 动力学 → **W1** 多步 open-loop 预测/排序 → **W2** WAM@K 对比 first sample、Random@K、`H=0` → **W3** ensemble、不确定性回退、失败数据聚合 |
+| Residual RL | 待开始 | **R0** 低维 residual → **R1** 视觉/状态 residual → **R2** 单个 LIBERO 任务修正冻结策略 → **R3** 相同真实交互预算对比 Online BC 等 |
+| 组合验证 | 待开始 | **F0** WAM 迁移 → **F1** WAM 与 residual 互补性 → **F2** 真实交互节省 → **F3** 泛化、OOD、恢复和能力保留 |
 
-PushT 的主要数据、Diffusion、RouteField 和条件敏感性工作已经完成并形成结论。RF7 仍可能有少量正式闭环或后续设计 TODO，但不再作为当前路线的重点任务。
-
-详情：[PushT 计划目录](plans/README.md) · [RF7 正式评测计划](plans/2026-08-03-RF7正式训练与条件遵循评测.md)。
-
-### 3. ManiSkill：当前主线
-
-#### 阶段零：M0 → M1 → M2 → M3
-
-- **M0（进行中）**：打通官方演示 replay、RGB LeRobotDataset、Diffusion 训练和 ManiSkill 闭环评测；20k 基线已完成选模和 test，继续完成 50k 训练 → development 选模 → random / PPO / visual 三系统 test。
-- **论文 4D 参照基线（并行进行中）**：motion-planning replay → 4D `pd_ee_delta_pos` 数据转换 → 8 卡 Diffusion 训练 → 官方协议 `official_best` 选模 → 固定 `holdout_once`。
-- **M1（待开始）**：审计不同任务的 action-chunk 候选多样性，测 `first-sample`、`Random@K` 和一次性 `Oracle@K` 上限。
-- **M2（待开始）**：根据候选空间、`Oracle@K` 增益和任务稳定性选定 Mini-WAM 主任务。
-- **M3（待开始）**：用冻结 checkpoint 采集成功/失败 rollout，记录 simulator 原生阶段信号，形成后续模型训练数据。
-
-入口：[M0 指南](reports/guides/maniskill/00_m0_pickcube.md) · [4D 基线指南](reports/guides/maniskill/01_paper_aligned_pickcube_4d.md) · [M0 计划](plans/2026-08-06-M0接通ManiSkill端到端探针.md)。
-
-#### M3 之后：Mini-WAM、Residual RL 和组合验证
-
-- **Mini-WAM：W0 → W1 → W2 → W3**：先验证单步 action-conditioned latent / pose / reward 动力学，再验证多步 open-loop 预测和候选排序，随后比较 WAM@K 与 first sample / Random@K / `H=0`，最后加入 ensemble、不确定性回退和失败数据聚合。
-- **Residual RL：R0 → R1 → R2 → R3**：先做低维 residual RL，再比较视觉与状态输入，迁移到单个 LIBERO 任务，最后在相同真实交互预算下与 Online BC 等方法比较。
-- **LIBERO 组合：F0 → F1 → F2 → F3**：验证 WAM 迁移、WAM 与 residual 的互补性、真实交互节省，以及最终泛化和 background retention。
-
-Outcome Model 已取消，不进入执行路线；候选空间问题由 M1 的一次性上限审计覆盖，`H=0` 作为 W2 的消融对照。
+| 已取消路线 | 原因 |
+| --- | --- |
+| Outcome Model | 需要为每个候选执行完整终局续跑，成本高且不适合训练期使用；候选空间由 M1 审计，`H=0` 由 W2 覆盖。 |
 
 详情：[Mini-WAM/Residual RL 总计划](plans/2026-08-06-Mini-WAM与残差RL三阶段实验计划.md)。
 
