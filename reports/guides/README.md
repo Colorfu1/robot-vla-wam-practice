@@ -8,8 +8,8 @@
   多 seed 闭环 rollout、E3 采样速度、E4 纯旋转场景和 E5 Prototype-ID 条件控制
 - [SmolVLA LIBERO（目标协议已完成；C3 background retention 待补）](smolvla_libero/README.md)：LoRA 任务适配、
   paraphrase 语言增强和 Prompt Swap 语言服从评测
-- [ManiSkill（M0 已实现，远端结果待执行）](maniskill/README.md)：PickCube-v1 replay、LeRobotDataset、
-  Diffusion 基线和原生闭环探针
+- [ManiSkill（M0 已完成，M1-W StackCube GPU 协议已冻结，M2-W 已实现）](maniskill/README.md)：PickCube-v1 的 RL 7D/GPU 诊断线、
+  4D/CPU 论文参照，以及 StackCube 的 GPU 数据、state-bank、Action-only Flow、闭环 rollout 和 Rerun 可视化入口
 
 每份指南均应提供可直接复制的命令。实际结果统一登记到
 [实验运行记录](../experiment_log.md)。

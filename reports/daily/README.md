@@ -13,6 +13,7 @@
 - [2026-07-30 PushT E5 原型条件实验阶段性成果](2026-07-30-PushT-E5原型条件实验实现.md)
 - [2026-07-31 PushT 路线条件与 SmolVLA LIBERO 训练基建](2026-07-31-PushT路线条件与SmolVLA-LIBERO训练基建.md)
 - [2026-08-07 C3 改写增强 LoRA 正式评测结论](2026-08-07-C3改写增强LoRA正式评测结论.md)
+- [2026-08-10 ManiSkill M0 收尾与 PickCube 论文参照](2026-08-10-ManiSkill-M0收尾与PickCube论文参照.md)
 
 本目录只保存按日期形成的阶段性进展。可复现操作步骤应维护在
 [实验指南](../guides/README.md)，实验指标摘要应维护在

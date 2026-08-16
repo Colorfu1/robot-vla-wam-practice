@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "protocol_id": "m1_r_policy_decorator_ms2_v2",
+  "data_provenance": "official",
+  "identity": {
+    "policy_decorator_root": "datasets/raw/policy_decorator/reference_repo",
+    "policy_decorator_commit": "92ba9ba442587ae5989c286355ace2200a0537fb",
+    "dataset_h5": "datasets/raw/policy_decorator/PegInsertionSide-v0/trajectory.h5",
+    "dataset_h5_sha256": "2483eb42a8995203b55e5c29795f5b3298c1724ab8fede3795de809636e7ef3b",
+    "dataset_json": "datasets/raw/policy_decorator/PegInsertionSide-v0/trajectory.json",
+    "dataset_json_sha256": "2cc855c7fb6173fc59f1c0fdec72ecde3b900a151772ad4171e745b13a90245d",
+    "dataset_env_id": "PegInsertionSide-v0",
+    "episode_count": 986
+  },
+  "environment": {
+    "python_environment": "maniskill2-pidec",
+    "mani_skill_package": "mani-skill2",
+    "mani_skill_version": "0.5.3",
+    "runtime_env_id": "PegInsertionSide-v2",
+    "max_episode_steps": 200,
+    "control_frequency_hz": 20,
+    "control_mode": "pd_ee_delta_pose",
+    "action_dim": 7,
+    "obs_mode": "state",
+    "observation_dim": 50,
+    "reward_mode": "sparse",
+    "reference_default_reward_mode": "normalized_dense",
+    "sim_backend": "physx_cpu",
+    "render_mode": "rgb_array"
+  },
+  "observation_schema": {
+    "flatten_order": [
+      "agent.qpos[0:9]",
+      "agent.qvel[0:9]",
+      "agent.base_pose[0:7]",
+      "extra.tcp_pose[0:7]",
+      "extra.peg_pose[0:7]",
+      "extra.peg_half_size[0:3]",
+      "extra.box_hole_pose[0:7]",
+      "extra.box_hole_radius[0:1]"
+    ],
+    "state_dim": 50,
+    "forbidden_fields": ["rgb", "depth", "success", "peg_head_pos_at_hole"]
+  },
+  "temporal": {
+    "n_obs_steps": 2,
+    "horizon": 16,
+    "n_action_steps": 4,
+    "execution_action_steps": 4,
+    "cross_episode_windows": 0,
+    "tail_policy": "pad_only_within_episode_and_mask"
+  },
+  "splits": {
+    "offline": {
+      "development": 100,
+      "test": 100,
+      "assignment": "sorted_by_start_state_fingerprint; remaining episodes are train"
+    },
+    "state_banks": {
+      "train": {"count": 2000, "seed_start": 10000},
+      "development": {"count": 200, "seed_start": 20000},
+      "test": {"count": 400, "seed_start": 30000}
+    }
+  },
+  "protocol": {
+    "state_match_tolerance": 0.000001,
+    "success_once_required": true,
+    "success_at_end_required": true,
+    "full_replay_native_success_rate": 1.0,
+    "full_replay_strict_success_rate": 1.0,
+    "max_initial_state_error": 0.000001,
+    "d_core_success_tail_frames": 5,
+    "identity_key": "reset state fingerprint; seed and trajectory group are metadata only",
+    "termination": {
+      "success_terminates": true,
+      "time_limit_truncates": true,
+      "post_success_tail_policy": "stored_in_demonstration_but_not_executed_after_termination"
+    }
+  }
+}

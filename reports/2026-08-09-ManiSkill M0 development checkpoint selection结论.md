@@ -46,7 +46,11 @@ Latency 记录中，`020000` policy forward p50 为约 2179.6 ms、p95 为约 23
 - `outputs/maniskill/m0_probe/checkpoint_selection/evaluations/checkpoint_020000/development/metrics.json`
 - `reports/guides/maniskill/00_m0_pickcube.md`
 
-## 下一步
+## 后续更新（2026-08-10）
 
-远端同步修复后执行 `--select-only`，使用 `outputs/maniskill/m0_probe/checkpoint_selection/selected/pretrained_model`
-作为冻结策略，在不重新选模的前提下执行 random、privileged PPO 与 visual 三个 system 的 test 400 条评测。
+上述 `--select-only` 发布和三套 400 条 test 已完成：visual `020000` 为 234/400（58.5%），random 为
+0/400，privileged PPO 为 396/400（99.0%）。随后 50k run 的十个 checkpoint 在同一 test block 上做了
+诊断 sweep，最高为 340/400（85.0%）；因此该 block 不再是未触碰的最终 test。
+
+完整的 M0 收尾、RL 数据限制和 4D motionplanning 论文参照见
+[2026-08-10 ManiSkill M0 收尾与 PickCube 论文参照](daily/2026-08-10-ManiSkill-M0收尾与PickCube论文参照.md)。

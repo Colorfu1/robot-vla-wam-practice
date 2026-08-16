@@ -281,8 +281,17 @@ Prompt Swap 的第一列是 `first_goal_reached` 主指标，第二列是 `termi
 
 C3 的 held-out paraphrase 比 C2 提升 53.3 个百分点（19/90 → 67/90），三个任务均提升；
 canonical 与 C2 基本持平（87/90 → 88/90）。C3 Prompt Swap 首次达成达到 30/30，terminal hold
-为 29/30。当前 selected `015000` 的 background retention 尚未重跑，旧的 `c3_selected 0/210`
-不计入 C3 正式结论。
+为 29/30。
+
+Background retention 是独立于 target protocol 的 7 任务 × 30 状态 Formal / Closed-loop / Test：
+C3 selected `015000` 已完成 0/210，B0 记录基线为 183/210；C3 的 210 条 rollout 全部为
+`time_limit`，七个任务均为 0/30。旧的选模修正前 `c3_selected 0/210` 不计入本结论；本次
+重跑的 policy path 和 adapter hash 已与当前 `015000` selected checkpoint 对齐。
+
+注意：background evaluator 的 direct-policy 输出仍使用通用的 `selected_checkpoint_step=0`
+和 `SmolVLA B0 held-out test` markdown 标题。两者是 runner 的占位/格式问题，不是本次模型
+来源；应以 `test_manifest.json` 的 `model_label=c3_selected`、policy path 和 C3 selected
+checkpoint manifest/hash 为 provenance。
 
 同时记录项目要求的统一字段：
 

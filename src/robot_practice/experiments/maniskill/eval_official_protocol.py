@@ -35,10 +35,12 @@ from .eval_closed_loop import (
     load_diffusion_policy,
     summarize_rows,
 )
+from .rollout_contract import OFFICIAL_DATA_PROVENANCE, require_rollout_backend
 
 TASK_ID = "PickCube-v1"
 CONTROL_MODE = "pd_ee_delta_pos"
 SIM_BACKEND = "physx_cpu"
+DATA_PROVENANCE = OFFICIAL_DATA_PROVENANCE
 IMAGE_KEY = "observation.images.base_camera"
 STATE_KEY = "observation.state"
 STATE_FIELDS = (
@@ -348,6 +350,7 @@ def evaluate_checkpoint(
         raise ValueError("num_episodes must be a positive multiple of num_envs")
     if max_steps <= 0:
         raise ValueError("max_steps must be positive")
+    rollout_contract = require_rollout_backend(DATA_PROVENANCE, SIM_BACKEND)
     loaded = load_diffusion_policy(
         policy_path=policy_path,
         dataset_repo_id=dataset_repo_id,
@@ -485,6 +488,7 @@ def evaluate_checkpoint(
         "task": TASK_ID,
         "control_mode": CONTROL_MODE,
         "sim_backend": SIM_BACKEND,
+        **rollout_contract,
         "num_episodes": len(rows),
         "num_envs": num_envs,
         "max_episode_steps": max_steps,
@@ -509,10 +513,13 @@ def evaluate_checkpoint(
         "schema_version": SCHEMA_VERSION,
         "created_at": iso_timestamp(),
         "policy_path": _portable(policy_path),
+        "policy_device": str(device),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "dataset": {"repo_id": dataset_repo_id, "root": _portable(dataset_root)},
         "task": TASK_ID,
         "control_mode": CONTROL_MODE,
         "sim_backend": SIM_BACKEND,
+        **rollout_contract,
         "max_episode_steps": max_steps,
         "observation": {
             "keys": [IMAGE_KEY, STATE_KEY],

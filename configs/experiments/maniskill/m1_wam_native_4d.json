@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "route_id": "m1_wam_native_4d",
+  "task": "StackCube-v1",
+  "control_mode": "pd_ee_delta_pos",
+  "action_dim": 4,
+  "source_h5": "datasets/raw/maniskill_demos/StackCube-v1/motionplanning/trajectory.h5",
+  "output_root": "outputs/maniskill/m1_wam_native_4d/StackCube-v1",
+  "min_formal_episodes": 900,
+  "protocol": {
+    "source_control_mode": "pd_joint_pos",
+    "source_type": "motionplanning",
+    "conversion_backend": "physx_cpu",
+    "gpu_backend": "physx_cuda",
+    "rgb_capture": "directly during the final GPU env.step",
+    "identity": "env_states[0] start-state fingerprint; seed is not identity"
+  }
+}

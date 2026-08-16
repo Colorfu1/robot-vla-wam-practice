@@ -62,6 +62,12 @@
 | [2026-08-05 C1 遗忘权衡曲线诊断](2026-08-05-C1遗忘权衡曲线诊断.md) | `done` | 完成 A/B 学习率诊断，确认降 LR 可部分缓解背景遗忘但不能恢复到 B0 |
 | [2026-08-05 背景数据回放缓解遗忘](2026-08-05-背景数据回放缓解遗忘.md) | `in-progress` | 已完成 k=4/8 探针；按预注册规则待补 k=2/8、k=6/8 并完成权衡汇总 |
 | [2026-08-05 Prompt Swap 目标判定修复](2026-08-05-PromptSwap目标判定修复.md) | `done` | 修复参考场景原生目标 reset 判定并完成三模型 Prompt Swap 补测与文档更正 |
-| [2026-08-06 Mini-WAM与残差RL三阶段实验计划](2026-08-06-Mini-WAM与残差RL三阶段实验计划.md) | `todo` | 主环境换 ManiSkill；Mini-WAM、Residual RL 与 LIBERO 组合验证的三阶段路线和预注册闸门 |
-| [2026-08-06 M0接通ManiSkill端到端探针](2026-08-06-M0接通ManiSkill端到端探针.md) | `in-progress` | PickCube-v1 用 rl 7 维演示打通到闭环成功率，产出冻结视觉基座；上游阶段零第一步 |
-| [2026-08-10 对齐论文的PickCube四维基线](2026-08-10-对齐论文的PickCube四维基线.md) | `in-progress` | 用 motionplanning + 4 维 + CPU + horizon 100 逐项对齐论文 Table III，验管路能否到 DP RGB PickCube 的量级 |
+| [2026-08-06 Mini-WAM与残差RL三阶段实验计划](2026-08-06-Mini-WAM与残差RL三阶段实验计划.md) | `dropped` | 已由 2026-08-11 完整母计划取代，不再执行 |
+| [2026-08-06 M0接通ManiSkill端到端探针](2026-08-06-M0接通ManiSkill端到端探针.md) | `done` | PickCube-v1 端到端探针已完成；结果与后续路由见 `reports/` |
+| [2026-08-10 对齐论文的PickCube四维基线](2026-08-10-对齐论文的PickCube四维基线.md) | `done` | motionplanning + 4D + CPU + horizon 100 的论文参照已完成；结果见 `reports/` |
+| [2026-08-11 Mini-WAM与Residual-RL-完整实验总计划](2026-08-11-Mini-WAM与Residual-RL-完整实验总计划.md) | `in-progress` | 当前先收口 M1-W，再按 M2-W→W0→W1 推进 W 线；Residual 线独立，不 gate M2-W |
+| [2026-08-11 M1三任务数据与控制协议预检](2026-08-11-M1三任务数据与控制协议预检.md) | `dropped` | 三任务同栈路线终止；StackCube 由新 M1-W 接替，Peg/Plug 不进入 MS3 正式数据线 |
+| [2026-08-11 PegInsertionSide M1 继续诊断](2026-08-11-PegInsertionSide-M1-继续诊断计划.md) | `done` | P1 exact replay、P2 controller contract、P3 精密接触分叉诊断完成，作为分线证据保留 |
+| [2026-08-12 M1 WAM 数据与控制协议预检](2026-08-12-M1-WAM数据与控制协议预检.md) | `done` | StackCube baseline/repair/final live RGB、D_core、LeRobot、state banks 与 frozen protocol 全部通过 |
+| [2026-08-13 M1-R PolicyDecorator MS2/v2 协议预检](2026-08-13-M1-R-PolicyDecorator-MS2v2协议预检.md) | `blocked` | 用户暂缓；待切换 `maniskill2-pidec` 环境后继续 full replay、D_core 与 state banks |
+| [2026-08-13 M2-W StackCube Action-only Flow 基线与 Headroom](2026-08-13-M2-W-StackCube-Action-only-Flow基线与Headroom.md) | `in-progress` | M1-W frozen protocol 已通过；实现、训练、development 选模并冻结 Action-only Flow；其后先 W0、再 W1 |

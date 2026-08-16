@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-- 状态：`Z0/B0、C1、C2、C3 已完成目标协议统一正式评测；C3 background retention 待补`
+- 状态：`Z0/B0、C1、C2、C3 目标协议和 C3 background retention 均已完成正式评测`
 - 环境：LIBERO、SmolVLA、PEFT 和 RTX 3090/BF16 基础能力已具备。
 - 已完成：两步 LoRA 训练 Smoke；Hub、本地普通 checkpoint 和本地 PEFT checkpoint
   共用的单任务闭环评测/Rerun 入口；公共 SmolVLA-LIBERO 完整 episode Smoke。
@@ -29,9 +29,10 @@
 - 当前结果：C3 canonical 88/90（97.8%）、held-out paraphrase 67/90（74.4%）、Prompt Swap
   首次达成 30/30（100.0%，终态保持 29/30）。C3 相比 C2 的 held-out paraphrase 提升 53.3 个百分点，
   三个任务均改善。完整结论见 [C3 正式评测结论](../../daily/2026-08-07-C3改写增强LoRA正式评测结论.md)。
-- 未完成：当前 selected `015000` 的 background retention；旧的 `c3_selected 0/210` 在选模修正前生成，
-  不作为当前 C3 结论。
-- 下一步：使用当前 `015000` selected checkpoint 重跑 background retention test。
+- 当前结果：C3 selected `015000` 的 background retention 为 0/210（0.0%），7 个背景任务均为 0/30，
+  210 条 rollout 全部以 `time_limit` 结束；B0 基线为 183/210（87.1%）。旧的同名 `c3_selected 0/210`
+  产物不计入结论，本次结果来自重跑后的当前 selected adapter。详细结果见
+  [C3 background regression 结论](../../daily/2026-08-10-C3背景回归正式评测结论.md)。
 
 ## 结果类别标签与数据分工
 
@@ -142,8 +143,8 @@ C1 保留 SmolVLA 默认的 `train_expert_only=true` 和
 `lerobot/smolvla_base` 只初始化 B0；C1/C2/C3 不得绕过 B0 或使用不同 B0 checkpoint。
 它自身的 state/action processor 与 LIBERO 不匹配，因此不作为闭环 C0。Phase 0/1
 未通过时，不得启动正式训练。统一正式评测入口已经实现；C3 selected checkpoint 已经过
-validation selection，不能用 Test 结果补选。当前仍缺的是该 winner 的 background retention，
-而不是目标协议结果。
+validation selection，不能用 Test 结果补选。当前目标协议和该 winner 的 background retention
+都已有正式结果。
 
 实际结果统一登记到 [实验运行记录](../../experiment_log.md)，通用指标定义见
 [指标说明](../../metrics.md)。

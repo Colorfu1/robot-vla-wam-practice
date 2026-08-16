@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "task": "PickCube-v1",
+  "data_provenance": "official",
   "sim_backend": "physx_cpu",
   "num_envs": 1,
   "max_episode_steps": 100,

@@ -83,6 +83,45 @@ Use one section per run. Record incomplete or failed runs too.
   - `rollout.rrd`
 - Modes: Offline / Closed-loop / Formal
 
+## 2026-07-24 — ACT A0/A1 Action Chunking 20k
+
+- Date: 2026-07-24
+- Task suite: `libero_object`, task ID 8
+- Dataset size: 20 demonstrations, 3233 frames
+- Observation keys: `observation.images.image`, `observation.images.image2`,
+  `observation.state`
+- Action space: 7D LIBERO relative EEF action
+- Action horizon: A0 `chunk_size=1`; A1 `chunk_size=20`. The matched closed-loop
+  comparison uses `n_action_steps=1` for both; A1 default execution is recorded separately at 5.
+- Control frequency: 10 Hz
+- Policy: standard ACT, `use_vae=false`, 20,000 updates, batch size 8, seed 1000;
+  A0 and A1 differ in `chunk_size` and the resulting ACT query-embedding shape
+- Train loss: not retained as a complete local loss series
+- Open-loop action error: A0 first-action MAE 0.03096, teacher-forced Action Jerk 0.01661;
+  A1 first-action MAE 0.02564, delta-action MAE 0.01374, teacher-forced Action Jerk 0.01349
+- Closed-loop success rate: matched `n_action_steps=1` — A0 9/20 (45%), A1 4/20 (20%);
+  A1 default `n_action_steps=5` — 3/20 (15%)
+- Latency: matched `n_action_steps=1` model-query p50/p95 — A0 6.65/10.38 ms,
+  A1 6.80/9.24 ms; A1 default `n_action_steps=5` — 8.90/20.53 ms
+- Failure cases: matched A0 init states `1, 4, 5, 7, 8, 9, 11, 13, 14, 15, 16`;
+  matched A1 init states `0, 2, 4, 5, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19`;
+  all failures reached the 280-step time limit
+- Notes: A1 reduced offline first-action MAE by 17.2% and teacher-forced Action Jerk by 18.8%,
+  but matched closed-loop Action Jerk increased from 0.01786 to 0.02264 and success decreased
+  by 25 percentage points. This is a completed formal matched comparison, not an unmeasured
+  auxiliary readout. Evidence remains one task and one training seed; no noisy evaluation,
+  step-0 checkpoint, or complete training-loss series was retained.
+- Result artifacts:
+  - `outputs/act/a0_single_step/offline_20/metrics.json`
+  - `outputs/act/a0_single_step/closed_clean/metrics.json`
+  - `outputs/act/a0_single_step/closed_clean/eval_info.json`
+  - `outputs/act/a1_chunking/offline_20/metrics.json`
+  - `outputs/act/a1_chunking/closed_clean/metrics.json`
+  - `outputs/act/a1_chunking/closed_clean/eval_info.json`
+  - `outputs/act/a1_chunking/closed_clean_n5/metrics.json`
+  - `outputs/act/a1_chunking/closed_clean_n5/eval_info.json`
+- Modes: Offline / Closed-loop / Formal
+
 ## 2026-07-25 — ACT A2 Delta-action Loss 20k
 
 - Date: 2026-07-25
@@ -849,6 +888,35 @@ Use one section per run. Record incomplete or failed runs too.
   - `reports/daily/2026-08-07-C3改写增强LoRA正式评测结论.md`
 - Modes: Formal / Offline（训练）；Formal / Closed-loop / Validation（选模）；Formal / Closed-loop / Test（目标协议）
 
+## 2026-08-10 — SmolVLA C3 Selected Background Regression
+
+- Date: 2026-08-10
+- Task suite: LIBERO-Goal background tasks `0,2,3,5,6,7,9`
+- Dataset size: 7 tasks × 30 held-out init states = 210 closed-loop rollouts
+- Observation keys: 两路 256×256 RGB（`observation.images.image`、`observation.images.image2`）+
+  8 维 `observation.state`
+- Action space: 7 维相对末端动作
+- Action horizon: `chunk_size=50`，执行 `n_action_steps=10`，每条 episode 最多 300 steps
+- Control frequency: 10 Hz
+- Policy: C3 `checkpoints/selected/pretrained_model`；adapter hash 与 C3 `015000` 源 checkpoint
+  一致；test policy seed 2000，environment seed 1000；7 GPU direct-policy runner
+- Train loss: N/A；本次为 inference-only background regression
+- Open-loop action error: N/A
+- Closed-loop success rate: 0/210（0.0%）；B0 记录基线为 183/210（87.1%）
+- Latency: macro task model-query p50/p95 341.25/576.42 ms；action TV 0.03870；action jerk 0.05448
+- Failure cases: 210 条全部以 `time_limit` 结束；7 个背景任务均为 0/30
+- Notes: 这是当前 selected `015000` 的有效 background retention 测量，证明 C3 目标适配后的
+  background forgetting 仍未解决。旧的同名 `c3_selected 0/210` 在选模修正前生成，不计入本条。
+  direct-policy runner 的 `selected_checkpoint_step=0` 是通用占位值；实际 provenance 由
+  `model_label=c3_selected`、policy path 和 adapter hash 确认。
+- Result artifacts:
+  - `outputs/smolvla_libero/eval/background_regression/c3_selected/test_results.json`
+  - `outputs/smolvla_libero/eval/background_regression/c3_selected/test_manifest.json`
+  - `outputs/smolvla_libero/eval/background_regression/c3_selected/metrics.md`
+  - `outputs/smolvla_libero/eval/background_regression/c3_selected/episodes.parquet`
+  - `outputs/smolvla_libero/eval/background_regression/c3_selected/jobs/`
+- Modes: Formal / Closed-loop / Test
+
 ## 2026-08-09 — ManiSkill M0 development checkpoint selection
 
 - Date: 2026-08-09（8 卡远端 rollout 完成；selection JSON 后续纯离线补写）
@@ -867,3 +935,295 @@ Use one section per run. Record incomplete or failed runs too.
 - Result artifacts: `outputs/maniskill/m0_probe/checkpoint_selection/selected_checkpoint.json`、`outputs/maniskill/m0_probe/checkpoint_selection/checkpoint_results.json`、`outputs/maniskill/m0_probe/checkpoint_selection/selected/pretrained_model`（待远端补发布）
 - Report: `reports/2026-08-09-ManiSkill M0 development checkpoint selection结论.md`
 - Modes: Formal / Offline（训练）；Formal / Closed-loop / Validation（checkpoint selection）；Formal / Closed-loop / Test（待执行）
+- 后续更新（2026-08-10）: selected 实体副本与 20k 的 test 400 已完成；最终收尾结论、50k 诊断 sweep 的测试集边界和 4D 论文参照见下一条记录。
+
+## 2026-08-10 — ManiSkill M0 收尾与 PickCube 4D 论文参照
+
+- Date: 2026-08-10
+- Task suite: ManiSkill `PickCube-v1`
+- Dataset size: RL 原生 7D 线为 1013 demonstrations、50,360 帧；motionplanning 4D 参照为 1000 demonstrations、77,976 帧，并单独训练前 100 条 arm
+- Observation keys: 128×128 RGB + 21D student state（9D qpos、9D qvel、3D goal_pos）；不含物体位姿和教师相对向量
+- Action space: RL 线为 7D `pd_ee_delta_pose`；论文参照为 4D `pd_ee_delta_pos`
+- Action horizon: 两线均为 `n_obs_steps=2`、prediction horizon 16、每次执行 8 步；RL 评测 horizon 50，论文参照 horizon 100
+- Control frequency: 20 Hz
+- Policy: LeRobot diffusion；RL 20k 的 development winner 为 `020000`；4D 官方协议 1000-demo winner 为 `022500`
+- Train loss: 训练 stdout 显示正常下降，但未保留跨 run 可比较的完整 loss series；不作为 M0 选模指标
+- Open-loop action error: 未测量
+- Closed-loop success rate: RL 20k 独立 test visual 234/400（58.5%），random 0/400，privileged PPO 396/400（99.0%）；RL 50k test diagnostic sweep 最高 340/400（85.0%，`045000`）；4D 1000-demo 固定 CPU holdout 397/400（99.25%），100-demo 为 206/400（51.5%）
+- Latency: RL 20k development winner policy-forward p50/p95 2179.6/2367.7 ms、environment-step p50 190.5 ms；4D 1000-demo holdout policy-forward p50 588.6 ms、environment-step p50 6.2 ms。协议、后端与并行方式不同，不作横向性能比较
+- Failure cases: RL 数据 73.0% 帧在首次成功后，且 gripper 98.8%、`translation_z` 11.07% 的动作超出目标 `[-1,1]` 范围；RL 20k visual test 中 166/400 未成功。4D 1000-demo holdout 3/400 未成功
+- Notes: 两条 replay/转换/闭环链路均通过，M0 标记完成。4D 数字不能与 7D 直接比较，因为专家、有效帧、动作、后端、horizon 和终止语义均不同。50k 已查看同一 test block 的全部 checkpoint，故该 block 降级为诊断曲线；未来 7D 正式结果需新 holdout。PickCube 4D 已超过 WAM 的 95% 停止条件，后续需在任务专属基座上进行任务选择与候选空间审计
+- Result artifacts:
+  - `outputs/maniskill/m0_probe/`
+  - `outputs/maniskill/paper_aligned_4d/`
+  - `reports/daily/2026-08-10-ManiSkill-M0收尾与PickCube论文参照.md`
+  - `reports/guides/maniskill/00_m0_pickcube.md`
+- Modes: Offline / Smoke / Formal / Closed-loop
+
+## 2026-08-11 — ManiSkill M1 Peg joint-to-EEF conversion probes
+
+- Date: 2026-08-11
+- Task suite: ManiSkill `PegInsertionSide-v1`
+- Dataset size: 官方 motion-planning `pd_joint_pos` source 的前 10 条 episode；source 10/10 成功
+- Observation keys: probe replay 使用 `obs_mode=none`，只为诊断 controller conversion
+- Action space: source 8D `pd_joint_pos`；B target 7D `pd_ee_delta_pose`；C target absolute `pd_ee_pose`
+- Action horizon: B 每个 source action 最多 16 个 target inner steps；C 每个 source action 1 个 target step
+- Control frequency: 20 Hz；`physx_cpu`
+- Train loss: N/A；本次为 conversion-only replay probe
+- Open-loop action error: N/A；记录了逐 episode EEF position/rotation tracking error
+- Closed-loop success rate: B `fixed_delta` 8/10；C `absolute` 8/10；两者均未通过 10/10 gate
+- Latency: 未作为本次诊断指标测量；B target/source low-level step ratio 为 9804/1562，C 为 1:1
+- Failure cases: B 失败 source episodes 2、9；C 失败 source episodes 1、2；C 的 1、2 与原始 M1 target-controller smoke 失败条目一致
+- Notes: B 无 position/rotation clipping，但多条轨迹在 16-step inner-loop 上限内未达到 `2 mm / 0.01 rad` EEF error；C 去掉 delta accumulation 后仍为 8/10。此前探针因 reset 后缓存旧 controller 导致的 `0/10` 已废弃，修复后结果才计入本条记录。
+- Conclusion: 当前证据不支持“单独修正 rotation contract”或“改为 absolute EEF target”即可修复 joint-demo→EEF-demo conversion；也不能据此判定 EEF controller 本身不可用。M1 不集成 B/C 产物为正式 `D_core`，下一步进入直接生成 EEF demonstrations 或官方 EEF 数据协议对齐决策。
+- Result artifacts: `outputs/maniskill/m1_protocol_audit/PegInsertionSide-v1/conversion_probe/fixed_delta/`、`outputs/maniskill/m1_protocol_audit/PegInsertionSide-v1/conversion_probe/absolute/`
+- Modes: Diagnostic / Closed-loop / CPU replay
+
+## 2026-08-11 — ManiSkill Peg Policy Decorator protocol alignment audit
+
+- Date: 2026-08-11
+- Task suite: `PegInsertionSide`; external reference artifact metadata is `PegInsertionSide-v0`，current M1 task is `PegInsertionSide-v1`
+- Dataset size: Policy Decorator reference 986 episodes / 152,796 action frames，trajectory length 111–199（mean 154.97）；current ManiSkill3 motion-planning source 1000 episodes / 149,055 frames，source controller `pd_joint_pos`
+- Observation keys: external state 50D（含 `base_pose`、`tcp_pose`、peg/hole 几何）；current ManiSkill3 full state 43D，M1 visual student planned state 18D qpos+qvel
+- Action space: external native 7D normalized `pd_ee_delta_pose`；current source 8D `pd_joint_pos`，B/C conversion target 7D
+- Action horizon: external diffusion `obs=2`、`pred=16`、`act=4`，online executes 4 low-level actions；M1 schema is `2/16/4/4`，B/C are conversion-only probes
+- Control frequency: 20 Hz；external controller frame `ee` + rotvec relative pose；current ManiSkill3 uses `root_translation:root_aligned_body_rotation` + Euler XYZ / LM delta IK contract
+- Train loss: N/A；本次为 external metadata/controller/source-code alignment audit
+- Open-loop action error: N/A
+- Closed-loop success rate: external reference demos 986/986 final success；current B/C conversion probes 8/10 each；同 seed 的 current native/strict predicate audit 为 native-only 0、reachable-native-only 0
+- Latency: N/A
+- Failure cases: current B failures episode 2、9，C failures episode 1、2；v2 strict predicate 没有把这批 native false 变成 strict false 的额外掉点
+- Notes: Policy Decorator 的 v2 上界修复与 success labeling 有关，但当前证据不支持它是 joint→EEF conversion 掉点的主因。最大差异是外部原生 EEF 数据与其 ManiSkill2 controller，和当前 ManiSkill3 joint source→EEF conversion contract 不同。外部公开仓库：[Policy Decorator](https://github.com/tongzhoumu/policy_decorator)
+- Result artifacts: `outputs/maniskill/m1_protocol_audit/PegInsertionSide-v1/success_predicate/confusion_matrix.json`、`outputs/maniskill/m1_protocol_audit/PegInsertionSide-v1/conversion_probe/`
+- Modes: Diagnostic / Offline metadata audit / Closed-loop replay
+
+## 2026-08-11 — Policy Decorator native Peg action cross-version probe
+
+- Date: 2026-08-11
+- Task suite: external Policy Decorator `PegInsertionSide-v0` artifact replayed in local ManiSkill3 `PegInsertionSide-v1`
+- Dataset size: fixed random sample of 10 episodes from the 986-episode public H5；sample seed `20260811`；episode IDs `36,85,114,160,282,314,336,653,680,754`
+- Observation keys: H5 observation was not consumed；each local episode reset by the recorded episode seed；H5 ManiSkill2 `env_states` was not restored because its state schema is cross-version
+- Action space: direct native 7D `pd_ee_delta_pose` actions from the external H5；no conversion or rescaling
+- Action horizon: each episode replayed to its full dataset action length；local evaluation horizon 200
+- Control frequency: local ManiSkill3 `physx_cpu` at 20 Hz
+- Train loss: N/A；direct action replay diagnostic
+- Open-loop action error: N/A
+- Closed-loop success rate: local ManiSkill3 native predicate `0/10`；repo-local strict predicate `0/10`；no episode reached success even transiently
+- Latency: 14.7 seconds total for native + strict paired replay
+- Failure cases: all ten episodes ended at dataset end without success；final peg-hole relative positions remained outside the insertion region
+- Notes: This is a cross-version compatibility result, not an exact replay of the original ManiSkill2 environment. It shows that the public 7D actions cannot be transferred directly to ManiSkill3-v1 with the current reset/controller/dynamics contract. It does not invalidate the external H5; exact source-environment replay remains a separate check.
+- Result artifacts: `outputs/maniskill/m1_protocol_audit/PegInsertionSide-v1/native_external_dataset_probe/`
+- Modes: Diagnostic / Closed-loop replay
+
+## 2026-08-11 — Policy Decorator / ManiSkill2 exact Peg replay
+
+- Date: 2026-08-11
+- Task suite: external Policy Decorator `PegInsertionSide-v0` plus repo-local strict `v2`
+- Dataset size: public reference 986 episodes；P1 fixed sample first 20、扩展 50
+- Observation keys: H5 `obs` and `env_states` were inspected；replay uses recorded reset seed/options and raw actions
+- Action space: native 7D normalized `pd_ee_delta_pose`
+- Action horizon: source trajectory length 111–199；replay stops when the environment terminates
+- Control frequency: 20 Hz；ManiSkill2 0.5.3
+- Policy: N/A；raw expert-action replay
+- Train loss: N/A
+- Open-loop action error: N/A
+- Closed-loop success rate: 20/20 native + 20/20 strict；expanded 50/50 native + 50/50 strict
+- Latency: N/A；reference replay correctness was the target
+- Failure cases: none in the 20- and 50-episode samples；maximum initial H5 state reconstruction error 0
+- Conclusion: P1 strong pass. The external data can be replayed in its own ManiSkill2/controller contract; current MS3 cross-version failures must not be attributed to the external H5 before separately checking action semantics and state alignment.
+- Result artifacts: `outputs/maniskill/m1_peg_continue_diagnosis/p1_exact_replay/`、`outputs/maniskill/m1_peg_continue_diagnosis/p1_exact_replay_50/`
+- Modes: Smoke / Closed-loop reference replay
+
+## 2026-08-11 — Peg MS2/MS3 controller contract probe
+
+- Date: 2026-08-11
+- Task suite: `PegInsertionSide` robot-only no-contact fixed-state probe
+- Dataset size: 3 fixed qpos states × 12 elementary axis commands = 36 paired commands；12 zero-action repeats per state/backend for noise calibration
+- Observation keys: EEF pose, qpos/qvel, controller target pose/qpos；no policy observation or task success used as a gate
+- Action space: MS2 normalized 7D `pd_ee_delta_pose` bridged to MS3 normalized 7D `pd_ee_delta_pose`
+- Action horizon: one controller step per command
+- Control frequency: 20 Hz；both `physx_cpu`
+- Policy: N/A；independent semantic bridge `decode_ms2_ee_action → encode_ms3_ee_action`
+- Train loss: N/A
+- Open-loop action error: N/A；realized EEF error was measured instead
+- Closed-loop success rate: N/A；P2 is a no-contact contract gate
+- Latency: N/A
+- Failure cases: none after correcting the dimension-specific gate check; zero-action noise max `4.4e-7 m / 7.8e-7 rad`
+- Conclusion: 36/36 passed pre-registered direction, frame, sign, scale and cross-version motion tolerances (`3 mm / 0.03 rad`, scale ratio `0.25–4.0`). The raw-action cross-version 0/10 result is not explained by a simple action-number/frame/sign mismatch.
+- Result artifacts: `outputs/maniskill/m1_peg_continue_diagnosis/p2_controller_contract/`
+- Modes: Smoke / Closed-loop no-contact probe
+
+## 2026-08-11 — Peg MS2/MS3 matched-state trajectory divergence
+
+- Date: 2026-08-11
+- Task suite: Policy Decorator native Peg trajectories compared with current ManiSkill3 `PegInsertionSide-v1`
+- Dataset size: 5 shortest + 5 longest external successful episodes；独立 episode 2 source/B/C 专项
+- Observation keys: per-step EEF pose, qpos, qvel, peg/head/hole pose, controller target pose/qpos, grasp and success signals
+- Action space: MS2 native 7D action；MS3 P2 semantic-converted 7D action；episode 2 source 8D `pd_joint_pos`, B 7D delta, C absolute EEF
+- Action horizon: external trajectories 111–199；episode 2 source 201 steps；B max 16 inner steps/source action；C 1 target step/source action
+- Control frequency: 20 Hz；`physx_cpu`
+- Policy: N/A；reference action replay
+- Train loss: N/A
+- Open-loop action error: N/A；per-step trajectory divergence was measured
+- Closed-loop success rate: MS2 reference 10/10；MS3 semantic-converted 0/10；episode 2 source 1/1，B 0/1，C 0/1
+- Latency: N/A
+- Failure cases: all 10 MS3 trajectories were partial-state matches because cross-version geometry cannot be overwritten; initial robot/EEF/head/hole poses were aligned. First divergence steps were 69–179 (median 92), after both sides had grasped the peg. Episode 2 B FK realization divergence began at step 181; C had early one-step tracking transients but source-vs-converted actual EEF divergence only near step 184.
+- Conclusion: P1/P2 pass but P3 shows a post-grasp precision-contact / geometry / controller-realization divergence. Do not continue blind joint→EEF converter tuning or promote B/C to `D_core`. The diagnostic-era candidate was to generate native ManiSkill3 EEF data；the 2026-08-12 route decision supersedes that candidate：Peg is excluded from M1-W，and a later M1-R will freeze the Policy Decorator MS2/v2 contract.
+- Result artifacts: `outputs/maniskill/m1_peg_continue_diagnosis/p3_cross_version/`、`outputs/maniskill/m1_peg_continue_diagnosis/p3_episode2_source_b_c.json`
+- Modes: Smoke / Closed-loop diagnostic comparison
+
+## 2026-08-12 — ManiSkill M1-W StackCube 7D controller protocol
+
+- Date: 2026-08-12
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: 官方 motion-planning `pd_joint_pos` provenance 1000 episodes；正式 GPU-native 7D source 174,573 action steps
+- Observation keys: 两路 128×128 RGB 与 `qpos(9)+qvel(9)`；不含 privileged `extra`/`sensor_param`
+- Action space: 原生 GPU `pd_ee_delta_pose`，7D；20 Hz；`physx_cuda`
+- Action horizon: native horizon 50 仅作诊断；formal horizon 500，覆盖 source 最晚首次成功（434 步）
+- Train loss: N/A；本次为 GPU state materialization / protocol audit
+- Open-loop action error: N/A；不执行 action replay，逐帧恢复 source `env_states` 并渲染 observation
+- Closed-loop success rate: N/A；materialization 不是 learned-policy rollout。source 标签为 986/1000 success-once、815/1000 success-at-end
+- Latency: GPU materialization 全量约 12.3 分钟；正式 H5 约 11.2 GB
+- Failure cases: source 与 materialized target 1000/1000 fingerprint 完整覆盖；`env_step_called=false`、`action_replay_used=false`。CPU/GPU 轨迹不可跨平台混用
+- Conclusion（历史诊断，已被后续 live-RGB 数据链 supersede）：当时记录的是 GPU state materialization
+  路线；它不再是当前正式 M1-W `D_core` 的生成路径。Plug 不进入本协议，4D 仅保留在独立
+  PickCube 论文参照线。
+- Result artifacts: `outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/gpu_native_input/`、`outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/`、`datasets/lerobot/maniskill/stackcube_dcore_7d/`、`scripts/experiments/maniskill/eval_stackcube_gpu.sh`
+- Modes: GPU state materialization / Offline trajectory audit / Protocol freeze
+
+- Data preparation（历史 materialized route）：专用 StackCube converter 曾完成一份 986-episode
+  LeRobot 数据集；该产物不代表当前正式 live-RGB 数据链。
+- Rollout preparation: state-bank fingerprint restore、GPU step 和原生 StackCube signals 已用 2 条/1 步本地 smoke 验收；未在本地运行 learned-policy 训练或正式批量 rollout。
+
+## 2026-08-13 — ManiSkill M1-W RGB materialization validation
+
+- Date: 2026-08-13
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: 从当前 986 条 `D_core` 选择 20 条 validation episodes；3426 observation frames/camera
+- Observation keys: direct capture 与 materialized capture 均为 `base_camera.rgb`、`hand_camera.rgb`、`agent.qpos`、`agent.qvel`；同时保留 `env_states`
+- Action space: 原生 7D `pd_ee_delta_pose`；direct capture 使用 source action replay，materialization 不执行 action
+- Action horizon: 按选中 source episode 原始长度，20 条共 3406 action steps；20 Hz；`physx_cuda`
+- Train loss: N/A；数据审计
+- Open-loop action error: N/A；本次不评估 learned policy
+- Closed-loop success rate: N/A；direct capture 的 action replay 末端成功为 1/20，这不是本次 RGB gate
+- Latency: direct RGB capture + materialization 本地小规模约 1 分钟；不外推全量 pipeline 时间
+- Failure cases: 第一次严格 bitwise RGB gate 揭示 GPU renderer 跨调用并不保证逐 bit 一致；改用明确的渲染容差后通过。20/20 start fingerprints、actions/success/env_states、qpos/qvel 精确一致；base/hand RGB 均在容差内
+- Conclusion: RGB materialization validation `gate_pass=true`，但它只是历史路线的独立审计；不作为当前
+  正式 `D_core` 的证据。当前正式数据必须来自实际 `env.step` 同步保存 RGB 的 live-RGB replay；991
+  是旧 4D 对照 replay 数，不是当前 `D_core` 数量。以后新采视觉数据必须直接保存
+  `obs_mode="rgb"` 图像与 env_state。
+- Result artifacts: `outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/rgb_materialization_validation/`、`outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/d_core/rgb_materialization_freeze.json`
+- Modes: Small validation / GPU RGB materialization / Protocol freeze attestation
+
+## 2026-08-12 — ManiSkill M1-W Plug actual-EEF retarget diagnostic
+
+- Date: 2026-08-12
+- Task suite: ManiSkill3 `PlugCharger-v1`
+- Dataset size: 官方 motion-planning `pd_joint_pos` source，1000 episodes；旧 7D official converter full replay 成功 584/1000，失败集 416 episodes
+- Observation keys: `obs_mode=none`；本探针只记录 source/target simulator state 与 TCP path，不训练 policy
+- Action space: source 8D `pd_joint_pos`；target native 7D `pd_ee_delta_pose`
+- Action horizon: source failed episodes mean 184.9 steps；target actual-EEF retarget 使用 4 个 dense reference steps/source action
+- Control frequency: 20 Hz；`physx_cpu`
+- Train loss: N/A
+- Open-loop action error: N/A；平均 TCP position tracking error 1.47 mm；416 条均无 position/rotation clipping
+- Closed-loop success rate: actual-EEF retarget 在原 416 条失败集上 21/416（5.05%）；同一 10 条 smoke 的 substeps 4 与 1 均为 3/10
+- Latency: 约 3 分 51 秒；10 个 CPU workers
+- Failure cases: 395/416 仍未完成 Plug；失败组 tracking error 仍较小，说明不是简单的 EEF follower 崩溃
+- Conclusion: Plug 不能像 StackCube 一样通过“实际 TCP 路径 + native 7D EEF”普遍恢复；因此已从 M1-W 正式数据线排除，不把该探针产物并入 D_core。
+- Result artifacts: `outputs/maniskill/m1_wam_protocol_audit/PlugCharger-v1/actual_ee_retarget_probe_pose_failed416/`、`..._failed10_s1/`
+- Modes: Diagnostic / Closed-loop CPU retarget probe
+
+## 2026-08-13 — ManiSkill M1-W failed-only EE repair 与 live RGB 数据链
+
+- Date: 2026-08-13
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: GPU-native `pd_ee_delta_pose` 7D source 1000 episodes；baseline 805 条成功、195 条失败；repair 恢复 182/195；final live-RGB formal set 987 episodes、106,528 action frames
+- Observation keys: baseline 只记录 action/success/env_states；repair 和 final 在实际 `env.step` 后同步记录 RGB、qpos/qvel、env_states、action、success
+- Action space: 原生 7D `pd_ee_delta_pose`；`physx_cuda`；20 Hz
+- Action horizon: 由 source episode action length 决定；正式协议 horizon 500
+- Train loss: N/A；本条为数据生成与 replay gate
+- Open-loop action error: N/A；repair 使用在线 TCP reference retarget，最终以 live replay success gate 为准
+- Closed-loop success rate: baseline 805/1000；repair success-once 194/195、success-at-end 182/195；最终 987/987 success-at-end
+- Latency: full pipeline measured artifacts retained in the replay manifests；不作为 policy latency benchmark
+- Failure cases: 13 repair failures excluded by the frozen manifest；final live-RGB replay has no accepted failure
+- Conclusion: 正式路线固定为 `baseline replay → failed-only EE repair → fingerprint merge → final live RGB replay`。state materialization 不再是正式路径；只有 final live RGB replay 进入 trajectory audit、D_core 和 LeRobot conversion。
+- Result artifacts: `outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/gpu_ee_replay_*`、`gpu_ee_repair_*`、`merge_data_*`、`final_live_rgb_*`
+- Modes: GPU baseline replay / failed-only EE repair / final live RGB replay
+
+## 2026-08-13 — ManiSkill M1-R Policy Decorator MS2/v2 formal runner smoke
+
+- Date: 2026-08-13
+- Task suite: Policy Decorator `PegInsertionSide-v0` reference plus repo-local `PegInsertionSide-v2`
+- Dataset size: source identity audit 986 episodes / 152,796 action frames；formal smoke 50 paired episodes
+- Observation keys: 50D state：`qpos(9)+qvel(9)+base_pose(7)+tcp_pose(7)+peg_pose(7)+peg_half_size(3)+box_hole_pose(7)+radius(1)`
+- Action space: native 7D `pd_ee_delta_pose`；EE-frame delta；arm position bound ±0.1、rotvec bound 0.1；gripper 1D
+- Action horizon: source 111–199；runtime TimeLimit 200；temporal contract `2/16/4/4`
+- Control frequency: 20 Hz；ManiSkill2 0.5.3；formal replay reward `sparse`
+- Train loss: N/A；协议 audit/replay，不训练 policy
+- Open-loop action error: N/A；initial H5 state reconstruction max absolute error 0
+- Closed-loop success rate: smoke native 50/50、strict v2 50/50；success_once 50/50；均 terminated、无 truncation
+- Latency: 50 paired replay约 96 秒；不是 learned-policy latency benchmark
+- Failure cases: smoke 无失败；full 986 replay、D_core、state banks 和 frozen protocol 尚未执行
+- Conclusion: M1-R source identity、controller/action/observation、reference-default reward、formal sparse reward 和 TimeLimit contract 的 runner smoke 通过；不能写成 full M1-R 完成结果。
+- Result artifacts: `outputs/policy_decorator_ms2/m1_r_protocol_audit/source_audit.json`、`outputs/policy_decorator_ms2/m1_r_protocol_audit/environment_contract.json`、`outputs/policy_decorator_ms2/m1_r_protocol_audit/reference_replay_smoke/`、`outputs/policy_decorator_ms2/m1_r_protocol_audit_smoke_sparse_check/`、`outputs/policy_decorator_ms2/m1_r_protocol_audit_contract_check_v2/`
+- Modes: Smoke / Offline contract audit / Closed-loop exact expert-action replay
+
+## 2026-08-13 — ManiSkill M1-W StackCube state banks 与协议冻结
+
+- Date: 2026-08-13
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: formal live-RGB `D_core` 987 episodes / 106,528 action frames；state banks train/development/test = 2,000/200/400
+- Observation keys: formal数据为两路 `128×128×3` RGB + 18D `qpos+qvel`；state banks 保存 reset 后完整 env state、observation 与 start fingerprint
+- Action space: native 7D `pd_ee_delta_pose`；`physx_cuda`；20 Hz
+- Action horizon: formal horizon 500；chunk contracts `2/16/4` 与 `2/16/8`
+- Train loss: N/A；本条为 state-bank 与 protocol-freeze audit
+- Open-loop action error: N/A；state banks 只执行 reset，不执行 policy action
+- Closed-loop success rate: N/A；正式 final live-RGB replay 已为 987/987 success-at-end
+- Latency: 未作为 policy benchmark；state-bank 生成使用 256 个并行 GPU environments
+- Failure cases: state-bank fingerprint 非空率 100%；三个 split 内均唯一，跨 split duplicate 为 0；无 gate failure
+- Conclusion: M1-W StackCube 的数据身份、live-RGB 生成、D_core、state banks、backend/controller/horizon 与 frozen protocol 全部通过；`frozen_protocol.json` 的 `validate-frozen` 通过，M1-W 关闭并解除 M2-W 的协议阻塞。
+- Result artifacts: `outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/state_banks/state_bank_manifest.json`、`outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/split_leakage_report.json`、`outputs/maniskill/m1_wam_protocol_audit/frozen_protocol.json`
+- Modes: Formal / Offline state-bank audit / Protocol freeze
+
+## 2026-08-13 — M2-W Action-only Flow implementation smoke
+
+- Date: 2026-08-13
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: M1-W `D_core` 987 episodes / 106,528 action frames；smoke 只读取 train split 的 787 episodes 统计与采样，development state bank 只取前 10 条
+- Observation keys: `observation.images.base_camera`、`observation.images.hand_camera`、`observation.state`（18D `qpos+qvel`）；无 privileged/object/goal/success 输入
+- Action space: 原生 7D `pd_ee_delta_pose`
+- Action horizon: Flow action horizon 16；smoke queue 分别为 `n_action_steps=4` 与 `8`
+- Control frequency: 20 Hz 协议；smoke 闭环每条最多 10 steps
+- Policy: M2-W Action-only Flow，随机初始化，20 optimizer steps；Euler 10-step sampler
+- Train loss: smoke 最后一步 2.097557；20-step tail mean 2.075065；不作为正式训练结果
+- Open-loop action error: 未执行，记为 N/A
+- Closed-loop success rate: Smoke `0/10`（`n_action_steps=4`）与 `0/10`（`n_action_steps=8`）；所有条目受 10-step smoke 上限截断，不作为正式能力结果
+- Latency: smoke chunk-forward p95 `78.55 ms`（n=4）/`49.48 ms`（n=8）；按 queue 摊销 p95 `19.64/6.19 ms`；不作为正式 latency benchmark
+- Failure cases: 20 条短 rollout 均以 smoke `truncated` 结束；未出现非有限 action、action clipping、exact-state reset 或 checkpoint reload 失败
+- Notes: config/data/protocol hash gate、17 个相关回归测试、20-step checkpoint save/reload、`[B,16,7]` shape、fingerprint-derived noise determinism 和 development exact-state route 均通过；`test_access_count=0`。本条是 `Smoke`，正式 50k train、development reference/candidate 评测、selection 和 freeze 尚未执行。
+- Result artifacts:
+  - `configs/experiments/maniskill/m2_w_action_only_flow.json`
+  - `outputs/maniskill/m2_task_base/StackCube-v1/smoke/run_manifest.json`
+  - `outputs/maniskill/m2_task_base/StackCube-v1/smoke/checkpoint_step_00000020.pt`
+  - `outputs/maniskill/m2_task_base/StackCube-v1/smoke/smoke_rollout_n4/metrics.json`
+  - `outputs/maniskill/m2_task_base/StackCube-v1/smoke/smoke_rollout_n8/metrics.json`
+  - `reports/guides/maniskill/04_m2_w_action_only_flow.md`
+- Modes: Smoke
+
+## 2026-08-13 — StackCube train cases Rerun visualization smoke
+
+- Date: 2026-08-13
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: frozen D_core 987 episodes / 106,528 action frames；本次从 train split 787 episodes 中无放回抽取 10 条
+- Observation keys: `observation.images.base_camera`、`observation.images.hand_camera`、`observation.state`（18D `qpos+qvel`）
+- Action space: native 7D `pd_ee_delta_pose`
+- Action horizon: 每条按 D_core 原始 episode action length；本次 95–126 actions
+- Control frequency: 20 Hz
+- Train loss: N/A；本条为离线可视化
+- Open-loop action error: N/A；未执行 policy prediction
+- Closed-loop success rate: N/A；未启动 simulator 或 replay action
+- Latency: N/A；未作为 policy benchmark
+- Failure cases: 10/10 case recording、双相机 frame 对齐、contact sheet 生成通过；场景 overlay 仅为诊断信息
+- Notes: 复用 Rerun offline viewer、PandaKinematics 和统一时间轴；选择 seed 为 20260813，case 为 `106, 201, 324, 353, 428, 434, 575, 719, 878, 949`。本条是 `Offline / Smoke`，不构成训练或闭环能力结果。
+- Result artifacts: `reports/guides/maniskill/05_stackcube_visualization.md`、`outputs/maniskill/m2_task_base/StackCube-v1/visualization_train10/visualization_manifest.json`、`outputs/maniskill/m2_task_base/StackCube-v1/visualization_train10/preview/contact_sheet.png`
+- Modes: Offline / Smoke

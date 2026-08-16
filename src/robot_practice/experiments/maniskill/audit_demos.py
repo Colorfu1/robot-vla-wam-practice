@@ -27,6 +27,7 @@ from .split import (
     load_seed_sets,
     reset_batches_for_set,
 )
+from .rollout_contract import require_rollout_backend
 
 AUDIT_SCHEMA_VERSION = 1
 PANDA_QPOS_SLICE = slice(13, 22)
@@ -657,7 +658,15 @@ def run_audit(
         return result
 
     split = load_seed_sets(split_file, task=task)
-    backend = sim_backend or str(split.get("sim_backend", DEFAULT_SIM_BACKEND))
+    provenance = split.get("data_provenance")
+    if provenance is None:
+        raise ValueError(
+            "split file must declare data_provenance for reset fingerprint audits; "
+            "official requires CPU and m1w requires GPU"
+        )
+    requested_backend = sim_backend or str(split.get("sim_backend", DEFAULT_SIM_BACKEND))
+    rollout_contract = require_rollout_backend(provenance, requested_backend)
+    backend = rollout_contract["actual_rollout_backend"]
     match_tolerance = (
         float(tolerance)
         if tolerance is not None
@@ -690,6 +699,7 @@ def run_audit(
             "training_h5": _repo_relative(source_h5),
             "split_file": _repo_relative(split_file),
             "sim_backend": backend,
+            **rollout_contract,
             "reset_control_mode": control_mode,
             "evaluation_state_sets": list(state_sets),
             "fingerprints_parquet": _repo_relative(fingerprint_path),

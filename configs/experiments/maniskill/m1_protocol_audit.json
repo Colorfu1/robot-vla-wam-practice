@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "protocol_id": "m1_three_task_protocol_audit",
+  "data_provenance": "official",
+  "archive": {
+    "repo_id": "haosulab/ManiSkill_Demonstrations",
+    "repo_type": "dataset",
+    "revision": "d674485bbffdd533914e52d272fdda34c0515608",
+    "download_dir": "datasets/raw/maniskill_demos/_archives",
+    "source_root": "datasets/raw/maniskill_demos",
+    "files": {
+      "StackCube-v1": {
+        "filename": "demos/StackCube-v1.zip",
+        "sha256": "f9b7d34b9aa418a04aa8e4322d4dea5aa27e8ae81757f60b210c1ffc54bf9c1b",
+        "archive_name": "StackCube-v1.zip"
+      },
+      "PegInsertionSide-v1": {
+        "filename": "demos/PegInsertionSide-v1.zip",
+        "sha256": "7d61e4319a0395b220574f1e26ea65bd4ad1406387fb3debfbea96a2ddbb6a9c",
+        "archive_name": "PegInsertionSide-v1.zip"
+      },
+      "PlugCharger-v1": {
+        "filename": "demos/PlugCharger-v1.zip",
+        "sha256": "a0ee94e08b1c88425af7b71eaeb1fb0e5e8c6ae0f3f14936aa53b7c6926e5403",
+        "archive_name": "PlugCharger-v1.zip"
+      }
+    }
+  },
+  "protocol": {
+    "backend": "physx_cpu",
+    "control_frequency_hz": 20,
+    "source_control_mode": "pd_joint_pos",
+    "source_obs_mode": "none",
+    "source_type": "motionplanning",
+    "replay_obs_mode": "none",
+    "replay_reward_mode": "sparse",
+    "replay_use_first_env_state": true,
+    "replay_allow_failure": true,
+    "replay_max_retry": 0,
+    "replay_record_rewards": true,
+    "replay_num_workers": 10,
+    "state_match_tolerance": 0.0001,
+    "trim_success_tail_frames": 5,
+    "required_source_episodes": 1000,
+    "replay_survival_threshold": 0.95,
+    "d_core_min_episodes": 900,
+    "formal_horizon_coverage_threshold": 0.99,
+    "action_max_abs": 1.00001,
+    "chunk_contracts": [
+      {"n_obs_steps": 2, "horizon": 16, "n_action_steps": 4},
+      {"n_obs_steps": 2, "horizon": 16, "n_action_steps": 8}
+    ]
+  },
+  "observation_schemas": {
+    "visual_student_v1": {
+      "cameras": {
+        "base_camera": {"dtype": "uint8", "shape": [128, 128, 3]},
+        "hand_camera": {"dtype": "uint8", "shape": [128, 128, 3]}
+      },
+      "state_fields": ["agent.qpos[0:9]", "agent.qvel[0:9]"],
+      "state_dim": 18,
+      "forbidden_state_fields": [
+        "object_pose",
+        "goal_pose",
+        "success",
+        "is_grasped",
+        "relative_vector"
+      ]
+    },
+    "peg_state_base_v1": {
+      "state_fields": [
+        "agent.qpos[0:9]",
+        "agent.qvel[0:9]",
+        "extra.tcp_pose[0:7]",
+        "extra.peg_pose[0:7]",
+        "extra.peg_half_size[0:3]",
+        "extra.box_hole_pose[0:7]",
+        "extra.box_hole_radius[0:1]"
+      ],
+      "state_dim": 43
+    }
+  },
+  "splits": {
+    "offline": {"test": 100, "development": 100},
+    "state_banks": {
+      "train": {"count": 2000, "seed_start": 10000},
+      "development": {"count": 200, "seed_start": 20000},
+      "test": {"count": 400, "seed_start": 30000}
+    }
+  },
+  "tasks": {
+    "StackCube-v1": {
+      "source_path": "StackCube-v1/motionplanning/trajectory.h5",
+      "target_control_mode": "pd_ee_delta_pos",
+      "action_dim": 4,
+      "native_horizon": 50,
+      "formal_horizon": 200,
+      "observation_schema": "visual_student_v1"
+    },
+    "PegInsertionSide-v1": {
+      "source_path": "PegInsertionSide-v1/motionplanning/trajectory.h5",
+      "target_control_mode": "pd_ee_delta_pose",
+      "action_dim": 7,
+      "native_horizon": 100,
+      "formal_horizon": 300,
+      "observation_schema": "peg_state_base_v1",
+      "success_predicate": "pending_native_or_strict"
+    },
+    "PlugCharger-v1": {
+      "source_path": "PlugCharger-v1/motionplanning/trajectory.h5",
+      "target_control_mode": "pd_ee_delta_pose",
+      "action_dim": 7,
+      "native_horizon": 200,
+      "formal_horizon": null,
+      "formal_horizon_rule": {
+        "mean_length_multiplier": 2,
+        "round_to": 100,
+        "minimum": 200
+      },
+      "observation_schema": "visual_student_v1"
+    }
+  }
+}

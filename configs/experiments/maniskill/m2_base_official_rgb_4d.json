@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "experiment_id": "m2_base_action_flow",
+  "task": "StackCube-v1",
+  "data_provenance": "official",
+  "inputs": {
+    "source_h5": "datasets/raw/maniskill_demos/StackCube-v1/motionplanning/trajectory.rgb.pd_ee_delta_pos.physx_cpu.h5",
+    "source_metadata": "datasets/raw/maniskill_demos/StackCube-v1/motionplanning/trajectory.rgb.pd_ee_delta_pos.physx_cpu.json",
+    "source_h5_sha256": "7f77241a26b1fd45ac076ff7801021020c6b526c31d34c2bd3b0d5f54cf6a70f",
+    "expected_episode_count": 990,
+    "split_manifest": "configs/experiments/maniskill/m2_base_official_rgb_split.json",
+    "split_manifest_sha256": "af56497b5d31d9864ae7a7bb1cd4fa32426c562ae81a5b2bf624f423e2519bd0"
+  },
+  "protocol": {
+    "backend": "physx_cpu",
+    "control_mode": "pd_ee_delta_pos",
+    "control_frequency_hz": 20,
+    "action_dim": 4,
+    "action_key": "action",
+    "state_dim": 18,
+    "state_definition": "agent.qpos(9) + agent.qvel(9)",
+    "image_shape": [128, 128, 3],
+    "n_obs_steps": 2,
+    "action_horizon": 16
+  },
+  "model": {
+    "visual_encoder": "resnet18",
+    "pretrained": false,
+    "normalization": "groupnorm",
+    "spatial_softmax_keypoints": 32,
+    "d_model": 256,
+    "layers": 6,
+    "heads": 8,
+    "mlp_ratio": 4,
+    "dropout": 0.1
+  },
+  "flow": {
+    "path": "x0_normal_to_x1_action",
+    "time_distribution": "uniform_0_1",
+    "solver": "euler",
+    "integration_steps": 10
+  },
+  "training": {
+    "seed": 1000,
+    "global_batch_size": 256,
+    "world_size": 4,
+    "per_process_batch_size": 64,
+    "optimizer": "AdamW",
+    "learning_rate": 0.0001,
+    "betas": [0.9, 0.999],
+    "weight_decay": 0.0001,
+    "gradient_clip_norm": 1.0,
+    "optimizer_steps": 50000,
+    "warmup_steps": 1000,
+    "checkpoint_every": 10000,
+    "selection_checkpoint_steps": [10000, 20000, 30000, 40000, 50000],
+    "num_workers": 4
+  },
+  "splits": {
+    "counts": {"train": 100, "development": 100, "test": 790},
+    "training_split": "train",
+    "development_split": "development",
+    "test_split": "test",
+    "test_access_allowed": false
+  }
+}

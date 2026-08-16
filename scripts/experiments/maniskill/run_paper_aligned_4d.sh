@@ -16,8 +16,10 @@ Usage:
 Options:
   --num-gpus=N          Training GPUs; default 8 (32 per GPU => global 256)
   --eval-device=DEV     Policy device during CPU-simulator eval; default cuda
-  --eval-gpu=ID         One GPU used for policy inference; default 0
-  --eval-parallelism=N  Concurrent checkpoint CPU evaluations; default 4
+  --eval-gpu=ID         One GPU used for policy inference; default 0 (legacy)
+  --eval-gpus=LIST      GPUs assigned one-per-checkpoint, e.g. 0,1,2,3
+  --eval-parallelism=N  Concurrent checkpoint evaluations; default 4
+  --holdout-parallelism=N  Concurrent fixed-seed holdout workers; default 8
   --skip-data           Do not run replay/conversion; require the 4D dataset
   --skip-train          Do not train; require both train_1000/train_100 outputs
   --skip-select         Do not run official checkpoint selection
@@ -34,7 +36,9 @@ practice_root="$(cd -- "${script_dir}/../../.." && pwd)"
 num_gpus=8
 eval_device="cuda"
 eval_gpu=0
+eval_gpus_value=""
 eval_parallelism=4
+holdout_parallelism=8
 skip_data=false
 skip_train=false
 skip_select=false
@@ -46,7 +50,9 @@ while (($# > 0)); do
     --num-gpus=*) num_gpus="${1#*=}"; shift ;;
     --eval-device=*) eval_device="${1#*=}"; shift ;;
     --eval-gpu=*) eval_gpu="${1#*=}"; shift ;;
+    --eval-gpus=*) eval_gpus_value="${1#*=}"; shift ;;
     --eval-parallelism=*) eval_parallelism="${1#*=}"; shift ;;
+    --holdout-parallelism=*) holdout_parallelism="${1#*=}"; shift ;;
     --skip-data) skip_data=true; shift ;;
     --skip-train) skip_train=true; shift ;;
     --skip-select) skip_select=true; shift ;;
@@ -61,6 +67,40 @@ done
   echo "error: --eval-parallelism must be positive" >&2
   exit 64
 }
+[[ "${holdout_parallelism}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "error: --holdout-parallelism must be positive" >&2
+  exit 64
+}
+((holdout_parallelism <= 400)) || {
+  echo "error: --holdout-parallelism must not exceed 400" >&2
+  exit 64
+}
+eval_gpus=()
+if [[ -n "${eval_gpus_value}" ]]; then
+  IFS=',' read -r -a eval_gpus <<< "${eval_gpus_value}"
+else
+  eval_gpus=("${eval_gpu}")
+fi
+declare -A seen_eval_gpus=()
+for gpu in "${eval_gpus[@]}"; do
+  [[ "${gpu}" =~ ^[0-9]+$ ]] || {
+    echo "error: --eval-gpus must be a comma-separated list of non-negative GPU IDs" >&2
+    exit 64
+  }
+  [[ -z "${seen_eval_gpus[${gpu}]+present}" ]] || {
+    echo "error: --eval-gpus contains duplicate GPU ID: ${gpu}" >&2
+    exit 64
+  }
+  seen_eval_gpus["${gpu}"]=1
+done
+if [[ "${eval_device}" == cuda* && "${eval_parallelism}" -gt "${#eval_gpus[@]}" ]]; then
+  echo "error: CUDA evaluation parallelism (${eval_parallelism}) exceeds --eval-gpus (${#eval_gpus[@]})" >&2
+  exit 64
+fi
+if [[ "${eval_device}" == cuda* && "${holdout_parallelism}" -gt "${#eval_gpus[@]}" ]]; then
+  echo "error: CUDA holdout parallelism (${holdout_parallelism}) exceeds --eval-gpus (${#eval_gpus[@]})" >&2
+  exit 64
+fi
 
 if ! conda_bin="$(command -v conda)"; then
   echo "error: conda is not available on PATH" >&2
@@ -206,7 +246,7 @@ checkpoint_steps="002500,005000,007500,010000,012500,015000,017500,020000,022500
 
 eval_prefix=()
 if [[ "${eval_device}" == cuda* ]]; then
-  eval_prefix=(env "CUDA_VISIBLE_DEVICES=${eval_gpu}")
+  eval_prefix=(env "CUDA_VISIBLE_DEVICES=${eval_gpus[0]}")
 fi
 
 select_arm() {
@@ -218,23 +258,36 @@ select_arm() {
   local -a eval_pids=()
   local -a eval_labels=()
   local -a eval_logs=()
+  local -a eval_resources=()
+  local -a available_resources=()
   local eval_failures=0
+
+  if [[ "${eval_device}" == cuda* ]]; then
+    available_resources=("${eval_gpus[@]}")
+  else
+    for ((slot = 0; slot < eval_parallelism; slot++)); do
+      available_resources+=("cpu_${slot}")
+    done
+  fi
 
   wait_one_official_eval() {
     local pid="${eval_pids[0]}"
     local label="${eval_labels[0]}"
     local log_file="${eval_logs[0]}"
+    local resource="${eval_resources[0]}"
     local status=0
     if wait "${pid}"; then
-      log "DONE ${label}"
+      log "DONE ${label}; resource=${resource}"
     else
       status=$?
-      log "FAILED ${label} status=${status}; inspect ${log_file}"
+      log "FAILED ${label} status=${status}; resource=${resource}; inspect ${log_file}"
       eval_failures=1
     fi
     eval_pids=("${eval_pids[@]:1}")
     eval_labels=("${eval_labels[@]:1}")
     eval_logs=("${eval_logs[@]:1}")
+    eval_resources=("${eval_resources[@]:1}")
+    available_resources+=("${resource}")
   }
 
   for step in "${steps[@]}"; do
@@ -245,11 +298,20 @@ select_arm() {
       log "REUSE official ${demo_count} checkpoint ${step_id}"
       continue
     fi
+    while ((${#available_resources[@]} == 0)); do
+      wait_one_official_eval
+    done
+    local resource="${available_resources[0]}"
+    available_resources=("${available_resources[@]:1}")
     local label="official ${demo_count} checkpoint ${step_id}"
     local log_file="${logs}/20_official_${demo_count}_${step_id}.log"
-    log "START ${label}; log=${log_file}; progress=official ${output_dir}"
+    local -a child_prefix=()
+    if [[ "${eval_device}" == cuda* ]]; then
+      child_prefix=(env "CUDA_VISIBLE_DEVICES=${resource}")
+    fi
+    log "START ${label}; log=${log_file}; resource=${resource}; progress=official ${output_dir}"
     (
-      "${eval_prefix[@]}" bash scripts/experiments/maniskill/eval_official_protocol.sh \
+      "${child_prefix[@]}" bash scripts/experiments/maniskill/eval_official_protocol.sh \
         --policy-path="${train_dir}/checkpoints/${step_id}/pretrained_model" \
         --dataset-repo-id="${dataset_repo_id}" \
         --dataset-root="${dataset_root}" \
@@ -260,6 +322,7 @@ select_arm() {
     eval_pids+=("$!")
     eval_labels+=("${label}")
     eval_logs+=("${log_file}")
+    eval_resources+=("${resource}")
     while ((${#eval_pids[@]} >= eval_parallelism)); do
       wait_one_official_eval
     done
@@ -328,12 +391,93 @@ if [[ "${skip_test}" == false ]]; then
       log "REUSE holdout ${label}"
       return 0
     fi
-    run_logged "holdout ${label}" "${logs}/31_holdout_${label}.log" \
-      "${eval_prefix[@]}" bash scripts/experiments/maniskill/eval_cpu_holdout.sh \
-      --system="${system}" \
+    local shard_root="${output_dir}/shards/parallel_${holdout_parallelism}"
+    mkdir -p "${shard_root}"
+    local -a holdout_pids=()
+    local -a holdout_labels=()
+    local -a holdout_logs=()
+    local -a holdout_resources=()
+    local -a available_resources=()
+    local holdout_failures=0
+
+    if [[ "${eval_device}" == cuda* ]]; then
+      available_resources=("${eval_gpus[@]:0:${holdout_parallelism}}")
+    else
+      for ((slot = 0; slot < holdout_parallelism; slot++)); do
+        available_resources+=("cpu_${slot}")
+      done
+    fi
+
+    wait_one_holdout() {
+      local pid="${holdout_pids[0]}"
+      local shard_label="${holdout_labels[0]}"
+      local log_file="${holdout_logs[0]}"
+      local resource="${holdout_resources[0]}"
+      local status=0
+      if wait "${pid}"; then
+        log "DONE ${shard_label}; resource=${resource}"
+      else
+        status=$?
+        log "FAILED ${shard_label} status=${status}; resource=${resource}; inspect ${log_file}"
+        holdout_failures=1
+      fi
+      holdout_pids=("${holdout_pids[@]:1}")
+      holdout_labels=("${holdout_labels[@]:1}")
+      holdout_logs=("${holdout_logs[@]:1}")
+      holdout_resources=("${holdout_resources[@]:1}")
+      available_resources+=("${resource}")
+    }
+
+    for ((worker = 0; worker < holdout_parallelism; worker++)); do
+      printf -v worker_id '%02d' "${worker}"
+      local shard_dir="${shard_root}/worker_${worker_id}"
+      if evaluation_complete "${shard_dir}"; then
+        log "REUSE holdout ${label} shard ${worker_id}"
+        continue
+      fi
+      while ((${#available_resources[@]} == 0)); do
+        wait_one_holdout
+      done
+      local resource="${available_resources[0]}"
+      available_resources=("${available_resources[@]:1}")
+      local shard_label="holdout ${label} shard ${worker_id}"
+      local log_file="${logs}/31_holdout_${label}_worker_${worker_id}.log"
+      local -a child_prefix=()
+      if [[ "${eval_device}" == cuda* ]]; then
+        child_prefix=(env "CUDA_VISIBLE_DEVICES=${resource}")
+      else
+        child_prefix=(env "CUDA_VISIBLE_DEVICES=")
+      fi
+      log "START ${shard_label}; log=${log_file}; resource=${resource}; progress=${shard_dir}"
+      (
+        "${child_prefix[@]}" bash scripts/experiments/maniskill/eval_cpu_holdout.sh \
+          --system="${system}" \
+          --split-file=configs/experiments/maniskill/split_cpu.json \
+          --output-dir="${shard_dir}" \
+          --device="${eval_device}" \
+          --shard-index="${worker}" \
+          --shard-count="${holdout_parallelism}" "$@"
+      ) >"${log_file}" 2>&1 &
+      holdout_pids+=("$!")
+      holdout_labels+=("${shard_label}")
+      holdout_logs+=("${log_file}")
+      holdout_resources+=("${resource}")
+      while ((${#holdout_pids[@]} >= holdout_parallelism)); do
+        wait_one_holdout
+      done
+    done
+    while ((${#holdout_pids[@]} > 0)); do
+      wait_one_holdout
+    done
+    if ((holdout_failures != 0)); then
+      return 1
+    fi
+    run_logged "merge holdout ${label}" "${logs}/31_merge_holdout_${label}.log" \
+      bash scripts/experiments/maniskill/eval_cpu_holdout.sh \
+      --merge-shards \
+      --shards-root="${shard_root}" \
       --split-file=configs/experiments/maniskill/split_cpu.json \
-      --output-dir="${output_dir}" \
-      --device="${eval_device}" "$@"
+      --output-dir="${output_dir}"
   }
 
   run_holdout "diffusion_1000" visual "${root}/holdout/diffusion_1000" \

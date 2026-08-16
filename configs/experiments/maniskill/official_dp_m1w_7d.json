@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "experiment_id": "official_dp_stackcube_m1w_7d",
+  "task": "StackCube-v1",
+  "data_provenance": "m1w",
+  "dataset_format": "m1w_live_rgb",
+  "inputs": {
+    "d_core_h5": "outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/d_core/trajectory.h5",
+    "split_manifest": "outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/d_core/split_manifest.json",
+    "training_split": "train",
+    "training_episode_count": 787
+  },
+  "protocol": {
+    "obs_mode": "rgb",
+    "rgb_cameras": ["base_camera", "hand_camera"],
+    "rgb_shape": [128, 128, 3],
+    "state_dim": 18,
+    "state_definition": "agent.qpos(9) + agent.qvel(9)",
+    "action_dim": 7,
+    "control_mode": "pd_ee_delta_pose",
+    "sim_backend": "physx_cuda",
+    "max_episode_steps": 500,
+    "obs_horizon": 2,
+    "act_horizon": 8,
+    "pred_horizon": 16
+  },
+  "training": {
+    "global_batch_size": 256,
+    "total_iters": 50000,
+    "eval_freq": 10000,
+    "save_freq": 10000,
+    "num_dataload_workers": 0,
+    "default_gpus": "0,1,2,3"
+  },
+  "evaluation": {
+    "training_internal": {
+      "num_eval_episodes": 100,
+      "num_eval_envs": 64,
+      "backend": "gpu",
+      "rank0_only": true,
+      "purpose": "training monitor only"
+    },
+    "external_exact_state": {
+      "development_episodes": 200,
+      "test_episodes": 400,
+      "num_envs_per_gpu": 64,
+      "backend": "gpu",
+      "same_gpu_list_as_training": true,
+      "identity": "start_state_fingerprint",
+      "primary_metric": "success_once"
+    }
+  }
+}

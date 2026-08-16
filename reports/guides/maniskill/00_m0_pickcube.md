@@ -2,19 +2,89 @@
 
 ## 重要进展
 
-- 主线冻结为 RL 生成的 `pd_ee_delta_pose` 原生 7D 演示，不再用 motionplanning 训练主线。
-- 状态隔离改用实际初始状态指纹，不用 episode seed 整数推断。
-- 状态划分冻结为 `train=2000`、`development=200`、`test=400`，按“批首 seed + 一次 reset 条数”解释。
-- 原始数据先做成功尾帧审计，再生成 Full 和首次成功后保留 5 帧的 Trim 两份数据。
-- 闭环拆成 random、privileged PPO、visual diffusion 三个独立 system，分别记录 `success_once` 和 `success_at_end`。
+- M0 已完成：RL 原生 7D/GPU 管路和 motionplanning 4D/CPU 论文参照管路均从演示走到了正式闭环结果。
+- RL 7D 演示可完整 replay，评测状态与训练状态在 `1e-4` 容差下无 exact duplicate；其问题是数据结构与动作契约，不是 replay 管路损坏。
+- 原始 RL 数据 73.0% 帧处于首次成功之后，且 gripper 与 `translation_z` 存在超出 `[-1, 1]` 的动作值；它不再作为后续 ManiSkill 项目的唯一主线。
+- 4D motionplanning 参照在 CPU、horizon 100、1000 demonstrations 下达到固定 holdout `397/400`（99.25%），说明 LeRobot diffusion 管路已达到论文量级。
+- PickCube 因 4D 基座已超过 95% 停止阈值，只保留作回归与论文参照；后续 WAM/RL 不应直接在它上面立项。
 
 ## 当前状态
 
-- 状态：20k 基线训练、development 选模与 test 400 已完成（visual 为 58.5%）；现启动独立的 50k 训练，
-  每 5k 保存一个 checkpoint，50k 的选模与 test 尚未执行。
+- 状态：`done`。M0 的目标“确认 ManiSkill 官方演示 → RGB replay → LeRobot Dataset → diffusion → 原生闭环评测
+  能稳定走通”已完成。
+- 原始 7D RL/GPU 线的正式冻结结果是 20k checkpoint `020000`：development `120/200`（60.0%），
+  test `234/400`（58.5%）。50k 的十个 checkpoint 随后都在同一 test block 上做了诊断 sweep，最高为
+  `045000` 的 `340/400`（85.0%）；因此这块 test 已不再是未触碰的正式 holdout，不能用来再选 winner。
+- 后续的独立论文参照线已完成：motionplanning → 4D `pd_ee_delta_pos` → CPU → horizon 100。其固定 CPU
+  holdout 为 `397/400`（99.25%），与论文 Table III 的 1000-demo DP RGB PickCube 数量级一致。
 - 所属路线：阶段零第一项 M0，来自[Mini-WAM 与残差 RL 三阶段实验计划](../../../plans/2026-08-06-Mini-WAM与残差RL三阶段实验计划.md)。
 - 对应子计划：[2026-08-06 M0 接通 ManiSkill 端到端探针](../../../plans/2026-08-06-M0接通ManiSkill端到端探针.md)。
+- 收尾结论见[2026-08-10 ManiSkill M0 收尾与 PickCube 论文参照](../../daily/2026-08-10-ManiSkill-M0收尾与PickCube论文参照.md)。
 - 所有 replay、reset-only 指纹采集、训练和闭环命令都在远端执行；本地只做静态测试和离线 HDF5 审计。
+
+## 已完成过程、结果与结论
+
+### RL 原生 7D 线（Offline / Smoke / Formal）
+
+这条线的目的已经完成：验证原生 7D `pd_ee_delta_pose`、GPU replay、21D student state、LeRobot
+diffusion 和自写 ManiSkill 闭环 evaluator 的兼容性。它是有效的诊断基线，但不再被解释为后续 WAM/RL
+唯一应继承的数据方案。
+
+| 阶段 | 已验证结果 | 结论 |
+| --- | --- | --- |
+| Offline 原始审计 | 1013 条、50,360 帧；首次成功 median 14 steps；成功后尾帧 36,772 条，占 73.0% | 大部分训练帧是完成任务后的保持动作，不是到达目标的控制段。 |
+| Reset-only 隔离审计 | 600 个 development/test 状态与 1013 个训练首帧在 `1e-4` 下 0 条 exact duplicate | RL 的 `episode_seed` 不能单独复原状态；以实际首帧指纹做隔离是正确口径。 |
+| Replay | 1013/1013 写入 replay，1008/1008 原生成功 episode 写入训练集 | GPU 原生 replay 管路通过。 |
+| Smoke | Full 为 0/50，Trim 为 1/50；均为 2k-step 欠训 smoke | 两者只差 2 个百分点，按预注册规则正式数据采用 Full；此 smoke 不作性能结论。 |
+| Formal 20k | development 选中 `020000` 为 120/200（60.0%）；独立 test 为 visual 234/400（58.5%）、random 0/400、privileged PPO 396/400（99.0%） | 视觉学生显著高于随机，M0 的最小闭环基线门槛通过。 |
+
+50k 训练的 test sweep 是额外诊断，不是一次新的正式选模。十个 checkpoint 在同一 400 条状态上的
+`success_once` 为 `0.5%、2.5%、14.0%、43.0%、35.8%、62.5%、71.0%、75.0%、85.0%、84.8%`
+（step `5k` 至 `50k`），峰值为 `045000` 的 85.0%。它说明 7D 线并非学不会，但因为 test 被反复查看，
+该 block 从此只能叫“诊断曲线”；任何需要报告的 7D 最终数字必须使用新的、未接触状态块。
+
+#### RL 数据的限制，而非“数据无效”
+
+| 现象 | 已测证据 | 后续含义 |
+| --- | --- | --- |
+| 成功后尾帧占比高 | 73.0%（36,772/50,360）；真正首次成功前只有 13,588 帧 | Full 数据将大量权重给“已经完成后静止/保持”的动作；之后若复用此类数据，必须重新审计 tail 处理。 |
+| 动作契约不干净 | 相对目标控制的 `[-1,1]` 范围，gripper 有 98.8%、`translation_z` 有 11.07% 的动作超界 | 不把它当作 simulator bug；但任何后续 7D 基座都必须明确动作单位、归一化和限幅，不能默认与 4D 数据可比。 |
+| 教师与学生信息不同 | PPO actor 使用 42D state；学生仅用 RGB + 21D `qpos+qvel+goal_pos`，不含物体位姿/相对向量 | PPO 仅是特权参照，不能把与视觉策略的差值直接叫作“纯感知代价”。 |
+| seed 不是 episode 状态 ID | PPO 采样中存在部分重置；RL `episode_seed` 对批内非首环境未必参与过实际 reset | 训练/评测隔离继续使用状态指纹或明确的 CPU 单环境 seed 协议，不能只检查 seed 整数是否不重叠。 |
+| 旋转并未失活 | replay action 的旋转/平移绝对值中位数比为 7.73，超过 10% 门槛 | 7D 本身仍可用于需要朝向的任务；PickCube 不是证明 7D 无意义的证据。 |
+
+### motionplanning 4D 论文参照（Formal）
+
+这条是 M0 完成后专门做的归因复现，不与上面的 GPU/7D/50-step 数字直接相减。固定口径是
+motionplanning 演示、4D `pd_ee_delta_pos`、`physx_cpu`、horizon 100、1000 demonstrations 和
+官方 `success_once` 语义；完整命令与协议见[4D 论文参照指南](01_paper_aligned_pickcube_4d.md)。
+
+| 项目 | 实测结果 |
+| --- | --- |
+| Replay 与数据闸门 | 1000/1000 replay 成功；4D 动作越界 0%；成功前帧占比 93.14%；首次成功 p90 为 85 steps；全部闸门通过。 |
+| 1000-demo 官方协议 | 选中 `022500`，`official_best=100/100`；五次重复均值 99.8%，范围 99.0%–100%。 |
+| 1000-demo 固定 CPU holdout | `success_once=397/400`（99.25%），`success_at_end=313/400`（78.25%）。 |
+| 100-demo 官方协议 / holdout | `official_best=73/100`；五次重复均值 57.8%（48%–67%）；固定 holdout `206/400`（51.5%）。 |
+| 同一固定 holdout 参照 | random `0/400`；privileged PPO `300/400`（75.0%）。 |
+
+`official_best` 与论文都是“无固定 reset seed、多个 checkpoint 取最高”的比较口径；固定 CPU holdout 才是
+仓库内部的隔离评测。该协议成功后继续跑满 100 steps，所以 `success_at_end` 较低，不能与 7D 线的成功即停
+指标直接比较。
+
+### M0 最终结论与后续边界
+
+1. **M0 完成且通过。** 两条独立数据/后端协议都验证了本仓库的 ManiSkill 数据、训练、选模、评测与可视化
+   管路；4D 复现还排除了“LeRobot diffusion 实现根本错误”的解释。
+2. **不能把 99.25% 对 85.0% 解读为 4D 胜过 7D。** 同时改变了专家来源、有效帧比例、控制模式、horizon、
+   后端和评测终止语义；该对比只能说明数据与协议会主导 PickCube 结果。
+3. **PickCube 不进入 WAM 的 M1 主实验。** 4D 基座已超过原计划的 95% 停止阈值，Oracle reranking 的理论
+   上限太小。7D 85% 线可以作为 M1 harness smoke，但不能作为任务选型结论。
+4. **后续 ManiSkill 工作应为每个候选任务建立独立协议。** 至少分开记录演示来源、action、backend、horizon、
+   student observation、动作契约和 development/test 状态生成方式；StackCube 与 PegInsertionSide 的基座不能
+   直接借用 PickCube checkpoint。
+
+M0 到此不再追加 PickCube 训练或在既有 test 上调参。下一步是重定标后的任务预检、任务专属基座和候选空间
+审计，而不是直接开始 WAM 或 Residual RL。
 
 ## 实验目标与固定口径
 
@@ -46,10 +116,12 @@ M0 只验证 `PickCube-v1`，不做 WAM、Residual RL、多任务选型或 M1 �
 | --- | ---: | ---: | --- |
 | `train` | 0 | 2000 | M1 分支采样和在线 RL |
 | `development` | 2000 | 200 | 选模、Full/Trim 对照、Smoke |
-| `test` | 3000 | 400 | 冻结策略后的唯一正式评测 |
+| `test` | 3000 | 400 | 7D 20k 的正式评测；50k checkpoint sweep 后降级为诊断 block |
 
 一次 reset 传入一个 seed 列表；首元素是批首 seed，后面的数只是行标签。状态由批首 seed 和行号决定，
 所以不能把 200/400 拆成更小 batch；显存不够时新增批首 seed 并记录成新的 block。状态重复判断容差固定为 `1e-4`。
+其中 7D 的 `test` block 已在 50k checkpoint sweep 中被反复查看，后续若再做 7D 正式结论必须新建 block，
+不能复用这一组状态。
 
 ## 远端前置检查
 
@@ -408,6 +480,10 @@ conda run --no-capture-output -n robot-practice \
 
 ### 9. 8 卡 50k 正式训练
 
+> **归档说明。** 本节至第 11 节保留的是当时为 7D 线准备的可复现命令，不是 M0 的下一步命令。
+> 实际运行中，50k 的十个 checkpoint 都在同一 `test` block 上做了诊断 sweep；因此不得再按这些命令
+> 在该 block 上选模、重跑或宣称独立泛化。M0 已完成，后续任务需要新建独立状态块与任务协议。
+
 Full/Trim smoke 的 development 闭环差异为 2 个百分点（小于预注册的 5pp），所以正式数据固定为
 Full。20k 版本已经完成并得到 test=58.5%；为了判断是否只是训练不足，重新启动一个独立的 50k run。
 使用仓库 launcher；它把 `--num-gpus=8` 转成 Accelerate 的 8 进程启动参数，不会把未知的
@@ -435,7 +511,7 @@ bash scripts/experiments/maniskill/train_formal.sh \
 bash scripts/experiments/maniskill/train_formal.sh --num-gpus=8 --print-command
 ```
 
-### 10. Development 评测：先选 checkpoint，再跑参照
+### 10. 原定的 development 选模流程（归档）
 
 这一节有两个目的，不能混成一个“看 loss 选模型”的步骤：
 
@@ -587,12 +663,12 @@ conda run --no-capture-output -n robot-practice \
 
 PPO 是 privileged teacher reference，不是上限；差值只作描述，不做纯感知因果归因。
 
-### 11. 50k selected checkpoint 的 test 400 条正式评测（只跑一次）
+### 11. 原定的 50k selected checkpoint test 400 条评测（归档，不再执行）
 
-冻结 Full/Trim 和 checkpoint 后，必须重新执行下面三条完整命令：使用 `--seed-set=test`、
+原设计要求冻结 Full/Trim 和 checkpoint 后只执行一次下面三条命令：使用 `--seed-set=test`、
 `--num-envs=400`、`--max-episodes=400`，并把输出目录写到各自的 `test`；development
-结果不能改名充当 test 结果。
-不得看 test 结果后重新选模：
+结果不能改名充当 test 结果。实际 50k 工作改为在这组状态上查看全部 checkpoint，故这套命令现在仅用于
+记录原定协议，**不能在既有 `split.json` 的 `test` block 上继续执行**：
 
 ```bash
 bash scripts/experiments/maniskill/eval_closed_loop.sh --system=random \
@@ -642,28 +718,21 @@ conda run --no-capture-output -n robot-practice \
 | Full/Trim | 差异 <5pp 用 Full；Trim 明显更好用 Trim |
 | visual development | 预注册成功口径达到 ≥50%；同时报告 `success_once` 和 `success_at_end` |
 | visual ≥95% | 管路通但 PickCube 可能太简单，M1 前改 StackCube |
-| test | 只在 development 选模后对 400 条运行一次 |
+| test | 20k checkpoint 的一次 400 条结果有效；50k 诊断 sweep 后，同一 block 不再是未触碰 test |
 
 管路失败与学不会分开：replay 不存活是管路问题；replay 正常但 visual 低于 50% 且 PPO 明显更高，是视觉
 BC 基线问题，应检查 Full/Trim、归一化、图像预处理、时序、chunk 和 checkpoint。成功只认原生
 `info["success"]`，不写自定义谓词，也不使用 LeRobot 自动 reset wrapper。
 
-## motionplanning 辅助用途
+## motionplanning 4D 参照的定位
 
-motionplanning 不进主线训练，可用于控制模式转换诊断、RL replay 不兼容时的退路、以及指纹实现交叉验证：
+motionplanning 不再只是“RL replay 坏掉时的退路”：其独立的 4D/CPU/horizon-100 论文参照已完整执行，
+并给出了 1000-demo 固定 holdout `397/400`（99.25%）。这证明 motionplanning 是可用的数据来源，也证明
+旧 7D 分数不能被归因为整个实现错误。
 
-如果目标是逐项对齐 ManiSkill3 Table III 的 PickCube RGB 论文口径，不要把下面的辅助命令结果混进 M0；
-请使用独立的[PickCube 4D 论文参照基线指南](01_paper_aligned_pickcube_4d.md)。
-
-```bash
-conda run --no-capture-output -n robot-practice \
-  python -m mani_skill.trajectory.replay_trajectory \
-  --traj-path datasets/raw/maniskill_demos/PickCube-v1/motionplanning/trajectory.h5 \
-  --use-first-env-state -c pd_ee_delta_pose -o rgb -b physx_cpu \
-  --save-traj --record-rewards --allow-failure --max-retry 3 --num-envs 1 --count 20
-```
-
-若切到 motionplanning，horizon 放宽到 100；该结果必须单独记录，不能和 RL 的 PickCube-50 主线混写。
+但它仍不是与 7D/GPU/50-step 可直接相减的替代实验：控制模式、专家、后端、horizon、成功终止语义和数据
+时间结构都不同。需要复现实验或查看完整协议时，使用独立的
+[PickCube 4D 论文参照基线指南](01_paper_aligned_pickcube_4d.md)，不要把其结果混进 7D test 表。
 
 ## 产物路径与本地回归
 

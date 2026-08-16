@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "task": "StackCube-v1",
+  "source": "datasets/raw/maniskill_demos/StackCube-v1/motionplanning/trajectory.rgb.pd_ee_delta_pos.physx_cpu.h5",
+  "source_episode_count": 990,
+  "split_rule": "contiguous episode ids; train/development/test are disjoint",
+  "splits": {
+    "train": {"start": 0, "stop": 100, "count": 100},
+    "development": {"start": 100, "stop": 200, "count": 100},
+    "test": {"start": 200, "stop": 990, "count": 790}
+  }
+}

@@ -77,8 +77,9 @@ bash scripts/experiments/act/eval_offline.sh --policy-path=outputs/act/a0_single
 当前 A-Sanity 已经证明 ACT 能在五条轨迹上学习这个任务。本实验不再验证“能不能训练”，而是
 用 20 条轨迹比较单步预测和 action chunking。
 
-> 当前状态：实验启动脚本、step-0 initializer、`proprio_gaussian` 扰动、结果记录和测试均已
-> 实现，可以按第 5～7 节直接执行。
+> 实施状态：A0/A1 启动脚本、step-0 initializer、`proprio_gaussian` 扰动、结果记录和测试均已
+> 实现；20-demo A0/A1 正式结果已在第 9 节登记。当前实际保留的训练产物只有 020000 checkpoint，
+> 没有保留这两次训练的 000000 checkpoint 和完整 loss 曲线。
 
 ## 2. 固定数据和配置
 
@@ -530,8 +531,9 @@ conda run --no-capture-output -n robot-practice \
 
 | 配置 | Clean SR | Noisy SR | First MAE | Action TV | Action Jerk | Gripper toggles | p95 latency |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| A0 | | | | | | | |
-| A1 | | | | | | | |
+| A0 (`n_action_steps=1`) | 9/20（45%） | 未运行 | 0.03096 | 0.01495 | 0.01786 | 3.45 | 10.38 ms |
+| A1 matched replan (`n_action_steps=1`) | 4/20（20%） | 未运行 | 0.02564 | 0.01879 | 0.02264 | 1.80 | 9.24 ms |
+| A1 default (`n_action_steps=5`) | 3/20（15%） | 未运行 | 0.02564 | 0.02615 | 0.03017 | 14.80 | 20.53 ms |
 
 支持 Action Chunking 假设的 development 门槛：
 
@@ -541,6 +543,35 @@ conda run --no-capture-output -n robot-practice \
 
 `action_jerk` 是执行动作前六维的平均绝对二阶差分，只是固定 10 Hz 下的抖动代理，不是带
 物理单位的真实 jerk。
+
+## 9. 已完成结果（2026-07-24—25）
+
+A0 和 A1 都完成了 20,000 updates、20 条 demonstration 的 Offline 和 Formal Clean
+Closed-loop 评测。两次训练使用相同的 task、20 条训练 episode、batch size 8、seed 1000、
+optimizer、视觉骨干和主要网络配置；策略差异为 A0 `chunk_size=1`、A1 `chunk_size=20`。
+由于 `chunk_size` 会改变 ACT query embedding 数量，两个配置不是逐张量相同的模型。
+
+Offline 结果：A0 的 first-action MAE 为 0.03096，teacher-forced Action Jerk 为 0.01661；
+A1 分别为 0.02564（下降 17.2%）和 0.01349（下降 18.8%）。这说明 A1 在 demonstration
+上的动作拟合更好，但不代表闭环成功。
+
+正式闭环的关键对照是 A0 与 A1 都使用 `n_action_steps=1` 的每步重规划：A0 成功 9/20，
+A1 成功 4/20；A1 的执行 Action Jerk 为 0.02264，相比 A0 的 0.01786 上升 26.7%。
+A1 使用 checkpoint 默认的 `n_action_steps=5` 时成功 3/20、Action Jerk 0.03017，这是
+额外的默认执行结果，不能与 A0 的单步配置直接混为同一个因果对照。
+
+因此，本实验的当前结论是：在这个 task、seed 和训练预算下，action chunking 提高了
+teacher-forced offline 拟合，但没有保持闭环成功率，也没有改善闭环平滑性；不能支持原先
+“A1 在不降低成功率的同时更连续”的预设假设。证据仍限于单任务、单 seed，且没有 noisy
+closed-loop 结果。
+
+结果落点：
+
+- `outputs/act/a0_single_step/offline_20/metrics.json`
+- `outputs/act/a0_single_step/closed_clean/metrics.json`
+- `outputs/act/a1_chunking/offline_20/metrics.json`
+- `outputs/act/a1_chunking/closed_clean/metrics.json`（A1 matched replan）
+- `outputs/act/a1_chunking/closed_clean_n5/metrics.json`（A1 default execution）
 
 最后将 task、数据量、observation、action、horizon、frequency、train loss、offline error、
 closed-loop success、latency 和 failure cases 写入 `reports/experiment_log.md`。

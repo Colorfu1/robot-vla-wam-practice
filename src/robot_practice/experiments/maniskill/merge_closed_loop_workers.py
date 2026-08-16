@@ -116,11 +116,27 @@ def merge_workers(
         seen_worker_indices.add(index)
         if metrics.get("num_episodes") != metrics.get("evaluation", {}).get("num_episodes"):
             raise ValueError(f"Episode count mismatch in {metrics_path}")
-        for key in ("system", "task", "control_mode", "seed_set", "reset_batches"):
+        for key in (
+            "system",
+            "task",
+            "control_mode",
+            "seed_set",
+            "reset_batches",
+            "data_provenance",
+            "required_rollout_backend",
+            "actual_rollout_backend",
+        ):
             if payloads and metrics.get(key) != payloads[0].get(key):
                 raise ValueError(f"Worker metrics disagree on {key}: {metrics_path}")
-        if manifests and manifest.get("policy_path") != manifests[0].get("policy_path"):
-            raise ValueError(f"Worker manifests disagree on policy_path: {manifest_path}")
+        if manifests:
+            for key in (
+                "policy_path",
+                "data_provenance",
+                "required_rollout_backend",
+                "actual_rollout_backend",
+            ):
+                if manifest.get(key) != manifests[0].get(key):
+                    raise ValueError(f"Worker manifests disagree on {key}: {manifest_path}")
         import pyarrow.parquet as pq
 
         worker_rows = pq.read_table(episodes_path).to_pylist()

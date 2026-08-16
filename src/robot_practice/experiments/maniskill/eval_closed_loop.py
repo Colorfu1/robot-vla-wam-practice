@@ -18,7 +18,7 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -27,6 +27,7 @@ import numpy as np
 from robot_practice.evaluation.common import iso_timestamp, practice_root, write_json_atomic
 
 from .split import TASK_ID, load_seed_sets, reset_batches_for_set
+from .rollout_contract import require_rollout_backend
 
 IMAGE_KEY = "observation.images.base_camera"
 STATE_KEY = "observation.state"
@@ -295,7 +296,14 @@ def _seed_policy(seed: int) -> None:
 class DiffusionPolicyDriver:
     """Use LeRobot's action queue while keeping ManiSkill outside LeRobot envs."""
 
-    def __init__(self, loaded: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        loaded: Mapping[str, Any],
+        *,
+        observation_builder: Callable[[Mapping[str, Any]], Mapping[str, Any]] = build_policy_observation,
+        state_dim: int = 21,
+        observation_description: str = "RGB + 21D non-privileged state",
+    ) -> None:
         from lerobot.policies.utils import populate_queues
         from lerobot.utils.constants import ACTION, OBS_IMAGES
 
@@ -307,6 +315,9 @@ class DiffusionPolicyDriver:
         self._action_key = ACTION
         self._images_key = OBS_IMAGES
         self._image_features = tuple(getattr(self.config, "image_features", ()) or ())
+        self._observation_builder = observation_builder
+        self._state_dim = int(state_dim)
+        self.observation_description = observation_description
         self.latencies_ms: list[float] = []
         self.batch_size: int | None = None
         self.policy.reset()
@@ -317,7 +328,7 @@ class DiffusionPolicyDriver:
         self.batch_size = None
 
     def prepare_observation(self, observation: Mapping[str, Any]) -> Mapping[str, Any]:
-        return self.preprocessor(build_policy_observation(observation))
+        return self.preprocessor(self._observation_builder(observation))
 
     def select_action(self, processed_observation: Mapping[str, Any]) -> np.ndarray:
         import torch
@@ -340,7 +351,7 @@ class DiffusionPolicyDriver:
         state_array = _to_numpy(state)
         if state_array.ndim != 2:
             raise ValueError(
-                f"Processed policy state must be batched [B,21], got {state_array.shape}"
+                f"Processed policy state must be batched [B,{self._state_dim}], got {state_array.shape}"
             )
         batch_size = int(state_array.shape[0])
         if self.batch_size is None:
@@ -856,6 +867,7 @@ def evaluate_closed_loop(
     policy_seed: int = DEFAULT_POLICY_SEED,
     n_action_steps: int = DEFAULT_N_ACTION_STEPS,
     sim_backend: str | None = None,
+    data_provenance: str | None = None,
     dataset_repo_id: str | None = None,
     dataset_root: Path | None = None,
     leakage_report: Path | None = None,
@@ -886,7 +898,15 @@ def evaluate_closed_loop(
         raise FileExistsError(f"Refusing to overwrite existing evaluation output: {output_dir}")
 
     split = load_seed_sets(split_file, task=task)
-    backend = sim_backend or str(split["sim_backend"])
+    provenance = data_provenance or split.get("data_provenance")
+    if provenance is None:
+        raise ValueError(
+            "rollout data provenance is required: add data_provenance to the split file "
+            "or pass --data-provenance=official|m1w"
+        )
+    requested_backend = sim_backend or str(split["sim_backend"])
+    rollout_contract = require_rollout_backend(provenance, requested_backend)
+    backend = rollout_contract["actual_rollout_backend"]
     reset_batches = reset_batches_for_set(split, seed_set, limit=max_episodes)
     if not reset_batches:
         raise ValueError(f"No reset batches selected for {seed_set}")
@@ -995,6 +1015,7 @@ def evaluate_closed_loop(
         "system": system,
         "task": task,
         "control_mode": control_mode,
+        **rollout_contract,
         "seed_set": seed_set,
         "reset_batches": [list(batch) for batch in reset_batches],
         "num_episodes": len(rows),
@@ -1047,6 +1068,7 @@ def evaluate_closed_loop(
         "system": system,
         "task": task,
         "control_mode": control_mode,
+        **rollout_contract,
         "policy_path": None if policy_path is None else _portable(policy_path),
         "ppo_checkpoint": None if ppo_checkpoint is None else _portable(ppo_checkpoint),
         "dataset": (
@@ -1194,6 +1216,8 @@ def _multi_gpu_worker_argv(
         command.append(f"--max-episodes={arguments.max_episodes}")
     if arguments.sim_backend is not None:
         command.append(f"--sim-backend={arguments.sim_backend}")
+    if arguments.data_provenance is not None:
+        command.append(f"--data-provenance={arguments.data_provenance}")
     if arguments.dataset_repo_id is not None:
         command.append(f"--dataset-repo-id={arguments.dataset_repo_id}")
     if arguments.dataset_root is not None:
@@ -1228,6 +1252,7 @@ def evaluate_closed_loop_multi_gpu(arguments: argparse.Namespace) -> dict[str, A
             "max_episodes": arguments.max_episodes,
             "max_steps": arguments.max_steps,
             "seed_set": arguments.seed_set,
+            "data_provenance": arguments.data_provenance,
         },
     )
 
@@ -1331,6 +1356,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy-seed", type=int, default=DEFAULT_POLICY_SEED)
     parser.add_argument("--n-action-steps", type=int, default=DEFAULT_N_ACTION_STEPS)
     parser.add_argument("--sim-backend", default=None)
+    parser.add_argument(
+        "--data-provenance",
+        default=None,
+        help="Dataset provenance contract: official requires CPU; m1w requires GPU.",
+    )
     parser.add_argument("--dataset-repo-id", default=None)
     parser.add_argument("--dataset-root", type=Path, default=None)
     parser.add_argument("--leakage-report", type=Path, default=None)
@@ -1383,6 +1413,7 @@ def main(argv: list[str] | None = None) -> int:
                 policy_seed=arguments.policy_seed,
                 n_action_steps=arguments.n_action_steps,
                 sim_backend=arguments.sim_backend,
+                data_provenance=arguments.data_provenance,
                 dataset_repo_id=arguments.dataset_repo_id,
                 dataset_root=arguments.dataset_root,
                 leakage_report=arguments.leakage_report,

@@ -212,6 +212,7 @@ def load_seed_sets(path: str | Path, *, task: str = TASK_ID) -> dict[str, Any]:
         "sets": sets,
         "batches": batches,
         "sim_backend": sim_backend,
+        "data_provenance": payload.get("data_provenance"),
         "state_match_tolerance": tolerance,
         "payload": payload,
     }

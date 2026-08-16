@@ -273,8 +273,26 @@ C3 的 selected checkpoint 是 `015000`。它与 `025000` 在 validation 主指�
 88/90，与 C2 的 87/90 没有可确认的统计差异。Prompt Swap 三行混淆矩阵完全对角；唯一的
 terminal hold 失败发生在 plate，属于首次达成后的保持性问题。
 
-当前 C3 background retention 尚未完成。旧的 `outputs/smolvla_libero/eval/background_regression/c3_selected/`
-是在选模修正前生成的，不能作为 `015000` 的正式结果。
+### Background retention regression（selected `015000`）
+
+当前 selected `015000` 的 background regression 已完成，共 7 个背景任务、每个 30 个 held-out
+init states，总计 210 条 Formal / Closed-loop / Test rollout：
+
+| Model | Rollouts | Successes | Success rate | Termination |
+| --- | ---: | ---: | ---: | --- |
+| B0 selected `025000`（记录基线） | 210 | 183 | 87.1% | 27 `time_limit` |
+| C3 selected `015000` | 210 | 0 | 0.0% | 210 `time_limit` |
+
+C3 的 7 个背景任务（task `0,2,3,5,6,7,9`）均为 `0/30`。因此，C3 在目标任务上取得的
+语言泛化提升没有保住 B0 的 background 能力；在当前单 seed、单 selected checkpoint 配置下，
+background forgetting 仍然严重，不能声称已经解决遗忘。
+
+本次结果的 policy path 是
+`outputs/smolvla_libero/pilot/c3_paraphrase_lora/checkpoints/selected/pretrained_model`，
+其 adapter SHA-256 与 `checkpoints/015000/pretrained_model` 一致。由于 background evaluator
+使用 direct-policy 模式，`test_manifest.json` 中的 `selected_checkpoint_step=0` 和生成的
+`SmolVLA B0 held-out test` 标题是通用占位/格式文本，不代表本次加载了 B0 或 000000；实际
+模型由 `model_label=c3_selected` 和上述 policy path 确定。
 
 ## 结果落点
 
@@ -297,7 +315,18 @@ outputs/smolvla_libero/pilot/c3_paraphrase_lora/
     │   │   └── train_config.json
     │   └── training_state/
     ├── ...
-    └── 030000/
+└── 030000/
+```
+
+Background regression 结果位于：
+
+```text
+outputs/smolvla_libero/eval/background_regression/c3_selected/
+├── test_results.json
+├── test_manifest.json
+├── metrics.md
+├── episodes.parquet
+└── jobs/task_00/ ... jobs/task_09/
 ```
 
 每个 `instruction_counts_step_<step>_rank_<rank>.json` snapshot 记录：
@@ -337,5 +366,6 @@ Prompt Swap 首次达成 30/30。训练的 `train_metrics.jsonl` 已记录到 st
 [闭环评测](06_evaluation.md)。C2 成功而 C3 validation canonical 明显退化时，先检查
 paraphrase 语义和抽样实现，不得直接查看 test。
 
-下一步：用当前 `015000` selected checkpoint 完成 background retention test；目标协议结论见
-[统一闭环评测](06_evaluation.md)。
+Background retention test 已完成，当前 selected `015000` 的结果为 0/210；目标协议结论和统一
+评测口径见[统一闭环评测](06_evaluation.md)，完整 background regression provenance 见
+[C3 背景回归正式评测结论](../../daily/2026-08-10-C3背景回归正式评测结论.md)。

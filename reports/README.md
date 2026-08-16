@@ -14,7 +14,7 @@
 - [ACT 实验指南](guides/act/README.md)
 - [PushT Diffusion Pilot](guides/pusht_diffusion/README.md)
 - [SmolVLA LIBERO LoRA 与语言增强（目标协议已完成；C3 background retention 待补）](guides/smolvla_libero/README.md)
-- [ManiSkill M0 PickCube 端到端探针](guides/maniskill/README.md)
+- [ManiSkill M0 PickCube、M1-W、M1-R 与 Peg/MS2 诊断指南](guides/maniskill/README.md)
 
 实验指南负责说明实验目标、实验设计、完整命令、结果落点和判断标准。实际运行后，
 还需要在 [实验运行记录](experiment_log.md) 中补充对应条目。
@@ -35,3 +35,4 @@
 - [2026-08-06 C1 学习率缩放遗忘权衡诊断结论](2026-08-06-C1学习率缩放遗忘权衡诊断结论.md)
 - [2026-08-06 C1 遗忘诊断与背景数据回放结论](2026-08-06-C1遗忘诊断与背景数据回放结论.md)
 - [2026-08-07 C3 改写增强 LoRA 正式评测结论](daily/2026-08-07-C3改写增强LoRA正式评测结论.md)
+- [2026-08-10 ManiSkill M0 收尾与 PickCube 论文参照](daily/2026-08-10-ManiSkill-M0收尾与PickCube论文参照.md)

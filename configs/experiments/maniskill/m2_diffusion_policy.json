@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "experiment_id": "m2_stackcube_diffusion_policy",
+  "task": "StackCube-v1",
+  "data_provenance": "m1w",
+  "m2_contract_config": "configs/experiments/maniskill/m2_w_action_only_flow.json",
+  "dataset": {
+    "repo_id": "local/maniskill_stackcube_dcore_7d_dp_rgb_video",
+    "root": "datasets/lerobot/maniskill/stackcube_dcore_7d_dp_rgb_video",
+    "source_repo_id": "local/maniskill_stackcube_dcore_7d",
+    "source_root": "datasets/lerobot/maniskill/stackcube_dcore_7d",
+    "storage": "video",
+    "image_dtype": "uint8",
+    "image_layout": "HWC",
+    "image_color": "RGB",
+    "image_color_stage": "decoded_model_input",
+    "video_codec": "h264",
+    "use_imagenet_stats": false,
+    "image_transforms_enable": false,
+    "video_backend": "torchcodec"
+  },
+  "protocol": {
+    "observation_keys": [
+      "observation.images.base_camera",
+      "observation.images.hand_camera",
+      "observation.state"
+    ],
+    "state_dim": 18,
+    "action_dim": 7,
+    "image_shape": [128, 128, 3],
+    "n_obs_steps": 2,
+    "horizon": 16,
+    "n_action_steps": 8
+  },
+  "policy": {
+    "type": "diffusion",
+    "vision_backbone": "resnet18",
+    "pretrained_backbone_weights": null,
+    "use_group_norm": true,
+    "spatial_softmax_num_keypoints": 32,
+    "use_separate_rgb_encoder_per_camera": false,
+    "normalization_mapping": {
+      "VISUAL": "MEAN_STD",
+      "STATE": "MEAN_STD",
+      "ACTION": "MEAN_STD"
+    },
+    "down_dims": [512, 1024, 2048],
+    "kernel_size": 5,
+    "n_groups": 8,
+    "diffusion_step_embed_dim": 128,
+    "use_film_scale_modulation": true,
+    "noise_scheduler_type": "DDPM",
+    "num_train_timesteps": 100,
+    "beta_schedule": "squaredcos_cap_v2",
+    "prediction_type": "epsilon",
+    "clip_sample": true,
+    "clip_sample_range": 1.0,
+    "do_mask_loss_for_padding": false
+  },
+  "training": {
+    "seed": 1000,
+    "global_batch_size": 256,
+    "world_size": 8,
+    "per_process_batch_size": 32,
+    "optimizer_steps": 50000,
+    "checkpoint_every": 10000,
+    "log_every": 200,
+    "num_workers": 4,
+    "mixed_precision": "bf16",
+    "optimizer_lr": 0.0001,
+    "optimizer_betas": [0.95, 0.999],
+    "optimizer_eps": 1e-8,
+    "optimizer_weight_decay": 1e-6,
+    "scheduler_warmup_steps": 500
+  }
+}

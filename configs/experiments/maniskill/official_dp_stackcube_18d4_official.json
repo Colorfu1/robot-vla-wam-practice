@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "experiment_id": "official_dp_stackcube_18d4_official",
+  "task": "StackCube-v1",
+  "data_provenance": "official",
+  "dataset_format": "official_rgb_18d_4d",
+  "source_h5": "datasets/raw/maniskill_demos/StackCube-v1/motionplanning/trajectory.rgb.pd_ee_delta_pos.physx_cpu.h5",
+  "train_episode_count": 787,
+  "protocol": {
+    "obs_mode": "rgb",
+    "rgb_cameras": ["base_camera", "hand_camera"],
+    "state_dim": 18,
+    "state_definition": "agent.qpos(9) + agent.qvel(9)",
+    "action_dim": 4,
+    "control_mode": "pd_ee_delta_pos",
+    "sim_backend": "physx_cpu",
+    "max_episode_steps": 200,
+    "obs_horizon": 2,
+    "act_horizon": 8,
+    "pred_horizon": 16
+  },
+  "training": {
+    "gpus": "0,1,2,3",
+    "global_batch_size": 256,
+    "total_iters": 50000,
+    "eval_freq": 10000,
+    "eval_seed_start": 20000,
+    "save_freq": 10000,
+    "num_dataload_workers": 4
+  },
+  "evaluation": {
+    "state_bank": null,
+    "split": "development",
+    "episodes": 200,
+    "envs_per_gpu": 1,
+    "max_steps": 200,
+    "environment_seed_start": 20000,
+    "identity": "explicit_environment_seed",
+    "primary_metric": "success_once",
+    "selection": "evaluate every numeric checkpoint and rank by success_once"
+  }
+}

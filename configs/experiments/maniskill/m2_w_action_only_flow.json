@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "experiment_id": "m2_w_action_only_flow",
+  "task": "StackCube-v1",
+  "data_provenance": "m1w",
+  "inputs": {
+    "m1_config": "configs/experiments/maniskill/m1_wam_protocol_audit.json",
+    "m1_frozen_protocol": "outputs/maniskill/m1_wam_protocol_audit/frozen_protocol.json",
+    "m1_frozen_protocol_sha256": "8e1cd0ca51191ee300bda409ee8ade538b30af22f9945eb62adaa61f14bd5e62",
+    "dataset_root": "datasets/lerobot/maniskill/stackcube_dcore_7d",
+    "dataset_manifest": "datasets/lerobot/maniskill/stackcube_dcore_7d/stackcube_conversion_manifest.json",
+    "dataset_manifest_sha256": "7e22232023a22757eb4db50892e8fc0e3d6783d485a9c1cc03c0e4fdb2912edc",
+    "dataset_info": "datasets/lerobot/maniskill/stackcube_dcore_7d/meta/info.json",
+    "dataset_info_sha256": "c1ceb22c0178df446a48cc750e8d7ca6445529433a66c6583d7db13db1fda6e1",
+    "dataset_stats": "datasets/lerobot/maniskill/stackcube_dcore_7d/meta/stats.json",
+    "d_core_h5": "outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/d_core/trajectory.h5",
+    "d_core_manifest": "outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/d_core_manifest.json",
+    "d_core_manifest_sha256": "cf1abfeb3d1f3e4d32f2891260286e098a989371cab3f435dbbf33fa93173d6b",
+    "offline_split_manifest": "outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/d_core/split_manifest.json",
+    "offline_split_sha256": "cc02a6c7611314d3a77523b911a5f01a69c51b1fb443d17a3c349d7248cd0919",
+    "state_bank_root": "outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/state_banks",
+    "state_bank_manifest": "outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/state_banks/state_bank_manifest.json",
+    "state_bank_manifest_sha256": "6c7a44caa65cc266b91ba8910098e77ddf898c15837fe8a237bb8170cac2bff5"
+  },
+  "protocol": {
+    "backend": "physx_cuda",
+    "control_mode": "pd_ee_delta_pose",
+    "control_frequency_hz": 20,
+    "formal_horizon": 500,
+    "action_dim": 7,
+    "action_key": "action",
+    "observation_keys": [
+      "observation.images.base_camera",
+      "observation.images.hand_camera",
+      "observation.state"
+    ],
+    "state_dim": 18,
+    "image_shape": [128, 128, 3],
+    "n_obs_steps": 2,
+    "action_horizon": 16,
+    "allowed_n_action_steps": [4, 8],
+    "forbidden_observation_keys": [
+      "goal_pose",
+      "object_pose",
+      "success",
+      "is_grasped",
+      "relative_vector",
+      "privileged",
+      "stage_label"
+    ]
+  },
+  "model": {
+    "visual_encoder": "resnet18",
+    "pretrained": false,
+    "normalization": "groupnorm",
+    "spatial_softmax_keypoints": 32,
+    "d_model": 256,
+    "layers": 6,
+    "heads": 8,
+    "mlp_ratio": 4,
+    "dropout": 0.1,
+    "attention": "noncausal_self_attention",
+    "task_token": "learned_single_stackcube_token",
+    "future_target": false,
+    "future_decoder": false,
+    "auxiliary_loss": false
+  },
+  "flow": {
+    "path": "x0_normal_to_x1_action",
+    "time_distribution": "uniform_0_1",
+    "solver": "euler",
+    "integration_steps": 10,
+    "classifier_free_guidance": false,
+    "candidate_reranking": false,
+    "oracle": false,
+    "seed_derivation": "sha256(fingerprint,chunk_index,training_seed)"
+  },
+  "training": {
+    "seed": 1000,
+    "global_batch_size": 256,
+    "world_size": 8,
+    "per_process_batch_size": 32,
+    "gradient_accumulation_steps": 1,
+    "optimizer": "AdamW",
+    "learning_rate": 0.0001,
+    "betas": [0.9, 0.999],
+    "weight_decay": 0.0001,
+    "gradient_clip_norm": 1.0,
+    "optimizer_steps": 50000,
+    "warmup_steps": 1000,
+    "schedule": "cosine_after_linear_warmup",
+    "amp_dtype": "bfloat16",
+    "checkpoint_every": 10000,
+    "selection_checkpoint_steps": [10000, 20000, 30000, 40000, 50000],
+    "num_workers": 4
+  },
+  "splits": {
+    "offline": {
+      "train": 787,
+      "development": 100,
+      "test": 100
+    },
+    "state_banks": {
+      "train": 2000,
+      "development": 200,
+      "test": 400
+    },
+    "training_split": "train",
+    "development_split": "development",
+    "test_split": "test",
+    "test_access_allowed": false
+  },
+  "evaluation": {
+    "development_state_count": 200,
+    "max_steps": 500,
+    "reference_policies": ["zero", "iid_gaussian_random"],
+    "n_action_steps": [4, 8],
+    "paired_bootstrap_samples": 10000,
+    "paired_bootstrap_seed": 1000,
+    "ranking": [
+      "success_at_end_desc",
+      "success_once_desc",
+      "is_cubeA_on_cubeB_desc",
+      "normalized_action_mse_asc",
+      "policy_latency_p95_ms_asc",
+      "checkpoint_step_asc",
+      "n_action_steps_asc"
+    ]
+  }
+}
