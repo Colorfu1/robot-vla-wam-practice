@@ -520,6 +520,8 @@ def validate_config(
     for name, value in (("protocol", protocol), ("model", model), ("flow", flow), ("training", training), ("inputs", inputs), ("splits", splits)):
         if not isinstance(value, Mapping):
             raise TypeError(f"M2 base config section {name} must be an object")
+    if protocol.get("backend") not in ("physx_cpu", "physx_cuda"):
+        raise ValueError("protocol.backend must be physx_cpu or physx_cuda")
     action_dim = _expected_action_dim(payload)
     if protocol.get("state_dim") != EXPECTED_STATE_DIM:
         raise ValueError("protocol.state_dim must be 18")
@@ -584,6 +586,7 @@ def validate_config(
         "task": TASK_ID,
         "action_dim": action_dim,
         "state_dim": EXPECTED_STATE_DIM,
+        "backend": protocol["backend"],
         "global_batch_size": 256,
         "world_size": world_size,
         "per_process_batch_size": per_process,

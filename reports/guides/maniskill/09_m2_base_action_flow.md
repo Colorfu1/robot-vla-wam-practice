@@ -2,9 +2,9 @@
 
 ## 状态
 
-M2 base 的离线数据适配与单卡 2-step smoke 已完成；正式 4 卡训练尚未在本地启动。
-本入口与已经冻结的 M2-W 分开：M2-W 仍严格使用自己的 7D GPU 协议，本入口只是复用同一
-Action-only Flow trunk，允许数据 action 为 4D 或 7D。
+M2 base 的离线数据适配与单卡 2-step smoke 已完成；M1-W 原生 4D 路线的 100k、4 卡训练、
+development 选模和 post-selection test 已完成。本入口与已经冻结的 M2-W 7D 正式 runner 分开：
+这里复用同一 Action-only Flow trunk，允许数据 action 为 4D 或 7D。
 
 ## 官方 anchor 的日志在哪里
 
@@ -123,10 +123,19 @@ outputs/maniskill/m2_base_action_flow/official_rgb_4d/formal_seed1000/checkpoint
 
 ## development 选模
 
-M2 base 有独立的 CPU development selector，不复用 M2-W 的 GPU state-bank selector。它读取
-官方 RGB H5 中 development 的 100 条初始 `env_states`，在 ManiSkill3 CPU 环境中重新渲染
-RGB，评估 5 个 checkpoint × `n_action_steps={4,8}`，不使用 test split。排序为：
-`success_at_end`、`success_once`、on-cube rate、首次成功步数、checkpoint step、action steps。
+M2 base 有独立的 development selector，不复用 M2-W 的 7D selector。它读取配置中
+development 的初始 `env_states`，不使用 test split，评估每个 checkpoint ×
+`n_action_steps={4,8}`，排序为：`success_at_end`、`success_once`、on-cube rate、首次成功
+步数、checkpoint step、action steps。
+
+评测后端由 config 的 `protocol.backend` 强制决定，避免数据和 rollout 后端错配：
+
+- 官方 motionplanning RGB 数据：`physx_cpu`，使用 `--num-workers` 并行 CPU 进程；
+- M1-W native RGB 数据：`physx_cuda`，使用 `--num-gpus` 启动每卡一个 GPU worker，
+  每个 worker 内以 `--num-envs` 批量运行。`CUDA_VISIBLE_DEVICES` 中的 GPU 数量必须不少于
+  `--num-gpus`。每个 spawned worker 会进一步收窄为一张物理卡，在 worker 内统一使用逻辑
+  `cuda:0`；这是为了避免 ManiSkill reset 内部的 `torch.random.fork_rng()` 误触碰父进程可见的
+  其他 GPU。
 
 训练完成后执行：
 
@@ -140,6 +149,39 @@ bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
   --max-steps=200
 ```
 
+M1-W native 4D 的 100k 训练结果使用 GPU PhysX 评测：
+
+```bash
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
+bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
+  --phase=select-development \
+  --config=configs/experiments/maniskill/m2_base_m1w_native_rgb_4d_100k.json \
+  --train-root=outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k \
+  --output-root=outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/development_gpu \
+  --num-gpus=4 \
+  --num-envs=64 \
+  --max-steps=200 \
+  --n-action-steps=4,8
+```
+
+### 已完成的 M1-W 原生 4D 100k 结果
+
+- 训练：4 GPU、global batch `256`、100k steps；source 为 946 条 native-4D live-RGB episode，
+  split 为 train/development/test = 748/95/96。
+- 选模：step 100k、`n_action_steps=4`；GPU development 为 `83/95` success-once、
+  `83/95` success-at-end（87.4% / 87.4%）。
+- post-selection test：`82/96` success-once、`82/96` success-at-end（85.4% / 85.4%）。
+- train mean tail loss 为 `0.02532`；test 评测使用 4 GPU、64 environments、`physx_cuda`，不是
+  official CPU rollout。
+
+结果产物：
+
+```text
+outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/run_manifest.json
+outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/development_gpu/selected_checkpoint.json
+outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/test_gpu/metrics.json
+```
+
 选模产物：
 
 ```text
@@ -149,6 +191,8 @@ outputs/.../development/candidate_metrics.json
 outputs/.../development/candidates/step_*/metrics.json
 ```
 
-selector 默认把策略推理也放在 CPU，和官方 CPU attribution protocol 一致；`--num-workers`
-是 CPU 评测进程数，不是 GPU 数。当前 4D 训练结果不能拿 M2-W 的 7D evaluator 推理，动作
-维度和控制协议必须一致。
+`--policy-device=auto`（默认）会跟随 `protocol.backend` 选择 CPU 或 CUDA；显式指定冲突的
+设备会直接报错。旧 selector 把所有配置硬编码成 CPU，因此此前对 M1-W native 数据得到的
+CPU rollout 只能作为诊断，不能作为正式 GPU 结果。当前 4D 训练结果不能拿 M2-W 的 7D
+evaluator 推理，动作维度和控制协议必须一致。GPU selector 会在每个 candidate 内按
+仿真步数和已完成 episode 输出进度，避免长时间只有 candidate 完成时才有日志。

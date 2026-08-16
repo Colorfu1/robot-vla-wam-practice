@@ -11,9 +11,12 @@ output_root=""
 num_gpus=""
 num_workers="4"
 train_root=""
-policy_device="cpu"
+num_envs="64"
+policy_device="auto"
 max_steps="200"
-n_action_steps="4,8"
+n_action_steps=""
+selection_root=""
+checkpoint=""
 overwrite=false
 
 usage() {
@@ -23,6 +26,12 @@ Usage:
   run_m2_base_action_flow.sh --phase=smoke --config=... --output-root=... [--num-gpus=1]
   run_m2_base_action_flow.sh --phase=train --config=... --num-gpus=4 --output-root=... [--overwrite]
   run_m2_base_action_flow.sh --phase=select-development --config=... --train-root=... --output-root=... [--num-workers=4]
+  run_m2_base_action_flow.sh --phase=evaluate-test --config=... \
+    (--selection-root=...|--checkpoint=...) --output-root=... [--num-gpus=4]
+
+Development selection follows protocol.backend from the config:
+  physx_cpu  -> CPU policy/environment workers controlled by --num-workers
+  physx_cuda -> one GPU worker per --num-gpus, with --num-envs environments per batch
 
 The train phase is offline training only. It does not run rollout, checkpoint
 selection, or test evaluation.
@@ -36,7 +45,10 @@ for argument in "$@"; do
     --output-root=*) output_root="${argument#*=}" ;;
     --num-gpus=*) num_gpus="${argument#*=}" ;;
     --num-workers=*) num_workers="${argument#*=}" ;;
+    --num-envs=*) num_envs="${argument#*=}" ;;
     --train-root=*) train_root="${argument#*=}" ;;
+    --selection-root=*) selection_root="${argument#*=}" ;;
+    --checkpoint=*) checkpoint="${argument#*=}" ;;
     --policy-device=*) policy_device="${argument#*=}" ;;
     --max-steps=*) max_steps="${argument#*=}" ;;
     --n-action-steps=*) n_action_steps="${argument#*=}" ;;
@@ -82,15 +94,39 @@ case "${phase}" in
   select-development)
     [[ -n "${train_root}" ]] || { echo "select-development requires --train-root" >&2; exit 2; }
     [[ -n "${output_root}" ]] || { echo "select-development requires --output-root" >&2; exit 2; }
+    [[ -n "${n_action_steps}" ]] || n_action_steps="4,8"
     select_args=(select-development --config "${config}" --train-root "${train_root}" \
       --output-root "${output_root}" --num-workers "${num_workers}" \
-      --policy-device "${policy_device}" --max-steps "${max_steps}" \
+      --num-envs "${num_envs}" --policy-device "${policy_device}" --max-steps "${max_steps}" \
       --n-action-steps "${n_action_steps}")
+    [[ -n "${num_gpus}" ]] && select_args+=(--num-gpus "${num_gpus}")
     [[ "${overwrite}" == true ]] && select_args+=(--overwrite)
     env PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
       conda run --no-capture-output -n robot-practice \
       python -m robot_practice.experiments.maniskill.m2_base_checkpoint_selection \
       "${select_args[@]}"
+    ;;
+  evaluate-test)
+    [[ -n "${output_root}" ]] || { echo "evaluate-test requires --output-root" >&2; exit 2; }
+    [[ -n "${selection_root}" || -n "${checkpoint}" ]] || {
+      echo "evaluate-test requires --selection-root or --checkpoint" >&2
+      exit 2
+    }
+    [[ -z "${selection_root}" || -z "${checkpoint}" ]] || {
+      echo "evaluate-test accepts only one of --selection-root and --checkpoint" >&2
+      exit 2
+    }
+    eval_args=(--config "${config}" --output-root "${output_root}" \
+      --num-envs "${num_envs}" --policy-device "${policy_device}" --max-steps "${max_steps}")
+    [[ -n "${num_gpus}" ]] && eval_args+=(--num-gpus "${num_gpus}")
+    [[ -n "${selection_root}" ]] && eval_args+=(--selection-root "${selection_root}")
+    [[ -n "${checkpoint}" ]] && eval_args+=(--checkpoint "${checkpoint}")
+    [[ -n "${n_action_steps}" ]] && eval_args+=(--n-action-steps "${n_action_steps}")
+    [[ "${overwrite}" == true ]] && eval_args+=(--overwrite)
+    env PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+      conda run --no-capture-output -n robot-practice \
+      python -m robot_practice.experiments.maniskill.m2_base_test_evaluation \
+      "${eval_args[@]}"
     ;;
   *)
     echo "Unknown phase: ${phase}" >&2; usage >&2; exit 2

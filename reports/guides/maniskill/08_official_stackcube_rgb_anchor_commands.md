@@ -3,6 +3,10 @@
 这份文档只负责“同步什么、按什么顺序执行”。实验协议和结果解释见
 [官方 StackCube RGB Golden Anchor 指南](07_official_stackcube_rgb_anchor.md)。
 
+当前 official 主复现是 990-demo 的 50k 与 100k 单卡 run；下面保留的 100-demo/100k 段落只是
+兼容 runner。已完成结果以 `outputs/maniskill/official_stackcube_rgb_990_50k/` 和
+`outputs/maniskill/official_stackcube_rgb_990_100k/` 为准。
+
 ## 1. 需要同步的数据
 
 当前本地已有的官方源数据位于：
@@ -108,7 +112,7 @@ grep -E '"gate_pass"|"num_episodes"|"success_once"|"success_at_end"' \
 
 只有 `"gate_pass": true` 才继续训练。
 
-### 阶段 B：官方 100-demo、100k iteration 训练
+### 阶段 B：兼容 runner 的 100-demo、100k iteration 训练（非当前主表）
 
 ```bash
 bash scripts/experiments/maniskill/run_official_stackcube_rgb_anchor.sh \
@@ -156,7 +160,6 @@ bash scripts/experiments/maniskill/run_official_stackcube_rgb_990_50k.sh \
 outputs/maniskill/official_stackcube_rgb_990_50k/anchor_manifest.json
 outputs/maniskill/official_stackcube_rgb_990_50k/00_replay/audit.json
 outputs/maniskill/official_stackcube_rgb_990_50k/logs/10_train.log
-outputs/maniskill/official_stackcube_rgb_990_50k/10_train/loss_history.jsonl
 outputs/maniskill/official_stackcube_rgb_990_50k/10_train/runs/official_stackcube_rgb_990_50k/
 outputs/maniskill/official_stackcube_rgb_990_50k/20_verify/metrics.json
 ```
@@ -188,6 +191,34 @@ evaluation。`--seed-start` 现在是环境 reset seed 的起点，而不是仅�
 元数据实际出现的 `0..1025` seed 范围，适合未见 test seed 评测。它不等价于“精确重放训练集”：
 官方 990-demo RGB 元数据中的 `episode_seed` 不是完整的 `0..989` 连续区间；若要严格评测训练集，
 需另用按 episode seed 列表 reset 的 evaluator。
+
+### 阶段 B2b：990-demo、100k iteration 单卡主 anchor
+
+这是和 B2 的 990-demo、50k run 配套的主预算终点；保持同一数据、默认 57D state、4D action、
+`physx_cpu` verification contract，只把训练预算延长到 100,000 iterations。
+
+```bash
+bash scripts/experiments/maniskill/run_official_stackcube_rgb_anchor.sh \
+  --phase=all \
+  --output-root=outputs/maniskill/official_stackcube_rgb_990_100k \
+  --num-demos=990 \
+  --total-iters=100000 \
+  --eval-freq=10000 \
+  --save-freq=10000 \
+  --gpu=0 \
+  --model-device=cuda \
+  --exp-name=official_stackcube_rgb_990_100k
+```
+
+主结果产物：
+
+```text
+outputs/maniskill/official_stackcube_rgb_990_100k/anchor_manifest.json
+outputs/maniskill/official_stackcube_rgb_990_100k/10_train/train_complete.json
+outputs/maniskill/official_stackcube_rgb_990_100k/20_verify/metrics.json
+```
+
+已完成的独立 verification 为 `52/100` success-once、`47/100` success-at-end。
 
 ### 阶段 B3：990-demo、100k iteration、4 卡 DDP 变体
 

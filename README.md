@@ -1,7 +1,7 @@
 # Robot VLA WAM Practice
 
-这是一个以 LeRobot 为工作流层的机器人操作实验仓库。当前 README 只总结
-`LIBERO`、`PushT`、`SmolVLA` 三条项目线中每个子任务的目的与结论。
+这是一个以 LeRobot 为工作流层的机器人操作实验仓库。当前 README 总结
+`LIBERO`、`PushT`、`SmolVLA`、`ManiSkill` 四条项目线中每个子任务的目的与结论。
 
 完整实验命令、协议和产物位置见 [`reports/guides/`](reports/guides/README.md)，实际运行记录见
 [`reports/experiment_log.md`](reports/experiment_log.md)。本页不把计划、Smoke 或诊断结果写成
@@ -10,13 +10,14 @@ Formal 结论。
 > 说明：LIBERO 是 benchmark。下面的“LIBERO”章节指 ACT 在 LIBERO 上的实验；“SmolVLA”章节
 > 是另一条在 LIBERO-Goal 上进行语言条件适配的 VLA 实验线，两者的结果不能互相替代。
 
-## 三条线的当前结论
+## 四条线的当前结论
 
 | 项目 | 目的 | 当前结论 |
 | --- | --- | --- |
 | LIBERO / ACT | 验证 ACT 的训练、动作 chunk、平滑控制和 LIBERO 闭环能力 | A1-VAE 达到 19/20（95%），A2 + Temporal Ensemble 达到 18/20（90%）；当前证据只覆盖单任务、单 seed |
 | PushT | 研究 Diffusion 的随机闭环行为、采样效率和条件控制 | 完整 DDPM sampling 能产生多个成功闭环 mode；DDIM-5 是当前最佳速度配置，但固定 observation 多峰性、Prototype-ID 和 Route Field 语义控制均未建立 |
 | SmolVLA | 验证 LIBERO 域适配、LoRA、paraphrase 和语言目标服从 | C3 selected `015000` 达到 canonical 88/90、held-out paraphrase 67/90、Prompt Swap 首次达成 30/30；background regression 为 0/210，而 B0 基线为 183/210，当前配置仍有严重 background forgetting |
+| ManiSkill | 验证 PickCube/StackCube 的数据、控制协议、Action-only Flow 和官方 Diffusion Policy 参照 | M0 PickCube 的 4D/CPU 固定 holdout 为 397/400（99.25%）；StackCube 主表按数据来源和 rollout contract 分组记录：官方 4D 默认 57D state 的 DP 在 100k 为 52/100 once、47/100 end；M2-W 50k 为 43/200、43/200；官方 DP + M1-W 7D 50k 为 27/200、0/200。不同组不组成单一排行榜 |
 
 ## 1. LIBERO：ACT 子任务总结
 
@@ -68,11 +69,124 @@ SmolVLA 线固定使用 LIBERO-Goal 目标任务 1/4/8、两路 256×256 RGB、8
 | [C3 LoRA + Paraphrase](reports/guides/smolvla_libero/05_c3_paraphrase_lora.md) | 用 25% canonical + 75% train paraphrase 改善未见语言表达下的目标执行 | selected `015000` 达到 canonical 88/90、held-out paraphrase 67/90、Prompt Swap 首次 30/30；background regression 为 0/210（B0 为 183/210），目标语言泛化改善但 background forgetting 仍未解决 |
 | [Prompt Swap 口径修复](reports/2026-08-06-PromptSwap修复后合并结果.md) | 修正目标首次达成后 reset 导致的错误判定，区分首次达成和 terminal hold | 修复后应只引用 first-goal：Z0 0/30、C1 29/30、C2 28/30、C3 30/30；C3 terminal hold 29/30，说明达成后的保持仍有一条失败 |
 
+## 4. ManiSkill：按阶段的实测结果
+
+ManiSkill 线使用独立的 data provenance、controller、sim backend 和 rollout contract。完整命令、
+产物位置和设备边界见 [ManiSkill 实验指南](reports/guides/maniskill/README.md)。下面的结果只引用
+已经落盘的训练或评测产物；`Smoke`、协议 replay 和训练集 probe 不冒充独立泛化结果。
+
+StackCube 的 GPU state-bank 结果统一是 development 200 states、最多 500 steps、`physx_cuda`；
+官方数据的 CPU 结果是 `physx_cpu`，除 RGB anchor 特别注明外为 200 episodes、最多 200 steps。
+官方 DP 的 native-4D/7D GPU exact-state 评测中 200 条轨迹均跑到 truncation，因此
+`success_at_end=0`；主比较指标使用 `success_once`，不能把它误读成“从未完成过任务”。M2-W
+使用自己的 evaluator，当前最佳 development candidate 为 step 50k、`n_action_steps=8`，
+`success_once/success_at_end=43/200`。
+
+### 4.1 数据与协议阶段
+
+| 子任务 | 实测结果 | 结论 |
+| --- | --- | --- |
+| [M0 PickCube RL 7D](reports/guides/maniskill/00_m0_pickcube.md) | 1,013 demos、50,360 frames；20k checkpoint development 为 120/200（60.0%），当时独立 test 为 234/400（58.5%）；50k 在同一 test block 上 sweep 的峰值为 340/400（85.0%） | 7D/GPU 学生管路确实能学会，但 50k test sweep 已污染该 test block，只能作诊断，不能再用于选模或正式泛化结论 |
+| [M0 PickCube 4D 论文参照](reports/guides/maniskill/01_paper_aligned_pickcube_4d.md) | motion-planning、4D `pd_ee_delta_pos`、CPU、horizon 100；1,000-demo 固定 holdout 为 397/400（99.25%），100-demo 为 206/400（51.5%） | LeRobot diffusion、CPU rollout 和官方 success 语义已达到可用基线；不能与 M0 的 7D/GPU 结果直接相减 |
+| [M1-W StackCube 数据协议](reports/guides/maniskill/02_m1_w_protocol_audit.md) | GPU-native 7D source 1,000 条；baseline replay 805/1,000，failed-only repair 恢复 182/195；final live-RGB `D_core` 为 987 episodes、106,528 action frames，最终 replay 987/987 success-at-end；state bank train/development/test 为 2,000/200/400，split leakage 为 0 | **数据链已完成并冻结。** RGB、18D proprioception、7D action、env state、fingerprint 和 frozen protocol gate 均通过；M1-W 本身是数据/协议结果，不是 learned-policy 成绩 |
+| [M1-W 原生 4D 数据](reports/guides/maniskill/12_m1_w_native_4d_data.md) | 官方 CPU joint→4D conversion 1,000/1,000；GPU native-4D baseline 760/1,000；repair 的 success-at-end 为 186/240（success-once 213/240）；accepted merge 946 条；最终实时 RGB replay 946/946 success-at-end | 4D 数据是重新转换并在 GPU controller 下验证过的独立数据链，不是从 7D 标签切片；它足以进入模型对照，但不能单独证明“动作维度”是唯一因果因素 |
+| M1-R / Plug 历史诊断 | Policy Decorator MS2/v2 exact-action smoke 为 50/50，但 full replay 尚未执行；Plug actual-EEF retarget 在 416 条失败集上仅恢复 21/416（5.05%） | M1-R 仍是 smoke，Plug 已从 M1-W 正式数据线排除；这些结果不进入 StackCube learned-policy 对照 |
+
+### 4.2 StackCube 模型对照子表
+
+这是位于 M1-W 数据协议之后的总表；`official 模型复现` 作为其中一个阶段分组出现，不再单独
+重复一张表。完整 official 协议、命令和 legacy 100-demo runner 说明见
+[官方 StackCube RGB Golden Anchor 指南](reports/guides/maniskill/07_official_stackcube_rgb_anchor.md)。
+表格采用“协议/数据阶段 → 模型 + 数据 → 训练与闭环结果”的层级记录，第一列按阶段合并，避免
+把不同数据来源和 rollout contract 看成一条无条件排行榜。
+
+<table>
+<thead>
+<tr>
+<th>协议 / 数据阶段</th>
+<th>模型 + 数据</th>
+<th>训练与闭环结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<th rowspan="3">M1-W StackCube<br>数据协议</th>
+<td><a href="reports/guides/maniskill/04_m2_w_action_only_flow.md">M2-W Action-only Flow + M1-W GPU 7D 数据</a></td>
+<td><strong>50k steps</strong>；GPU development 200 states / horizon 500；<code>success_once / success_at_end = 43/200 / 43/200</code>（21.5% / 21.5%）。candidate 为 step 50k、<code>n_action_steps=8</code>；test 未访问。</td>
+</tr>
+<tr>
+<td><a href="reports/guides/maniskill/06_m2_diffusion_policy.md">LeRobot Diffusion Policy + M1-W GPU 7D 数据</a></td>
+<td><strong>50k steps</strong>；GPU development 200 states / horizon 500；<code>success_once / success_at_end = 19/200 / 19/200</code>（9.5% / 9.5%）。</td>
+</tr>
+<tr>
+<td><a href="reports/guides/maniskill/10_official_dp_m1w_7d.md">official Diffusion Policy + M1-W GPU 7D 数据</a></td>
+<td><strong>50k steps</strong>；GPU development 200 states / horizon 500；<code>success_once / success_at_end = 27/200 / 0/200</code>（13.5% / 0%）。train loss <code>0.0021</code>。</td>
+</tr>
+<tr>
+<th rowspan="3">official 模型复现</th>
+<td><a href="reports/guides/maniskill/07_official_stackcube_rgb_anchor.md">official Diffusion Policy + 官方 motion-planning 4D replay（单卡主 anchor）</a></td>
+<td><strong>50k / 100k steps</strong>；官方默认 <code>agent + extra</code>，实际 57D state；CPU verification 100 episodes / horizon 200：50k 为 <code>34/100 / 33/100</code>（34.0% / 33.0%），100k 为 <code>52/100 / 47/100</code>（52.0% / 47.0%）。</td>
+</tr>
+<tr>
+<td><a href="reports/guides/maniskill/07_official_stackcube_rgb_anchor.md">official Diffusion Policy + 同一官方 motion-planning 4D replay（4-GPU DDP）</a></td>
+<td><strong>同一 990-demo 数据、100k steps / GPU 4,5,6,7</strong>；同一默认 57D state、4D action 和 CPU verification contract；global batch <code>256</code>；<code>success_once / success_at_end = 48/100 / 45/100</code>（48.0% / 45.0%）。仅训练并行方式不同，不替代单卡 100k anchor。</td>
+</tr>
+<tr>
+<td><a href="reports/guides/maniskill/11_official_dp_18d4_ablation.md">official Diffusion Policy + 同一官方 motion-planning 4D replay + 显式 18D state</a></td>
+<td><strong>同一官方 motion-planning 4D replay 来源；state 改为显式 18D qpos+qvel；本 run 50k steps、787 demos</strong>；CPU development 200 states / horizon 200；<code>success_once / success_at_end = 67/200 / 54/200</code>（33.5% / 27.0%）。train loss <code>0.00109</code>。数据来源相同，但 demos、state extractor 和 eval contract 不同，因此不是严格单变量 ablation。</td>
+</tr>
+<tr>
+<th rowspan="2">M1-W 原生 4D<br>数据</th>
+<td><a href="reports/guides/maniskill/12_m1_w_native_4d_data.md">official Diffusion Policy + M1-W 原生 4D 数据</a></td>
+<td><strong>50k / 100k steps</strong>；GPU development 200 states / horizon 500：50k 为 <code>100/200 / 0/200</code>（50.0% / 0%），100k 为 <code>103/200 / 0/200</code>（51.5% / 0%）。它不是官方 motion-planning 4D replay。</td>
+</tr>
+<tr>
+<td><a href="reports/guides/maniskill/09_m2_base_action_flow.md">M2-W Action-only Flow + M1-W 原生 4D 数据</a></td>
+<td><strong>100k steps / 4-GPU</strong>；global batch <code>256</code>；step 100k、<code>n_action_steps=4</code> 被选中；train mean tail loss <code>0.02532</code>。GPU development：<code>83/95 / 83/95</code>（87.4% / 87.4%）；post-selection test：<code>82/96 / 82/96</code>（85.4% / 85.4%）。<a href="outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/development_gpu/selected_checkpoint.json">selected checkpoint</a> · <a href="outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/test_gpu/metrics.json">test metrics</a></td>
+</tr>
+</tbody>
+</table>
+
+### 4.2.1 尚未形成正式结果的适配
+
+| 实验 | 训练 budget | 数据 / eval | success_once / success_at_end | 为什么单列 |
+| --- | ---: | --- | ---: | --- |
+| [M2 base 官方 RGB 4D 适配](reports/guides/maniskill/09_m2_base_action_flow.md) | — | 4D/7D head、H5 lazy loader 和 config/smoke gate；不含已完成的 M1-W native-4D 100k route | N/A | 官方 RGB 4D 这条通用适配入口尚未形成正式训练+选模结果；M1-W native-4D 结果已在上方主表单列 |
+
+### 4.2.2 表格的比较规则
+
+- 先在 `M1-W StackCube 数据协议` 组内比较同一 GPU 7D 数据上的 M2-W、LeRobot DP 和 official DP。
+- 在 `official 模型复现` 组内比较官方 4D/57D 单卡 50k→100k；4-GPU DDP 只作为同一 100k
+  配置的工程变体，不与单卡预算曲线合并。
+- `M1-W 原生 4D 数据` 组用于区分数据 provenance；它不能直接替代 official motion-planning 4D
+  replay，也不能把 native-4D 的结果解释成动作维度的单变量结论。
+- 每个结果单元格必须同时能追溯到“训练 steps + eval backend + split + episodes + horizon”；
+  缺任一关键字段时写 `N/A` 或“未完成”，不从训练内 monitor 推断独立泛化结果。
+
+### 4.3 ManiSkill 当前结论
+
+- M0 已证明数据读取、Diffusion 训练、可视化和闭环评测管路可用；PickCube 的 4D/CPU 参照达到
+  99.25%，所以后续 StackCube 的低分不是“整个 LeRobot diffusion 管路坏了”。
+- M1-W 的 `D_core` 和 GPU live-RGB 数据协议已经通过；在同一 GPU 7D 数据上，M2-W 50k 为
+  21.5%，LeRobot DP 50k 为 9.5%，官方 DP 7D 50k 为 13.5%。这说明模型/训练入口和泛化都需要
+  继续追查，不能把差值归因给单一动作维度。
+- 官方 4D CPU anchor 从 34%（50k）提升到 52%（100k），说明 StackCube 与官方 DP 都有继续
+  训练的 headroom；M2-W 50k 的 21.5% 则主要暴露 train→development 泛化问题，而不是优化器没有下降。
+- M2-W 在 M1-W 原生 4D 数据上完成的 100k route 为 development `83/95`（87.4%），post-selection
+  test `82/96`（85.4%）；它明显高于当前 M2-W 7D 的 50k 结果，但训练预算、数据 provenance、
+  action/control contract 和 rollout split 同时变化，不能把提升单独归因于 action 从 7D 变成 4D。
+- 官方 18D/4D 50k 为 33.5% once、27.0% end；它与官方 57D/4D anchor 接近，但当前仍受
+  demo 数、eval 数量和选模流程差异影响，不能视作已经完成的 57D→18D 单变量消融。
+- 当前可引用的 StackCube learned-policy 数字必须同时带上 backend、数据来源、state-bank/seed
+  split、horizon 和 success 口径；表格必须先按比较组分层，再看结果，不能把 CPU official、GPU
+  native4d、GPU M1-W 7D、M2-W 和 LeRobot DP 合并成一张无条件排名表。
+
 ## 证据边界
 
 - Guide 页面负责完整命令、协议、结果落点和复现条件；本 README 只保留“目的—结论”摘要。
 - `Formal`、`Closed-loop`、`Offline`、`Smoke` 和 `Diagnostic` 不混写；没有正式测量的字段不补填数字。
 - 单任务、单 seed、参与 checkpoint selection 的 validation 结果，只能支持对应实验范围内的判断，不能写成跨任务、跨 seed 或模型家族结论。
+- ManiSkill 的 official 数据必须使用 CPU rollout，M1-W/native4d/M2-W/LeRobot DP 数据必须使用 GPU rollout；转换 backend 和正式 rollout backend 不混写。当前 4D/7D 对照受 split 与转换路径影响，只能作为诊断证据。
 - 计划仍放在 [`plans/`](plans/README.md)，实际结果仍放在 [`reports/`](reports/README.md)；数据、checkpoint、视频、Rerun recording 和日志等生成物不提交到 Git。
 
 项目代码和文档使用 [Apache License 2.0](LICENSE)；第三方软件和数据集说明见

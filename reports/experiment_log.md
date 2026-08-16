@@ -1227,3 +1227,40 @@ Use one section per run. Record incomplete or failed runs too.
 - Notes: 复用 Rerun offline viewer、PandaKinematics 和统一时间轴；选择 seed 为 20260813，case 为 `106, 201, 324, 353, 428, 434, 575, 719, 878, 949`。本条是 `Offline / Smoke`，不构成训练或闭环能力结果。
 - Result artifacts: `reports/guides/maniskill/05_stackcube_visualization.md`、`outputs/maniskill/m2_task_base/StackCube-v1/visualization_train10/visualization_manifest.json`、`outputs/maniskill/m2_task_base/StackCube-v1/visualization_train10/preview/contact_sheet.png`
 - Modes: Offline / Smoke
+
+## 2026-08-15 — ManiSkill official StackCube RGB Diffusion Policy reproduction
+
+- Date: 2026-08-15
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: 官方 motion-planning replay；990 demos；主结果分别训练 50k 与 100k steps
+- Observation keys: `obs_mode=rgb` 的两路视觉输入；官方默认 extractor 额外拼接 `agent + extra`，checkpoint 实际 state 输入为 57D
+- Action space: 官方 `pd_ee_delta_pos`，4D
+- Action horizon: observation horizon 2、action horizon 8、prediction horizon 16；episode horizon 200
+- Control frequency: 20 Hz；训练/推理 action 在 CUDA 上计算，action、termination 和 metrics 回到 CPU；物理 rollout 为 `physx_cpu`
+- Train loss: 50k final `0.00227`；100k final `0.001`
+- Open-loop action error: N/A；本次没有单独计算 offline action error
+- Closed-loop success rate: 独立官方 CPU verification、100 episodes；50k 为 `34/100` success-once、`33/100` success-at-end；100k 为 `52/100`、`47/100`
+- Latency: N/A；本次目标是 official baseline 复现，不是推理延迟 benchmark
+- Failure cases: 50k 有 66/100 episodes 未 success-once，100k 有 48/100 未 success-once；未进一步做失败类型归因
+- Notes: 50k/100k 使用同一 990-demo、4D、默认 57D state 和 CPU verification contract；另有 4-GPU DDP/100k 工程变体，独立 verification 为 `48/100`、`45/100`，不替代单卡主 anchor。本条是 M1-W 数据协议之后、StackCube 模型对照子表之前的 upstream official baseline。
+- Result artifacts: `outputs/maniskill/official_stackcube_rgb_990_50k/anchor_manifest.json`、`outputs/maniskill/official_stackcube_rgb_990_50k/20_verify/metrics.json`、`outputs/maniskill/official_stackcube_rgb_990_100k/anchor_manifest.json`、`outputs/maniskill/official_stackcube_rgb_990_100k/20_verify/metrics.json`、`reports/guides/maniskill/07_official_stackcube_rgb_anchor.md`
+- Modes: Formal / Closed-loop CPU verification
+
+## 2026-08-17 — M2-W Action-only Flow on M1-W native 4D data
+
+- Date: 2026-08-17
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: M1-W native-4D live-RGB 946 episodes / 100,740 action frames；train/development/test = 748/95/96
+- Observation keys: two `128×128×3` RGB cameras + `agent.qpos(9)+agent.qvel(9)` 18D state
+- Action space: native 4D `pd_ee_delta_pos`
+- Action horizon: Flow action horizon 16；selected `n_action_steps=4`；episode horizon 200
+- Control frequency: 20 Hz；`physx_cuda`
+- Policy: M2-W Action-only Flow trunk，4D head；4 GPU DDP，global batch 256
+- Train loss: 100k steps；mean tail loss `0.02532`；last loss `0.01671`
+- Open-loop action error: N/A；本次未单独计算 offline action error
+- Closed-loop success rate: development selected step 100k 为 `83/95` success-once、`83/95` success-at-end（87.4% / 87.4%）；post-selection test 为 `82/96`、`82/96`（85.4% / 85.4%）
+- Latency: N/A；本次不是 inference latency benchmark
+- Failure cases: development 12/95、test 14/96 truncated；selected development/test action clip fraction 分别约 `0.182` / `0.184`
+- Notes: selected checkpoint 为 step 100k、`n_action_steps=4`；test 在 development selection 完成后执行，使用 4 GPU、64 environments；该结果属于 M1-W 原生 4D 数据组，不与 official CPU 4D replay 结果混合。
+- Result artifacts: `outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/run_manifest.json`、`outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/development_gpu/selected_checkpoint.json`、`outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/test_gpu/metrics.json`、`reports/guides/maniskill/09_m2_base_action_flow.md`
+- Modes: Formal / GPU closed-loop development selection / post-selection test

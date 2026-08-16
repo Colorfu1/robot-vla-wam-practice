@@ -275,7 +275,15 @@ M2-W 通过只允许进入 W0；它不证明 future/world representation 有效�
 
 ## 当前验证边界
 
-本次实现已完成 config gate、Action-only Flow shape/noise/checkpoint 单测和单卡 smoke 入口；
-正式 50k 训练、200-state development 选模、冻结 baseline 和 W0 尚未在本仓库本次执行中完成。
-smoke 输出属于 `Smoke`，不能填充正式 experiment fields 中的 train loss、open-loop error、
-closed-loop success rate 或 latency 结论。
+正式 50k 训练和 200-state development candidate sweep 已完成，产物位于
+`outputs/maniskill/m2_task_base/StackCube-v1/formal_seed1000/` 与
+`outputs/maniskill/m2_task_base/StackCube-v1/development/`。训练共 50,000 steps，global batch
+为 256，tail loss 为 0.0685；最佳 candidate 是 step 50k、`n_action_steps=8`，development
+`success_once=43/200`、`success_at_end=43/200`、on-cube 为 33.0%。同一 checkpoint 在训练集
+抽样 probe 为 90/100，但 train/dev normalized action MSE 为 0.00778/0.10635，存在 13.7×
+泛化 gap。
+
+当前仍未完成两件事：`selected_checkpoint.json` 没有写入最终 selected candidate，且没有执行
+state-bank test 或生成 `frozen_base`。因此 M2-W 可以报告为“正式训练 + development candidate
+结果”，不能报告为已冻结 baseline 或已通过 W0。smoke 输出仍属于 `Smoke`，不能替代上述正式
+结果。

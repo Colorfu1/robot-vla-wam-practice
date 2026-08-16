@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -115,7 +116,7 @@ def test_selector_ranking_prefers_closed_loop_success_before_checkpoint_age() ->
     assert selector._selection_key(higher_step) < selector._selection_key(lower_step)
 
 
-def test_selector_parser_has_cpu_development_defaults() -> None:
+def test_selector_parser_has_route_aware_development_defaults() -> None:
     parsed = selector.build_parser().parse_args(
         [
             "select-development",
@@ -125,6 +126,35 @@ def test_selector_parser_has_cpu_development_defaults() -> None:
             "outputs/selection",
         ]
     )
-    assert parsed.policy_device == "cpu"
+    assert parsed.policy_device == "auto"
+    assert parsed.num_gpus is None
+    assert parsed.num_envs == 64
     assert parsed.num_workers == 4
     assert parsed.max_steps == 200
+
+
+def test_selector_route_follows_protocol_backend() -> None:
+    official = selector._resolve_rollout_route(runner.load_config(CONFIG), "auto")
+    native = selector._resolve_rollout_route(runner.load_config(NATIVE_4D_100K_CONFIG), "auto")
+    assert official == ("physx_cpu", "cpu")
+    assert native == ("physx_cuda", "cuda")
+    with pytest.raises(ValueError, match="conflicts"):
+        selector._resolve_rollout_route(runner.load_config(NATIVE_4D_CONFIG), "cpu")
+
+
+def test_gpu_selector_worker_isolates_one_physical_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_evaluate_task(task: object, **kwargs: object) -> dict[str, object]:
+        observed["visible_devices"] = os.environ.get("CUDA_VISIBLE_DEVICES")
+        observed["kwargs"] = kwargs
+        return {"task": task}
+
+    monkeypatch.setattr(selector, "_evaluate_task", fake_evaluate_task)
+    monkeypatch.setattr(selector.torch.cuda, "empty_cache", lambda: None)
+
+    result = selector._evaluate_gpu_task_batch([{"candidate": "demo"}], "7")
+
+    assert result == [{"task": {"candidate": "demo"}}]
+    assert observed["visible_devices"] == "7"
+    assert observed["kwargs"] == {"gpu_index": 0, "physical_gpu_id": "7"}
