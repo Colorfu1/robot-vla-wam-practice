@@ -4,8 +4,9 @@
 ManiSkill 闭环评测管路；它不是 Mini-WAM 或 Residual RL 实验。当前 M1-W 只保留 ManiSkill3
 StackCube。CPU 和 GPU 都可独立运行，但不能跨平台混用状态/动作；M1-W 的 replay、数据生成和
 rollout 统一走 GPU，因为 GPU 并行效率更高。PlugCharger 因 full replay survival 不足已排除。
-M1-W 已关闭；Policy Decorator MS2/v2 M1-R 已完成 smoke，但按用户要求暂缓，待切换
-`maniskill2-pidec` 环境后恢复。
+M1-W 已关闭；Policy Decorator MS2/v2 M1-R 已完成 source/environment audit 和 50 条 smoke，但按用户要求
+暂缓，待切换 `maniskill2-pidec` 环境后恢复。M1-R 是独立的 Residual 路线，不并入下面的 StackCube
+模型对照表。
 
 ## 指南导航
 
@@ -23,6 +24,109 @@ M1-W 已关闭；Policy Decorator MS2/v2 M1-R 已完成 smoke，但按用户要�
 12. [官方 Diffusion Policy 接入 M1-W 7D 数据](10_official_dp_m1w_7d.md)：官方 DP、M1-W live RGB/18D state、懒读 H5 与 torchrun 多卡训练入口
 13. [官方 Diffusion Policy 18D/4D 对照实验](11_official_dp_18d4_ablation.md)：官方数据 25D→18D 与 M1-W 7D→4D 的同协议四卡对照
 14. [M1-W 原生 4D 数据重生成](12_m1_w_native_4d_data.md)：从原始 joint action 官方转换到 4D，再 GPU replay、修复并实时采集 RGB
+
+## M1-R Policy Decorator MS2/v2 Residual 路线
+
+M1-R 与 M1-W 是两条并行但不共享数据和环境的协议线：M1-W 固定 ManiSkill3 `StackCube-v1` 的
+GPU live-RGB WAM 数据，M1-R 固定 Policy Decorator 原始 ManiSkill2/Peg contract，服务后续
+M2-R、R0 和 R1。R2/R3 再迁移到 LIBERO；因此 M1-R 不属于 StackCube 模型横向比较，也不能用
+M1-W 的 7D/4D 数据、controller、horizon、state bank 或 output root 替代。
+
+### 重要进展
+
+- M1-W 的 frozen protocol gate 已通过，满足 M1-R 的前置顺序要求。
+- Policy Decorator 的 pinned checkout、H5/JSON identity、source schema 和 MS2 environment audit
+  已通过；运行环境固定为 `maniskill2-pidec`，`mani-skill2==0.5.3`。
+- 50 条 exact-replay smoke 已通过：native/strict 均 `50/50`，success-once 均 `50/50`，均在
+  success 后 terminated、无 truncation，initial H5 state reconstruction 最大绝对误差为 `0`。
+- 当前状态为 `blocked`（用户暂缓，不是已失败）：986 条 full replay、D_core、offline split、
+  online-RL state banks 和 M1-R protocol freeze 尚未执行；因此尚无 M2-R、R0/R1 的 learned-policy
+  success rate。
+
+### 1. 固定协议
+
+| 项目 | M1-R 冻结值 |
+| --- | --- |
+| task identity | dataset metadata 为 `PegInsertionSide-v0`；formal runtime 为 repo-local `PegInsertionSide-v2` |
+| environment | 独立 `maniskill2-pidec`，`mani-skill2==0.5.3`；不与 ManiSkill3 同进程混用 |
+| source/controller | Policy Decorator pinned checkout；native `pd_ee_delta_pose`，7D normalized action |
+| observation | 50D privileged state：`qpos(9)+qvel(9)+base_pose(7)+tcp_pose(7)+peg_pose(7)+peg_half_size(3)+box_hole_pose(7)+radius(1)` |
+| temporal contract | observation / prediction / action / execution = `2/16/4/4`；每次 decision 执行 4 个 low-level actions |
+| episode contract | source/runtime TimeLimit 固定为 200；不能继承 MS3 Peg@300 |
+| reward contract | reference metadata 未指定时记录 `normalized_dense`；formal replay/online residual 固定 `sparse` |
+| formal data target | 986 episodes；D_core offline train/development/test 目标为 `786/100/100`，state banks 目标为 `2000/200/400`，均须通过 fingerprint leakage gate |
+
+`PegInsertionSide-v0` 是 demonstrations 的原始 task ID，`v2` 只是 repo-local corrected runtime
+environment，不能写成“v2 数据”。固定 checkout、H5/JSON SHA-256 和完整 audit contract 见
+[M1-R 协议预检指南](03_m1_r_protocol_audit.md)。
+
+### 2. R 路线阶段
+
+```text
+M1-R：MS2/v2 task-data-controller 协议冻结
+  ↓
+M2-R：state-conditioned Flow-Matching base + precision headroom
+  ↓
+R0：privileged-state chunk residual RL
+  ↓
+R1：同一 MS2/v2 contract 下的视觉 residual student
+  ↓
+R2 → R3：迁移到 LIBERO / frozen SmolVLA，并核对真实交互预算下的算法收益
+```
+
+| 阶段 | 作用 | 当前状态与结果口径 |
+| --- | --- | --- |
+| M1-R identity/source/environment audit | 固定 commit、H5/JSON、v0 metadata、v2 runtime、50D state、7D action、success/reward/termination 和 TimeLimit | 已完成；属于 `Offline` 协议审计 |
+| M1-R 50 条 exact replay | 验证 native/strict reference reconstruction 和 success predicate | 已完成 `50/50`；属于 `Smoke`，不是 learned-policy benchmark |
+| M1-R 全量 986 replay | 固定 expert-action replay、first-success 和 post-success tail | 暂停；通过后才能继续冻结 D_core |
+| M1-R D_core / split / state banks | 生成 offline split 和 online residual 初始状态集合，并检查跨 split leakage | 暂停；尚未产生正式 frozen artifact |
+| M1-R protocol freeze | 汇总所有 manifest，生成并验证 `frozen_protocol.json` | 未完成；不能进入 M2-R |
+| M2-R | 训练 state-conditioned Flow base，先验证主体行为和 residual headroom | 未开始；不应写入训练成功率 |
+| R0 → R1 | 先在 privileged state 上验证 chunk residual，再切视觉输入 | 未开始；base 必须冻结，residual 才能归因 |
+| R2 → R3 | 在 LIBERO/frozen SmolVLA 上验证迁移与同交互预算对照 | 后续路线，未开始 |
+
+### 3. 正式执行顺序
+
+M1-R 的 runner 会在除 `validate-config` 外的阶段检查 M1-W frozen protocol；顺序 gate 未通过时
+必须停止，不能创建空的 M1-R protocol 文件绕过依赖。用户解除暂停后按以下顺序恢复：
+
+```bash
+# 先做 identity/config 与环境审计
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh --phase=validate-config
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh --phase=source-audit
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh --phase=environment-audit
+
+# 先保留 50 条 smoke，再扩展到全量 986 条
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh \
+  --phase=replay-smoke --count=50
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh \
+  --phase=replay-full --count=986
+
+# full replay 通过后才冻结 D_core、split、state banks 和最终协议
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh --phase=trajectory-audit
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh --phase=freeze-data
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh --phase=state-banks
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh --phase=finalize
+bash scripts/experiments/maniskill/run_m1_r_protocol_audit.sh \
+  --phase=validate-frozen \
+  --protocol=outputs/policy_decorator_ms2/m1_r_protocol_audit/frozen_protocol.json
+```
+
+正式产物统一落在 `outputs/policy_decorator_ms2/m1_r_protocol_audit/`，包括 source/environment
+audit、`reference_replay_50/`、`reference_replay_full/`、trajectory audit、D_core、state banks、
+split leakage report 和 `frozen_protocol.json`。其中 `reference_replay_50/` 的现有 smoke 证据
+可以保留，但不应冒充 full replay 或 Residual RL 结果。
+
+### 4. 当前结论与边界
+
+- M1-R 当前已经证明的是“固定的 MS2/v2 reference contract 可进行 50 条 exact replay”，还没有
+  证明 Flow base 或 Residual RL 的效果。
+- R0 的第一版 base 应使用 low-dimensional state-conditioned Flow-Matching policy，而不是直接
+  引入 RGB；这样才能把 residual-control pipeline 与 perception 问题分开。
+- R0 进入前，base 必须明显高于 random、已经掌握 peg-to-hole 的主体行为，同时保留可由
+  chunk-level residual 修正的 precision/alignment headroom；若 base 太弱，先修 M1-R/M2-R contract。
+- 历史 Peg P1–P3、MS3 joint→EEF conversion 和 StackCube replay 只能作为诊断背景，不能替代
+  M1-R 的 v0/v2 exact replay 或其 frozen artifact。
 
 ## StackCube 阶段结果
 

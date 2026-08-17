@@ -90,7 +90,7 @@ StackCube 的 GPU state-bank 结果统一是 development 200 states、最多 500
 | [M0 PickCube 4D 论文参照](reports/guides/maniskill/01_paper_aligned_pickcube_4d.md) | motion-planning、4D `pd_ee_delta_pos`、CPU、horizon 100；1,000-demo 固定 holdout 为 397/400（99.25%），100-demo 为 206/400（51.5%） | LeRobot diffusion、CPU rollout 和官方 success 语义已达到可用基线；不能与 M0 的 7D/GPU 结果直接相减 |
 | [M1-W StackCube 数据协议](reports/guides/maniskill/02_m1_w_protocol_audit.md) | GPU-native 7D source 1,000 条；baseline replay 805/1,000，failed-only repair 恢复 182/195；final live-RGB `D_core` 为 987 episodes、106,528 action frames，最终 replay 987/987 success-at-end；state bank train/development/test 为 2,000/200/400，split leakage 为 0 | **数据链已完成并冻结。** RGB、18D proprioception、7D action、env state、fingerprint 和 frozen protocol gate 均通过；M1-W 本身是数据/协议结果，不是 learned-policy 成绩 |
 | [M1-W 原生 4D 数据](reports/guides/maniskill/12_m1_w_native_4d_data.md) | 官方 CPU joint→4D conversion 1,000/1,000；GPU native-4D baseline 760/1,000；repair 的 success-at-end 为 186/240（success-once 213/240）；accepted merge 946 条；最终实时 RGB replay 946/946 success-at-end | 4D 数据是重新转换并在 GPU controller 下验证过的独立数据链，不是从 7D 标签切片；它足以进入模型对照，但不能单独证明“动作维度”是唯一因果因素 |
-| M1-R / Plug 历史诊断 | Policy Decorator MS2/v2 exact-action smoke 为 50/50，但 full replay 尚未执行；Plug actual-EEF retarget 在 416 条失败集上仅恢复 21/416（5.05%） | M1-R 仍是 smoke，Plug 已从 M1-W 正式数据线排除；这些结果不进入 StackCube learned-policy 对照 |
+| [M1-R Policy Decorator MS2/v2 协议预检](reports/guides/maniskill/03_m1_r_protocol_audit.md) | ManiSkill2 0.5.3、pinned Policy Decorator、`PegInsertionSide-v0` metadata / `PegInsertionSide-v2` runtime、原生 7D EEF action、50D state；source/environment audit 与 exact-replay smoke 已完成 | 50 条 native/strict replay 均 `50/50`；full replay、D_core、state banks 和 protocol freeze 尚未执行。Plug 的 actual-EEF retarget 仍是独立历史诊断，不进入 M1-R 或 StackCube learned-policy 对照 |
 
 ### 4.2 StackCube 模型对照子表
 
@@ -163,7 +163,27 @@ StackCube 的 GPU state-bank 结果统一是 development 200 states、最多 500
 - 每个结果单元格必须同时能追溯到“训练 steps + eval backend + split + episodes + horizon”；
   缺任一关键字段时写 `N/A` 或“未完成”，不从训练内 monitor 推断独立泛化结果。
 
-### 4.3 ManiSkill 当前结论
+### 4.3 Residual RL 待进行实验
+
+这张表沿用上面的“实验 → budget → 数据/eval → success → 单列原因”格式。M1-R 是 Residual
+训练的前置协议 gate；后续实验都固定使用 Policy Decorator 的 ManiSkill2 0.5.3 / repo-local
+`PegInsertionSide-v2` runtime 和 metadata 为 `PegInsertionSide-v0` 的原生 7D EEF 数据，不复用
+M1-W 的 ManiSkill3 StackCube 数据。当前所有 success 单元格均为 `N/A`，因为这些实验尚未形成正式
+learned-policy 结果。
+
+| 实验 | 训练 budget | 数据 / eval | success_once / success_at_end | 为什么单列 |
+| --- | ---: | --- | ---: | --- |
+| [M1-R protocol freeze](reports/guides/maniskill/03_m1_r_protocol_audit.md) | —（协议 gate） | 986 条 Policy Decorator demonstrations；native/strict exact replay；D_core train/development/test 目标 `786/100/100`；state banks 目标 `2000/200/400` | `50/50` smoke 已完成；full `N/A` | 先冻结 commit、H5/JSON identity、v0-data/v2-env、50D state、7D action、TimeLimit、split 和 success/reward/termination；未完成前不能进入 M2-R |
+| **M2-R：state Flow base + headroom** | 待子计划冻结 | 同一 986 条 native 7D 数据；low-dimensional 50D state-conditioned Flow-Matching；只在 development 选 base checkpoint，再用冻结 state bank 评测 | `N/A` | 先确认 base 高于 random、掌握 peg-to-hole 主体行为且保留 alignment/insertion headroom；这是 R0 的 frozen base，不是 Residual RL 结果 |
+| **R0：Flow base + privileged-state residual** | 待子计划冻结 | 同一 MS2/v2 contract；base 预测 `16×7`，bounded residual 输出 `4×7`，每个 decision 执行 4 步；比较 Frozen Base、Flow + Residual、Zero Residual、Random Bounded Residual | `N/A` | 只验证 chunk-level residual recipe；预注册目标为相对 frozen base development `+10pp` 左右、多 seed 方向一致且 residual 不长期顶 bound；第一版不引入 RGB |
+| **R1：visual / learned representation residual** | 待子计划冻结 | 保持 R0 的 task、action、controller、TimeLimit、split、SAC 和 `2/16/4/4`；只将 privileged state 替换为冻结视觉/学习表示 | `N/A` | 测试 perception/representation 迁移；目标是保留 R0 residual gain 的约 80%，不把视觉失败归因到 MS3 或重新生成一套 task contract |
+| **R2：frozen SmolVLA + residual** | 待子计划冻结 | LIBERO 单任务；frozen SmolVLA/VLA action expert；residual 只读部署时可得的 visual-language embedding + robot state，VLA 参数不更新 | `N/A` | 验证 Policy Decorator-style residual 是否能作为 frozen VLA 的外挂 refinement；不与 ManiSkill2 的 R0 成绩直接横比 |
+| **R3：Residual RL 算法归因** | 按相同真实 interaction budget 冻结 | 在同一 R2/目标 contract 下，对照 Residual RL、Online BC、Weighted BC、Residual BC；各方法允许自然 collection/exploration | `N/A` | 区分“在线新数据有用”和“Residual RL 的 reward/critic/exploration 算法额外有用”；未完成该对照不能声称 Residual RL 优于继续模仿学习 |
+
+上述实验均属于待执行计划，不将 `M1-R` 的 50 条 smoke 写成训练结果。R0/R1/R2/R3 的完整
+依赖关系、进入条件和停止条件见 [Residual RL 母计划](plans/2026-08-11-Mini-WAM与Residual-RL-完整实验总计划.md)。
+
+### 4.4 ManiSkill 当前结论
 
 - M0 已证明数据读取、Diffusion 训练、可视化和闭环评测管路可用；PickCube 的 4D/CPU 参照达到
   99.25%，所以后续 StackCube 的低分不是“整个 LeRobot diffusion 管路坏了”。
