@@ -1,7 +1,7 @@
 # Robot VLA WAM Practice
 
 这是一个以 LeRobot 为工作流层的机器人操作实验仓库。当前 README 总结
-`LIBERO`、`PushT`、`SmolVLA`、`ManiSkill` 四条项目线中每个子任务的目的与结论。
+`LIBERO`、`PushT`、`SmolVLA`、`ManiSkill` 四条实验线，以及 WAM 文献复现与迁移路线。
 
 完整实验命令、协议和产物位置见 [`reports/guides/`](reports/guides/README.md)，实际运行记录见
 [`reports/experiment_log.md`](reports/experiment_log.md)。本页不把计划、Smoke 或诊断结果写成
@@ -10,14 +10,15 @@ Formal 结论。
 > 说明：LIBERO 是 benchmark。下面的“LIBERO”章节指 ACT 在 LIBERO 上的实验；“SmolVLA”章节
 > 是另一条在 LIBERO-Goal 上进行语言条件适配的 VLA 实验线，两者的结果不能互相替代。
 
-## 四条线的当前结论
+## 四条线与 WAM 路线的当前结论
 
 | 项目 | 目的 | 当前结论 |
 | --- | --- | --- |
 | LIBERO / ACT | 验证 ACT 的训练、动作 chunk、平滑控制和 LIBERO 闭环能力 | A1-VAE 达到 19/20（95%），A2 + Temporal Ensemble 达到 18/20（90%）；当前证据只覆盖单任务、单 seed |
 | PushT | 研究 Diffusion 的随机闭环行为、采样效率和条件控制 | 完整 DDPM sampling 能产生多个成功闭环 mode；DDIM-5 是当前最佳速度配置，但固定 observation 多峰性、Prototype-ID 和 Route Field 语义控制均未建立 |
 | SmolVLA | 验证 LIBERO 域适配、LoRA、paraphrase 和语言目标服从 | C3 selected `015000` 达到 canonical 88/90、held-out paraphrase 67/90、Prompt Swap 首次达成 30/30；background regression 为 0/210，而 B0 基线为 183/210，当前配置仍有严重 background forgetting |
-| ManiSkill | 验证 PickCube/StackCube 的数据、控制协议、Action-only Flow 和官方 Diffusion Policy 参照 | M0 PickCube 的 4D/CPU 固定 holdout 为 397/400（99.25%）；StackCube 主表按数据来源和 rollout contract 分组记录：官方 4D 默认 57D state 的 DP 在 100k 为 52/100 once、47/100 end；M2-W 50k 为 43/200、43/200；官方 DP + M1-W 7D 50k 为 27/200、0/200。不同组不组成单一排行榜 |
+| ManiSkill | 验证 PickCube/StackCube 的数据、控制协议、Action-only Flow 和官方 Diffusion Policy 参照 | M0 PickCube 的 4D/CPU 固定 holdout 为 397/400（99.25%）；StackCube 主表按数据来源和 rollout contract 分组记录：官方 4D 默认 57D state 的 DP 在 100k 为 52/100 once、47/100 end；M2-W 50k 为 43/200、43/200；M2 Base + GPU 7D development 选中 step 30k 为 18/100；M2 Base + 投影 4D 的 held-out test 为 21/100。7D 投影 `[0,1,2,6]` 的全量 replay 为 911/987 once、844/987 end；不同组不组成单一排行榜 |
+| WAM 文献复现 | 先在 LIBERO 复现 Fast-WAM/Light-WAM 的公开 artifact 与机制，再迁移到 StackCube tiny 对照 | W0 Fast-WAM 的两条 released-checkpoint 闭环已完成：UP-REL `1929/2000`（96.45%）、LR-REL `1885/2000`（94.25%）。该评测不是 held-out 泛化（初始配置与训练重叠 85.6%）。FW-V/FW-NV 因果对照和 deployment gate 仍未完成，W1/W2/W3 继续等待前置 gate |
 
 ## 1. LIBERO：ACT 子任务总结
 
@@ -88,7 +89,7 @@ StackCube 的 GPU state-bank 结果统一是 development 200 states、最多 500
 | --- | --- | --- |
 | [M0 PickCube RL 7D](reports/guides/maniskill/00_m0_pickcube.md) | 1,013 demos、50,360 frames；20k checkpoint development 为 120/200（60.0%），当时独立 test 为 234/400（58.5%）；50k 在同一 test block 上 sweep 的峰值为 340/400（85.0%） | 7D/GPU 学生管路确实能学会，但 50k test sweep 已污染该 test block，只能作诊断，不能再用于选模或正式泛化结论 |
 | [M0 PickCube 4D 论文参照](reports/guides/maniskill/01_paper_aligned_pickcube_4d.md) | motion-planning、4D `pd_ee_delta_pos`、CPU、horizon 100；1,000-demo 固定 holdout 为 397/400（99.25%），100-demo 为 206/400（51.5%） | LeRobot diffusion、CPU rollout 和官方 success 语义已达到可用基线；不能与 M0 的 7D/GPU 结果直接相减 |
-| [M1-W StackCube 数据协议](reports/guides/maniskill/02_m1_w_protocol_audit.md) | GPU-native 7D source 1,000 条；baseline replay 805/1,000，failed-only repair 恢复 182/195；final live-RGB `D_core` 为 987 episodes、106,528 action frames，最终 replay 987/987 success-at-end；state bank train/development/test 为 2,000/200/400，split leakage 为 0 | **数据链已完成并冻结。** RGB、18D proprioception、7D action、env state、fingerprint 和 frozen protocol gate 均通过；M1-W 本身是数据/协议结果，不是 learned-policy 成绩 |
+| [M1-W StackCube 数据协议](reports/guides/maniskill/02_m1_w_protocol_audit.md) | GPU-native 7D source 1,000 条；baseline replay 805/1,000，failed-only repair 恢复 182/195；final live-RGB `D_core` 为 987 episodes、106,528 action frames，7D replay 987/987 success-at-end；同一 source 投影为 `[0,1,2,6]` 的 4D 全量 replay 为 911/987 success-once、844/987 success-at-end；state bank train/development/test 为 2,000/200/400，split leakage 为 0 | **数据链已完成并冻结。** RGB、18D proprioception、7D action、env state、fingerprint 和 frozen protocol gate 均通过；4D 投影 replay 也证明动作投影本身大部分可执行。M1-W 本身是数据/协议结果，不是 learned-policy 成绩 |
 | [M1-W 原生 4D 数据](reports/guides/maniskill/12_m1_w_native_4d_data.md) | 官方 CPU joint→4D conversion 1,000/1,000；GPU native-4D baseline 760/1,000；repair 的 success-at-end 为 186/240（success-once 213/240）；accepted merge 946 条；最终实时 RGB replay 946/946 success-at-end | 4D 数据是重新转换并在 GPU controller 下验证过的独立数据链，不是从 7D 标签切片；它足以进入模型对照，但不能单独证明“动作维度”是唯一因果因素 |
 | [M1-R Policy Decorator MS2/v2 协议预检](reports/guides/maniskill/03_m1_r_protocol_audit.md) | ManiSkill2 0.5.3、pinned Policy Decorator、`PegInsertionSide-v0` metadata / `PegInsertionSide-v2` runtime、原生 7D EEF action、50D state；source/environment audit 与 exact-replay smoke 已完成 | 50 条 native/strict replay 均 `50/50`；full replay、D_core、state banks 和 protocol freeze 尚未执行。Plug 的 actual-EEF retarget 仍是独立历史诊断，不进入 M1-R 或 StackCube learned-policy 对照 |
 
@@ -110,9 +111,17 @@ StackCube 的 GPU state-bank 结果统一是 development 200 states、最多 500
 </thead>
 <tbody>
 <tr>
-<th rowspan="3">M1-W StackCube<br>数据协议</th>
+<th rowspan="5">M1-W StackCube<br>数据协议</th>
 <td><a href="reports/guides/maniskill/04_m2_w_action_only_flow.md">M2-W Action-only Flow + M1-W GPU 7D 数据</a></td>
 <td><strong>50k steps</strong>；GPU development 200 states / horizon 500；<code>success_once / success_at_end = 43/200 / 43/200</code>（21.5% / 21.5%）。candidate 为 step 50k、<code>n_action_steps=8</code>；test 未访问。</td>
+</tr>
+<tr>
+<td><a href="reports/guides/maniskill/09_m2_base_action_flow.md">M2 Base Action-only Flow + M1-W GPU 7D 数据</a></td>
+<td><strong>50k steps / 4-GPU DDP</strong>；GPU development 100 states / horizon 200；selected step 30k、<code>n_action_steps=8</code>；<code>18/100 / 18/100</code>（18.0% / 18.0%）。</td>
+</tr>
+<tr>
+<td><a href="reports/guides/maniskill/09_m2_base_action_flow.md">M2 Base Action-only Flow + M1-W 7D 的 projected 4D success-at-end 数据</a></td>
+<td><strong>50k steps / 4-GPU DDP</strong>；监督 action 只取 <code>[0,1,2,6]</code>，GPU development 100 states 选中 step 50k、<code>n_action_steps=8</code> 为 <code>22/100 / 22/100</code>；held-out test 为 <code>21/100 / 21/100</code>。</td>
 </tr>
 <tr>
 <td><a href="reports/guides/maniskill/06_m2_diffusion_policy.md">LeRobot Diffusion Policy + M1-W GPU 7D 数据</a></td>
@@ -141,7 +150,7 @@ StackCube 的 GPU state-bank 结果统一是 development 200 states、最多 500
 <td><strong>50k / 100k steps</strong>；GPU development 200 states / horizon 500：50k 为 <code>100/200 / 0/200</code>（50.0% / 0%），100k 为 <code>103/200 / 0/200</code>（51.5% / 0%）。它不是官方 motion-planning 4D replay。</td>
 </tr>
 <tr>
-<td><a href="reports/guides/maniskill/09_m2_base_action_flow.md">M2-W Action-only Flow + M1-W 原生 4D 数据</a></td>
+<td><a href="reports/guides/maniskill/09_m2_base_action_flow.md">M2 Base Action-only Flow + M1-W 原生 4D 数据</a></td>
 <td><strong>100k steps / 4-GPU</strong>；global batch <code>256</code>；step 100k、<code>n_action_steps=4</code> 被选中；train mean tail loss <code>0.02532</code>。GPU development：<code>83/95 / 83/95</code>（87.4% / 87.4%）；post-selection test：<code>82/96 / 82/96</code>（85.4% / 85.4%）。<a href="outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/development_gpu/selected_checkpoint.json">selected checkpoint</a> · <a href="outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/test_gpu/metrics.json">test metrics</a></td>
 </tr>
 </tbody>
@@ -151,15 +160,19 @@ StackCube 的 GPU state-bank 结果统一是 development 200 states、最多 500
 
 | 实验 | 训练 budget | 数据 / eval | success_once / success_at_end | 为什么单列 |
 | --- | ---: | --- | ---: | --- |
-| [M2 base 官方 RGB 4D 适配](reports/guides/maniskill/09_m2_base_action_flow.md) | — | 4D/7D head、H5 lazy loader 和 config/smoke gate；不含已完成的 M1-W native-4D 100k route | N/A | 官方 RGB 4D 这条通用适配入口尚未形成正式训练+选模结果；M1-W native-4D 结果已在上方主表单列 |
+| [M2 base 官方 motion-planning RGB 4D 适配](reports/guides/maniskill/09_m2_base_action_flow.md) | — | 4D/7D head、H5 lazy loader 和 config/smoke gate；不含已完成的 M1-W projected/native-4D route | N/A | 官方 RGB 4D 这条通用适配入口尚未形成正式训练+选模结果；M1-W projected/native-4D 结果已在上方主表单列 |
 
 ### 4.2.2 表格的比较规则
 
-- 先在 `M1-W StackCube 数据协议` 组内比较同一 GPU 7D 数据上的 M2-W、LeRobot DP 和 official DP。
+- 先在 `M1-W StackCube 数据协议` 组内区分 M2-W formal、M2 Base 7D/投影 4D、LeRobot DP 和
+  official DP；M2 Base 的 7D 与投影 4D 训练 steps、split 和 GPU rollout contract 已对齐，仍需
+  将数据监督和 input provenance 作为解释变量。
 - 在 `official 模型复现` 组内比较官方 4D/57D 单卡 50k→100k；4-GPU DDP 只作为同一 100k
   配置的工程变体，不与单卡预算曲线合并。
 - `M1-W 原生 4D 数据` 组用于区分数据 provenance；它不能直接替代 official motion-planning 4D
   replay，也不能把 native-4D 的结果解释成动作维度的单变量结论。
+- `[0,1,2,6]` 全量 replay 是协议/数据诊断，不是 learned-policy 结果；它证明投影 action 在
+  `physx_cuda` 下大部分可执行，但不能证明 policy 能从对应 RGB/state 恢复该 action。
 - 每个结果单元格必须同时能追溯到“训练 steps + eval backend + split + episodes + horizon”；
   缺任一关键字段时写 `N/A` 或“未完成”，不从训练内 monitor 推断独立泛化结果。
 
@@ -192,14 +205,59 @@ learned-policy 结果。
   继续追查，不能把差值归因给单一动作维度。
 - 官方 4D CPU anchor 从 34%（50k）提升到 52%（100k），说明 StackCube 与官方 DP 都有继续
   训练的 headroom；M2-W 50k 的 21.5% 则主要暴露 train→development 泛化问题，而不是优化器没有下降。
-- M2-W 在 M1-W 原生 4D 数据上完成的 100k route 为 development `83/95`（87.4%），post-selection
+- M2 Base 在 M1-W 原生 4D 数据上完成的 100k route 为 development `83/95`（87.4%），post-selection
   test `82/96`（85.4%）；它明显高于当前 M2-W 7D 的 50k 结果，但训练预算、数据 provenance、
   action/control contract 和 rollout split 同时变化，不能把提升单独归因于 action 从 7D 变成 4D。
+- M2 Base 的同预算对照中，GPU 7D 选中 step 30k 为 `18/100`，投影 4D success-at-end route
+  选中 step 50k 为 development `22/100`、held-out test `21/100`；它们都远低于 native 4D
+  100k route，说明“投影后 replay 能成功”与“模型能学会跨轨迹的 RGB/state→action 映射”不是同一件事。
+- 7D action 取 `[0,1,2,6]` 的全量 replay 为 `911/987` success-once、`844/987`
+  success-at-end，因此当前不再把“4D 投影 action 本身不可执行”作为主解释。当前工作假设收敛为：
+  7D 与 native 4D 的 RGB/state 轨迹和时间对齐不一致，削弱了 learned policy 的跨路线复制。
 - 官方 18D/4D 50k 为 33.5% once、27.0% end；它与官方 57D/4D anchor 接近，但当前仍受
   demo 数、eval 数量和选模流程差异影响，不能视作已经完成的 57D→18D 单变量消融。
 - 当前可引用的 StackCube learned-policy 数字必须同时带上 backend、数据来源、state-bank/seed
   split、horizon 和 success 口径；表格必须先按比较组分层，再看结果，不能把 CPU official、GPU
   native4d、GPU M1-W 7D、M2-W 和 LeRobot DP 合并成一张无条件排名表。
+
+## 5. WAM 文献锚点与 StackCube 迁移路线
+
+WAM 路线与 ManiSkill learned-policy 结果分开记录。W0/W1 是 LIBERO 上的文献模型复现，W2/W3
+才回到 StackCube tiny 对照；在 W0/W1 的 artifact、机制和 deployment gate 通过前，不创建
+StackCube formal WAM 结果，也不把论文或上游 README 的数字写成本地测量。
+
+### W0 Fast-WAM baseline
+
+W0 的 baseline 是上游 released Fast-WAM checkpoint 的本地正式闭环评测（`UP-REL`），不是本地
+重新训练结果，也不等同于尚未完成的 `FW-V/FW-NV` 机制因果对照。固定 40 个 LIBERO tasks、每个
+task 50 trials，共 2,000 episodes；无缺失或重复 trial。
+
+> **评测口径说明（重要）**：LIBERO 的闭环评测**不是 held-out 泛化测试**。评测的 2,000 个初始
+> 状态来自 LIBERO 原始的 `<task>.pruned_init`（每 task 恰好 50 条），而训练 demonstration 的
+> 起始配置来自同一来源，实测重叠 **85.6%**（训练集 1,712 episodes / 评测 2,000 初始状态）。
+> 剩下 288 个未覆盖的 trial 不是刻意留出的 test split，而是 OpenVLA 在构建 `_no_noops` 数据集
+> 时**重放失败被剔除**的 demonstration（论文 Appendix E.1），评测端不做对应过滤。所以这里的
+> success 衡量"能否从训练见过的初始配置重新执行"，与所有已发表 LIBERO 数字同口径、可比，
+> 但不能读成对新物体摆放的泛化。明细见
+> [`outputs/literature/w0_fastwam/train_eval_overlap.json`](reports/guides/literature/01_w0_fastwam_libero.md)。
+
+| 模型 / 评测变体 | 数据与协议 | 正式闭环结果 | 状态 |
+| --- | --- | ---: | --- |
+| Fast-WAM W0 `UP-REL` released checkpoint | LIBERO-10 / Goal / Object / Spatial；front + wrist RGB、8D proprio、7D action；上游 checkpoint + 上游 evaluator | **1929/2000（96.45%）**；LIBERO-10 `467/500`（93.4%）、Goal `488/500`（97.6%）、Object `498/500`（99.6%）、Spatial `476/500`（95.2%） | **baseline 已完成**；causal pair 和 deployment gate 待完成 |
+| Fast-WAM W0 `LR-REL` LeRobot integration | 同一 released checkpoint、同一 40 tasks × 50 trials；改用 pinned LeRobot evaluator | **1885/2000（94.25%）**；Object `500/500`（100.0%）、Goal `479/500`（95.8%）、LIBERO-10 `462/500`（92.4%）、Spatial `444/500`（88.8%） | **已完成。** 相对 UP-REL 的 −2.2pp 几乎全部集中在 `libero_spatial` task 5（UP 96% vs LR 28%），其余 39 个 task 在 ±8pp 内；该缺口**未解释**，不补填归因 |
+
+结果明细见 [W0 Fast-WAM 指南](reports/guides/literature/01_w0_fastwam_libero.md) 及
+`outputs/literature/w0_fastwam/upstream_released/summary.json`、
+`outputs/literature/w0_fastwam/lerobot_released_visualfix/summary.json`。
+
+| 阶段 | 目的 | 当前状态 | 入口 |
+| --- | --- | --- | --- |
+| W0 Fast-WAM / LIBERO | released checkpoint、LeRobot integration，以及同初始化 `lambda_video=1/0` 因果对照 | **两个 released-checkpoint 闭环已完成，W0 gate 进行中。** UP-REL `1929/2000`（96.45%）、LR-REL `1885/2000`（94.25%）；causal pair 和 deployment evidence 尚未齐备 | [W0 guide](reports/guides/literature/01_w0_fastwam_libero.md) · [W0 plan](plans/2026-08-17-W0-Fast-WAM-LIBERO复现与机制锚点.md) |
+| W1 Light-WAM / LIBERO | full latent 与 2× compressed latent 的能力、效率和显存对照 | **blocked**，等待 W0 mechanism/deployment gate | [WAM route plan](plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) |
+| W2 StackCube tiny aligned comparison | 在同一 action path/budget 下比较 action-only、Fast-WAM-aligned 和 Light-WAM-aligned auxiliary supervision | **blocked**，等待 W0/W1 机制冻结；只允许 development | [WAM route plan](plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) |
+| W3 StackCube one-shot formal | 打开 400-state formal bank，比较 W2 预注册的 checkpoint/claim | **blocked**，不提前访问 formal bank | [WAM route plan](plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) |
+
+旧的 Mini-WAM / latent action-conditioning W0-W3 计划已 dropped，不作为当前路线的备用结果。
 
 ## 证据边界
 
@@ -207,6 +265,9 @@ learned-policy 结果。
 - `Formal`、`Closed-loop`、`Offline`、`Smoke` 和 `Diagnostic` 不混写；没有正式测量的字段不补填数字。
 - 单任务、单 seed、参与 checkpoint selection 的 validation 结果，只能支持对应实验范围内的判断，不能写成跨任务、跨 seed 或模型家族结论。
 - ManiSkill 的 official 数据必须使用 CPU rollout，M1-W/native4d/M2-W/LeRobot DP 数据必须使用 GPU rollout；转换 backend 和正式 rollout backend 不混写。当前 4D/7D 对照受 split 与转换路径影响，只能作为诊断证据。
+- WAM literature reference、W0 released-checkpoint baseline 和本地 StackCube W2/W3 结果必须分栏记录；
+  W0 的 UP-REL baseline 可以写入实测 success，但不能把它扩展成 causal mechanism 或 deployment
+  已通过的结论。
 - 计划仍放在 [`plans/`](plans/README.md)，实际结果仍放在 [`reports/`](reports/README.md)；数据、checkpoint、视频、Rerun recording 和日志等生成物不提交到 Git。
 
 项目代码和文档使用 [Apache License 2.0](LICENSE)；第三方软件和数据集说明见

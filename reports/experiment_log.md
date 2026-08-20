@@ -1264,3 +1264,111 @@ Use one section per run. Record incomplete or failed runs too.
 - Notes: selected checkpoint 为 step 100k、`n_action_steps=4`；test 在 development selection 完成后执行，使用 4 GPU、64 environments；该结果属于 M1-W 原生 4D 数据组，不与 official CPU 4D replay 结果混合。
 - Result artifacts: `outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/run_manifest.json`、`outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/development_gpu/selected_checkpoint.json`、`outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/test_gpu/metrics.json`、`reports/guides/maniskill/09_m2_base_action_flow.md`
 - Modes: Formal / GPU closed-loop development selection / post-selection test
+
+## 2026-08-19 — M1-W 7D action projection `[0,1,2,6]` full replay
+
+- Date: 2026-08-19
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: M1-W D_core 987 source episodes；train/development/test = `787/100/100`
+- Observation keys: N/A；本条是 action replay，不做 policy inference 或 RGB observation capture
+- Action space: source `pd_ee_delta_pose` 7D 投影为 `[0,1,2,6]`，replay 使用 `pd_ee_delta_pos` 4D
+- Action horizon: 每条 source episode 的完整 action sequence
+- Control frequency: 20 Hz；`physx_cuda`；50 个并行 environments，20 个 batch
+- Train loss: N/A；本条无训练
+- Open-loop action error: N/A；本条无模型 prediction
+- Closed-loop success rate: replay success-once `911/987`（92.30%）；success-at-end `844/987`（85.51%）
+- Latency: N/A；本条不是 policy latency benchmark
+- Failure cases: 76 条未 success-once；143 条未 success-at-end；其中 67 条 success-once 但未保持到 end；baseline route `736/805` once、`679/805` end，repair route `175/182` once、`165/182` end
+- Conclusion: `[0,1,2,6]` 投影 action 在当前 GPU controller 下大体可执行；不能把 replay success 解释成 learned-policy 的 RGB/state 泛化结果
+- Result artifacts: `outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/action_projection_0126_full/metrics.json`、`outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/action_projection_0126_full/replay_manifest.json`
+- Modes: Diagnostic / GPU action replay
+
+## 2026-08-19 — M2 Base Action-only Flow on M1-W GPU 7D
+
+- Date: 2026-08-19
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: 987 episodes；train/development/test = `787/100/100`
+- Observation keys: two `128×128×3` RGB cameras + 18D `agent.qpos(9)+agent.qvel(9)`
+- Action space: 7D `pd_ee_delta_pose`
+- Action horizon: Flow chunk 16；selected `n_action_steps=8`
+- Control frequency: 20 Hz；`physx_cuda`；4-GPU DDP，global batch `256`
+- Train loss: last `0.07552`；last 1,000 steps mean `0.07153`
+- Open-loop action error: N/A；未单独计算 offline action error
+- Closed-loop success rate: selected step 30k development `18/100` success-once、`18/100` success-at-end；test 未登记
+- Latency: N/A；本条不是 inference latency benchmark
+- Failure cases: development 82/100 truncated；`ever_grasped=95%`、`ever_on_cube=28%`；action clip fraction 约 `0.095`
+- Conclusion: 当前 M2 Base 7D route 只形成 development candidate，不能写成 held-out test 结果；相同 M2 Base trunk 的 4D projected route 单列记录
+- Result artifacts: `configs/experiments/maniskill/m2_base_m1w_rgb_7d.json`、`outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/formal_seed1000/loss_history.jsonl`、`outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/development_gpu/selected_checkpoint.json`
+- Modes: Formal training / GPU development selection
+
+## 2026-08-19 — M2 Base Action-only Flow on M1-W projected 4D success-at-end data
+
+- Date: 2026-08-19
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: source 987 episodes；success-at-end index train/development/test = `668/100/100`
+- Observation keys: two `128×128×3` RGB cameras + 18D `agent.qpos(9)+agent.qvel(9)`；RGB/state 仍来自 7D source trajectory
+- Action space: 4D `pd_ee_delta_pos`；supervision only takes source action indices `[0,1,2,6]`
+- Action horizon: Flow chunk 16；selected `n_action_steps=8`
+- Control frequency: 20 Hz；`physx_cuda`；4-GPU DDP，global batch `256`
+- Train loss: last `0.04619`；last 1,000 steps mean `0.04240`
+- Open-loop action error: N/A；未单独计算 offline action error
+- Closed-loop success rate: selected step 50k development `22/100` success-once、`22/100` success-at-end；held-out test `21/100`、`21/100`
+- Latency: N/A；本条不是 inference latency benchmark
+- Failure cases: development 78/100、test 79/100 truncated；action clip fraction 约 `0.126` / `0.122`
+- Conclusion: 4D projected route 的训练监督与 replay action contract 对齐，但其结果仍明显低于 native 4D route；不能把 projection replay 的成功直接等同于 policy 泛化
+- Result artifacts: `configs/experiments/maniskill/m2_base_m1w_rgb_4d_success_at_end.json`、`configs/experiments/maniskill/m1w_dcore_success_at_end_4d_episode_index.md`、`outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/formal_seed1000/loss_history.jsonl`、`outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/development_gpu/selected_checkpoint.json`、`outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/test_gpu/metrics.json`
+- Modes: Formal training / GPU development selection / post-selection test
+
+## 2026-08-19 — M2 Base native-4D checkpoint on M1-W 7D test hybrid diagnostic
+
+- Date: 2026-08-19
+- Task suite: ManiSkill3 `StackCube-v1`
+- Dataset size: 100 test episodes；matched start-state fingerprint 96，mismatched 4
+- Observation keys: recorded M1-W 7D RGB + native 4D qpos/qvel；teacher-forced recorded input
+- Action space: native 4D `pd_ee_delta_pos` from the M2 Base native-4D 100k checkpoint
+- Action horizon: selected `n_action_steps=4`；source horizon mean `106.27`
+- Control frequency: 20 Hz；`physx_cuda`
+- Train loss: N/A；本条只做 diagnostic rollout
+- Open-loop action error: projected action MAE `0.02082`、MSE `0.02258`；该字段只描述与 recorded projected label 的差异
+- Closed-loop success rate: hybrid diagnostic `44/100` once/end；matched subset `43/96` once/end；不能替代 native-4D true closed-loop test `86/100`
+- Latency: N/A；本条不是 latency benchmark
+- Failure cases: 56/100 source-horizon termination；state mismatch episode IDs 仅保存在 metrics artifact 中
+- Conclusion: hybrid diagnostic 支持 RGB/state trajectory provenance 是重要变量；它不是普通 live closed-loop policy score
+- Result artifacts: `outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d_hybrid_7d_rgb_native4dstate_test/metrics.json`、`outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d_on_m1w_7d_test/metrics.json`
+- Modes: Diagnostic / teacher-forced recorded-input rollout
+
+## 2026-08-19 — Fast-WAM W0 UP-REL released checkpoint baseline
+
+- Date: 2026-08-19
+- Task suite: LIBERO-10、LIBERO-Goal、LIBERO-Object、LIBERO-Spatial，共 40 tasks
+- Dataset size: 上游 Fast-WAM LIBERO 数据；每个 task 50 trials，共 2,000 closed-loop episodes
+- Observation keys: front + wrist RGB（224×224）与 8D proprioception
+- Action space: 7D end-effector action，包含 gripper；chunk size 32，执行 10 steps 后重规划
+- Action horizon: 32；execute/replan 10
+- Control frequency: N/A；released checkpoint baseline 的汇总产物未登记该字段
+- Train loss: N/A；本条使用 released checkpoint，不包含本地训练
+- Open-loop action error: N/A
+- Closed-loop success rate: overall `1929/2000`（96.45%）；LIBERO-10 `467/500`（93.4%）、Goal `488/500`（97.6%）、Object `498/500`（99.6%）、Spatial `476/500`（95.2%）
+- Latency: N/A；本条不是 latency benchmark
+- Failure cases: overall 71/2,000 未成功；按 suite 分别为 33/500、12/500、2/500、24/500
+- Conclusion: Fast-WAM W0 的 `UP-REL` released checkpoint baseline 已完成；该结果不等同于 `FW-V/FW-NV` 因果机制结论，`LR-REL` quantitative parity 与 deployment gate 仍待完成
+- Result artifacts: `outputs/literature/w0_fastwam/upstream_released/summary.json`、`outputs/literature/w0_fastwam/upstream_released/run_manifest.json`、`configs/experiments/literature/w0_fastwam_reproduction.json`、`reports/guides/literature/01_w0_fastwam_libero.md`
+- Modes: Formal / released-checkpoint closed-loop evaluation
+
+## 2026-08-19 — Fast-WAM W0 LR-REL LeRobot integration quantitative eval
+
+- Date: 2026-08-19
+- Task suite: LIBERO-Spatial、LIBERO-Object、LIBERO-Goal、LIBERO-10，共 40 tasks
+- Dataset size: released LeRobot checkpoint `ZibinDong/fastwam_libero_uncond_2cam224` @ `a784645f`（`model.safetensors` sha256 `251b0949…`，与 config 钉定值一致）；每个 task 50 episodes，共 2,000 closed-loop episodes
+- Observation keys: front + wrist RGB（原生渲染 224×224，模型侧拼接为 224×448）与 8D proprioception（`eef_pos` + `quat2axisangle` + `gripper_qpos`）
+- Action space: 7D end-effector action，包含 gripper；`action_horizon=32`，`n_action_steps=10`
+- Action horizon: 32；execute/replan 10；未使用 action ensembler（两侧 `use_action_ensembler: false`）
+- Control frequency: LIBERO 默认 20 Hz；`policy.torch_dtype=float32`，`num_steps_wait` 为 LeRobot 默认 10
+- Train loss: N/A；本条使用 released checkpoint，不包含本地训练
+- Open-loop action error: N/A；已做输入张量 parity 检查，修正后 `max|LeRobot_core_input − official_VAE_input| = 0.000000`
+- Closed-loop success rate: overall `1885/2000`（94.25%）；Spatial `444/500`（88.8%）、Object `500/500`（100.0%）、Goal `479/500`（95.8%）、LIBERO-10 `462/500`（92.4%）。同一配置在修复前为 `0/20`
+- Latency: `eval_ep_s` 约 17 s（近独占单卡）至 33 s（8 卡并发）；本条不是 latency benchmark
+- Failure cases: overall 115/2,000 未成功；其中 `libero_spatial` task 5 独占 36/50。该 task 为 suite 内唯一目标物体架在 ramekin 上的配置，视频显示场景与目标识别正确、抓取瞬间将碗碰落
+- Conclusion: LR-REL integration 已完成 2000-episode 定量评测，但**不构成与 UP-REL 的 parity 声明**。两个阻断性缺陷已修复：`MUJOCO_EGL_DEVICE_ID` 被当作物理卡号导致 `mjr_readPixels` native SIGABRT；released checkpoint 的 `norm_map.VISUAL=MEAN_STD(0.5,0.5)` 与 pinned core 的 `*2-1` 重复映射，使 VAE 收到 `4x-3` 而非 `2x-1`。残余 2.2pp 几乎全部来自 `libero_spatial` task 5（UP 96% vs LR 28%）；已逐项排除初始状态（40 task 全部 `max_abs_delta=0`）、动作执行路径、action ensembler、settling 步数（34.0% vs 28.0%）、渲染分辨率（40.0% vs 28.0%）与 dtype（30.0% vs 25.0%），**该缺口未解释，不补填归因**
+- Result artifacts: `outputs/literature/w0_fastwam/lerobot_released_visualfix/summary.json`、同目录 `shards/*/eval_info.json` 与 `task_status/`、`outputs/literature/w0_fastwam/lr_task_probe/`（task 5 的五个 arm）、`outputs/literature/w0_fastwam/egl_calibration.json`、`reports/daily/2026-08-19-W0-FastWAM-UP-REL与LR-REL复现结论.md`
+- Modes: Formal / released-checkpoint closed-loop evaluation（integration cross-check，与 UP-REL 分栏）
