@@ -35,6 +35,7 @@ RUN apt-get \
         jq \
         libegl1 \
         libgl1 \
+        libglu1-mesa \
         libgles2 \
         libglib2.0-0 \
         libglvnd0 \

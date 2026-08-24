@@ -35,6 +35,7 @@ from robot_practice.policies.wam_tiny.action_flow import (
     STATE_KEY,
     ActionFlowConfig,
     ActionOnlyFlowModel,
+    ActionOnlyFlowPolicy,
     NormalizationStats,
     load_action_flow_checkpoint,
     save_action_flow_checkpoint,
@@ -55,7 +56,16 @@ FORBIDDEN_KEYS = {
     "privileged_state",
 }
 IMAGE_KEYS = (BASE_IMAGE_KEY, HAND_IMAGE_KEY)
-NORMALIZATION_CACHE_VERSION = 2
+NORMALIZATION_CACHE_VERSION = 3
+ACTION_CHANNEL_NAMES = (
+    "delta_position_x",
+    "delta_position_y",
+    "delta_position_z",
+    "delta_rotation_x",
+    "delta_rotation_y",
+    "delta_rotation_z",
+    "gripper",
+)
 H5_RDCC_NBYTES = 8 * 1024 * 1024
 H5_RDCC_NSLOTS = 100_003
 H5_RDCC_W0 = 0.75
@@ -261,6 +271,7 @@ def validate_config(
     model = payload.get("model")
     flow = payload.get("flow")
     training = payload.get("training")
+    normalization = payload.get("normalization")
     splits = payload.get("splits")
     evaluation = payload.get("evaluation")
     inputs = payload.get("inputs")
@@ -269,6 +280,7 @@ def validate_config(
         ("model", model),
         ("flow", flow),
         ("training", training),
+        ("normalization", normalization),
         ("splits", splits),
         ("evaluation", evaluation),
         ("inputs", inputs),
@@ -293,6 +305,32 @@ def validate_config(
             raise ValueError(f"protocol.{key} must be {expected!r}, got {protocol.get(key)!r}")
     if protocol.get("action_key") != ACTION_KEY:
         raise ValueError("M2-W action key must be 'action'")
+    if int(protocol["action_dim"]) != len(ACTION_CHANNEL_NAMES):
+        raise ValueError("M2-W 7D action normalization requires exactly seven action channels")
+
+    if normalization.get("profile") != "7d_action_per_channel_zscore":
+        raise ValueError(
+            "normalization.profile must be '7d_action_per_channel_zscore' for M2-W"
+        )
+    if normalization.get("source_split") != "train":
+        raise ValueError("normalization.source_split must be train; development/test are forbidden")
+    state_and_images = normalization.get("state_and_images")
+    action_normalization = normalization.get("action")
+    if not isinstance(state_and_images, Mapping) or not isinstance(action_normalization, Mapping):
+        raise TypeError("normalization.state_and_images and normalization.action must be objects")
+    if state_and_images.get("method") != "mean_std" or state_and_images.get("source_split") != "train":
+        raise ValueError("normalization.state_and_images must use train-only mean_std")
+    if action_normalization.get("method") != "mean_std":
+        raise ValueError("normalization.action.method must be mean_std")
+    if action_normalization.get("per_channel") is not True:
+        raise ValueError("normalization.action must use per-channel statistics")
+    if action_normalization.get("clip_before_stats") is not False:
+        raise ValueError("normalization.action.clip_before_stats must be false")
+    if tuple(action_normalization.get("channel_names", ())) != ACTION_CHANNEL_NAMES:
+        raise ValueError("normalization.action.channel_names must describe the fixed 7D action")
+    std_floor = float(action_normalization.get("std_floor", 0.0))
+    if not math.isfinite(std_floor) or std_floor <= 0.0:
+        raise ValueError("normalization.action.std_floor must be a positive finite value")
     _assert_no_forbidden_observation_keys(payload)
     if tuple(protocol.get("observation_keys", ())) != (BASE_IMAGE_KEY, HAND_IMAGE_KEY, STATE_KEY):
         raise ValueError("M2-W observation keys/order drifted")
@@ -347,6 +385,10 @@ def validate_config(
     for key, expected in expected_training.items():
         if training.get(key) != expected:
             raise ValueError(f"training.{key} must be {expected!r}, got {training.get(key)!r}")
+    if training.get("eval_during_training") is not True:
+        raise ValueError("training.eval_during_training must be true for the M2-W formal run")
+    if int(training.get("eval_num_envs", 0)) <= 0:
+        raise ValueError("training.eval_num_envs must be positive")
     world_size = int(training.get("world_size", 0))
     per_process = int(training.get("per_process_batch_size", 0))
     if world_size <= 0 or per_process <= 0 or world_size * per_process != 256:
@@ -381,6 +423,8 @@ def validate_config(
         "global_batch_size": 256,
         "num_gpus": num_gpus,
         "test_access_allowed": False,
+        "normalization_profile": normalization["profile"],
+        "normalization_source_split": normalization["source_split"],
     }
     if check_inputs:
         m1 = _validate_m1_precondition(payload)
@@ -630,16 +674,21 @@ class StackCubeWindowDataset(Dataset[dict[str, Tensor]]):
 def compute_train_only_stats(
     config: Mapping[str, Any], output_path: str | Path | None = None
 ) -> NormalizationStats:
-    """Compute statistics from the 787 train episodes only."""
+    """Compute train-only per-channel statistics for the fixed M2-W 7D contract."""
 
     path = _rooted(config["inputs"]["d_core_h5"])
     episode_ids = _split_episode_ids(config, "train")
+    action_normalization = config["normalization"]["action"]
+    std_floor = float(action_normalization["std_floor"])
+    if tuple(action_normalization["channel_names"]) != ACTION_CHANNEL_NAMES:
+        raise ValueError("M2-W action channel names do not match the fixed 7D contract")
     image_sum = np.zeros(3, dtype=np.float64)
     image_squared_sum = np.zeros(3, dtype=np.float64)
     state_sum = np.zeros(18, dtype=np.float64)
     state_squared_sum = np.zeros(18, dtype=np.float64)
-    action_sum = np.zeros(7, dtype=np.float64)
-    action_squared_sum = np.zeros(7, dtype=np.float64)
+    action_dim = int(config["protocol"]["action_dim"])
+    action_sum = np.zeros(action_dim, dtype=np.float64)
+    action_squared_sum = np.zeros(action_dim, dtype=np.float64)
     image_count = 0
     frame_count = 0
     with _open_h5_read_only(path) as handle:
@@ -676,7 +725,7 @@ def compute_train_only_stats(
     ) -> tuple[np.ndarray, np.ndarray]:
         mean = total / count
         variance = np.maximum(squared / count - np.square(mean), 0.0)
-        return mean, np.maximum(np.sqrt(variance), 1e-6)
+        return mean, np.maximum(np.sqrt(variance), std_floor)
 
     image_mean, image_std = mean_std(image_sum, image_squared_sum, image_count)
     state_mean, state_std = mean_std(state_sum, state_squared_sum, frame_count)
@@ -693,6 +742,7 @@ def compute_train_only_stats(
                 "source_episode_count": len(episode_ids),
                 "source_frame_count": frame_count,
                 "cache_key": _normalization_stats_cache_key(config),
+                "normalization": config["normalization"],
                 "stats": stats.to_dict(),
             },
         )
@@ -712,6 +762,8 @@ def _normalization_stats_cache_key(config: Mapping[str, Any]) -> dict[str, Any]:
         "d_core_manifest_sha256": str(inputs.get("d_core_manifest_sha256", "")),
         "offline_split_sha256": str(inputs.get("offline_split_sha256", "")),
         "train_episode_count": int(config["splits"]["offline"]["train"]),
+        "normalization_profile": config["normalization"]["profile"],
+        "normalization_sha256": json_sha256(config["normalization"]),
     }
 
 
@@ -736,6 +788,7 @@ def _load_or_compute_train_only_stats(
             if (
                 payload.get("schema_version") == NORMALIZATION_CACHE_VERSION
                 and payload.get("cache_key") == expected_key
+                and payload.get("normalization") == config["normalization"]
             ):
                 stats = NormalizationStats.from_mapping(payload["stats"])
                 _write_json(output_path, payload)
@@ -905,6 +958,15 @@ def _train_impl(
                     {key: value for key, value in config.items() if not key.startswith("_")}
                 ),
                 "m1_frozen_protocol_sha256": sha256_file(config["inputs"]["m1_frozen_protocol"]),
+                "data_identity": {
+                    "dataset_manifest_sha256": str(config["inputs"]["dataset_manifest_sha256"]),
+                    "d_core_manifest_sha256": str(config["inputs"]["d_core_manifest_sha256"]),
+                    "offline_split_sha256": str(config["inputs"]["offline_split_sha256"]),
+                    "state_bank_manifest_sha256": str(
+                        config["inputs"]["state_bank_manifest_sha256"]
+                    ),
+                    "offline_split": dict(config["splits"]["offline"]),
+                },
                 "test_access_count": 0,
                 "data_loader": {
                     "backend": "hdf5_lazy",
@@ -916,6 +978,22 @@ def _train_impl(
                     "full_dataset_in_memory": False,
                 },
                 "normalization_stats_cache": _portable(stats_cache_path),
+                "normalization": config["normalization"],
+                "training_evaluation": {
+                    "enabled": not smoke and bool(config["training"]["eval_during_training"]),
+                    "backend": "in_process_ddp_gpu_rollout",
+                    "num_gpus": world_size,
+                    "num_envs_per_rank": int(config["training"]["eval_num_envs"]),
+                    "checkpoint_steps": [
+                        int(value) for value in config["training"]["selection_checkpoint_steps"]
+                    ],
+                    "n_action_steps": [
+                        int(value) for value in config["evaluation"]["n_action_steps"]
+                    ],
+                    "split": "development",
+                    "test_access_count": 0,
+                },
+                "training_evaluations": [],
                 "logs": {
                     "training_log": _portable(training_log_path),
                     "loss_history": _portable(loss_history_path),
@@ -1094,31 +1172,96 @@ def _train_impl(
                         f"step_time={step_seconds:.3f}s elapsed={elapsed_seconds:.1f}s "
                         f"eta={eta_seconds:.1f}s samples_per_sec={global_samples_per_second:.1f}",
                     )
-            if rank == 0 and step in checkpoint_steps:
+            if step in checkpoint_steps:
                 checkpoint_path = target / f"checkpoint_step_{step:08d}.pt"
-                save_action_flow_checkpoint(
-                    checkpoint_path,
-                    model=model,
-                    stats=stats,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    step=step,
-                    metadata={
-                        "task": TASK_ID,
-                        "config_sha256": json_sha256(
-                            {key: value for key, value in config.items() if not key.startswith("_")}
-                        ),
-                        "m1_frozen_protocol_sha256": sha256_file(
-                            config["inputs"]["m1_frozen_protocol"]
-                        ),
-                        "split": "train",
-                        "test_access_count": 0,
-                    },
+                if rank == 0:
+                    save_action_flow_checkpoint(
+                        checkpoint_path,
+                        model=model,
+                        stats=stats,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        step=step,
+                        metadata={
+                            "task": TASK_ID,
+                            "config_sha256": json_sha256(
+                                {key: value for key, value in config.items() if not key.startswith("_")}
+                            ),
+                            "m1_frozen_protocol_sha256": sha256_file(
+                                config["inputs"]["m1_frozen_protocol"]
+                            ),
+                            "split": "train",
+                            "test_access_count": 0,
+                        },
+                    )
+                    _emit_training_log(
+                        training_log_stream,
+                        f"[M2-W] checkpoint_saved step={step} path={_portable(checkpoint_path)}",
+                    )
+                if distributed:
+                    torch.distributed.barrier()
+
+                run_training_eval = not smoke and bool(
+                    config["training"]["eval_during_training"]
                 )
-                _emit_training_log(
-                    training_log_stream,
-                    f"[M2-W] checkpoint_saved step={step} path={_portable(checkpoint_path)}",
-                )
+                if run_training_eval:
+                    del observations, clean_actions, padding
+                    del source_noise, flow_time, noisy, target_velocity
+                    del prediction, error, mask, loss
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    train_model.eval()
+                    if device.type == "cuda":
+                        torch.cuda.synchronize(device)
+                    for eval_n_action_steps in config["evaluation"]["n_action_steps"]:
+                        merged = _run_training_checkpoint_evaluation(
+                            config,
+                            model=model,
+                            stats=stats,
+                            checkpoint=checkpoint_path,
+                            output_root=target,
+                            checkpoint_step=step,
+                            n_action_steps=int(eval_n_action_steps),
+                            rank=rank,
+                            world_size=world_size,
+                            device=device,
+                        )
+                        if rank == 0 and merged is not None:
+                            eval_dir = (
+                                target
+                                / "training_eval"
+                                / f"step_{int(step):08d}_n{int(eval_n_action_steps)}"
+                            )
+                            manifest = _read_json(target / "run_manifest.json")
+                            evaluations = list(manifest.get("training_evaluations", []))
+                            summary = merged["summary"]
+                            evaluations.append(
+                                {
+                                    "checkpoint_step": int(step),
+                                    "n_action_steps": int(eval_n_action_steps),
+                                    "metrics_path": _portable(eval_dir / "metrics.json"),
+                                    "summary": summary,
+                                    "worker_count": len(merged.get("workers", [])),
+                                }
+                            )
+                            manifest["training_evaluations"] = evaluations
+                            _write_json(target / "run_manifest.json", manifest)
+                            _emit_training_log(
+                                training_log_stream,
+                                f"[M2-W] training_eval_complete step={step} "
+                                f"n_action_steps={int(eval_n_action_steps)} "
+                                f"success_once={float(summary['success_once']):.4f} "
+                                f"success_at_end={float(summary['success_at_end']):.4f} "
+                                f"workers={len(merged.get('workers', []))} "
+                                f"metrics={_portable(eval_dir / 'metrics.json')}",
+                            )
+                        if device.type == "cuda":
+                            torch.cuda.empty_cache()
+                    if device.type == "cuda":
+                        torch.cuda.synchronize(device)
+                    train_model.train()
+                if distributed:
+                    torch.distributed.barrier()
         if rank == 0:
             manifest = _read_json(target / "run_manifest.json")
             elapsed_seconds = time.perf_counter() - started
@@ -1399,6 +1542,91 @@ def merge_rollout_workers(output_dir: str | Path) -> dict[str, Any]:
     }
     _write_json(root / "metrics.json", result)
     return result
+
+
+def _run_training_checkpoint_evaluation(
+    config: Mapping[str, Any],
+    *,
+    model: ActionOnlyFlowModel,
+    stats: NormalizationStats,
+    checkpoint: Path,
+    output_root: Path,
+    checkpoint_step: int,
+    n_action_steps: int,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+) -> dict[str, Any] | None:
+    """Run one checkpoint evaluation across the active DDP training GPUs.
+
+    The evaluator runs in-process so it reuses the already synchronized model on
+    each rank and does not launch extra processes that would compete with the
+    training ranks for GPU memory.  Each rank owns a disjoint slice of the
+    development state bank; rank 0 merges the worker JSON files after all ranks
+    finish their GPU rollouts.
+    """
+
+    from .eval_stackcube_action_flow import run_development_rollout
+
+    output_dir = (
+        output_root
+        / "training_eval"
+        / f"step_{int(checkpoint_step):08d}_n{int(n_action_steps)}"
+    )
+    if rank == 0:
+        _prepare_output_dir(output_dir)
+    if world_size > 1:
+        torch.distributed.barrier()
+
+    state_bank = _rooted(config["inputs"]["state_bank_root"]) / "development.jsonl"
+    policy = ActionOnlyFlowPolicy(
+        model,
+        stats.to(device),
+        n_action_steps=n_action_steps,
+    )
+    local_error: BaseException | None = None
+    try:
+        run_development_rollout(
+            state_bank=state_bank,
+            output_dir=output_dir,
+            n_action_steps=n_action_steps,
+            checkpoint=checkpoint,
+            policy=policy,
+            checkpoint_step=checkpoint_step,
+            max_episodes=int(config["evaluation"]["development_state_count"]),
+            max_steps=int(config["evaluation"]["max_steps"]),
+            num_envs=int(config["training"]["eval_num_envs"]),
+            device=str(device),
+            worker_index=rank,
+            worker_count=world_size,
+        )
+    except BaseException as exc:  # noqa: BLE001 - synchronize failures before another rank enters a barrier
+        local_error = exc
+
+    if world_size > 1:
+        error_flag = torch.tensor(
+            [1 if local_error is not None else 0], device=device, dtype=torch.int32
+        )
+        torch.distributed.all_reduce(error_flag, op=torch.distributed.ReduceOp.MAX)
+    else:
+        error_flag = torch.tensor([1 if local_error is not None else 0], dtype=torch.int32)
+    if int(error_flag.item()) != 0:
+        if local_error is not None:
+            raise RuntimeError(
+                f"M2-W training checkpoint evaluation failed at step={checkpoint_step} "
+                f"n_action_steps={n_action_steps}: {type(local_error).__name__}: {local_error}"
+            ) from local_error
+        raise RuntimeError(
+            f"M2-W training checkpoint evaluation failed on another rank at "
+            f"step={checkpoint_step} n_action_steps={n_action_steps}"
+        )
+
+    if world_size > 1:
+        torch.distributed.barrier()
+    merged = merge_rollout_workers(output_dir) if rank == 0 else None
+    if world_size > 1:
+        torch.distributed.barrier()
+    return merged
 
 
 def _run_rollout_subprocess(

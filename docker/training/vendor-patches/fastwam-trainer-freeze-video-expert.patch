@@ -1,0 +1,29 @@
+--- a/src/fastwam/trainer.py	2026-08-21 18:08:20.222114325 +0800
++++ b/src/fastwam/trainer.py	2026-08-21 18:08:20.218114293 +0800
+@@ -82,7 +82,10 @@
+         # Freeze non-trainable modules before optimizer/deepspeed initialization.
+         # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
+         self._apply_dit_only_train_mode(self.model)
+-        trainable_params = list(self.model.dit.parameters())
++        # Filter by requires_grad so a frozen expert stays out of the optimizer. Without this
++        # ZeRO-1 would allocate Adam state for the 5B frozen video expert: _apply_dit_only_train_mode
++        # runs just above, but list(...) ignores requires_grad.
++        trainable_params = [p for p in self.model.dit.parameters() if p.requires_grad]
+         proprio_encoder = getattr(self.model, "proprio_encoder", None)
+         if proprio_encoder is not None:
+             trainable_params.extend(list(proprio_encoder.parameters()))
+@@ -293,6 +296,14 @@
+         if proprio_encoder is not None:
+             proprio_encoder.train()
+             proprio_encoder.requires_grad_(True)
++        # W0 FW-FZ attribution arm: freeze the pretrained video expert so only the action
++        # expert and proprio encoder are updated. Unset or "0" keeps upstream behaviour
++        # exactly, so one image serves FW-V, FW-NV and FW-FZ.
++        if os.environ.get("W0_FREEZE_VIDEO_EXPERT", "").strip() not in ("", "0"):
++            video_expert = model.dit.mixtures["video"]
++            video_expert.eval()
++            video_expert.requires_grad_(False)
++            logger.info("W0_FREEZE_VIDEO_EXPERT set: video expert frozen, action expert trainable")
+ 
+     @staticmethod
+     def _to_batched_eval_sample(sample):

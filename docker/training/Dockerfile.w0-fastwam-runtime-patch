@@ -1,0 +1,25 @@
+ARG BASE_IMAGE=test-lab-instance-cn-beijing.cr.volces.com/lidar-wwd/practice:latest
+
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+
+# robosuite's EGL cleanup path imports libGLU through PyOpenGL.  Keep this as
+# a small layer on top of the already-built W0 image so updating the runtime
+# library does not rebuild the large FastWAM environments and vendor checkouts.
+RUN apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        update \
+    && apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        install -y --no-install-recommends \
+        libglu1-mesa \
+    && rm -rf /var/lib/apt/lists/*
+
+LABEL io.robot-practice.w0-fastwam.runtime-fix="libglu1-mesa"

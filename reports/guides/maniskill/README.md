@@ -24,6 +24,7 @@ M1-W 已关闭；Policy Decorator MS2/v2 M1-R 已完成 source/environment audit
 12. [官方 Diffusion Policy 接入 M1-W 7D 数据](10_official_dp_m1w_7d.md)：官方 DP、M1-W live RGB/18D state、懒读 H5 与 torchrun 多卡训练入口
 13. [官方 Diffusion Policy 18D/4D 对照实验](11_official_dp_18d4_ablation.md)：官方数据 25D→18D 与 M1-W 7D→4D 的同协议四卡对照
 14. [M1-W 原生 4D 数据重生成](12_m1_w_native_4d_data.md)：从原始 joint action 官方转换到 4D，再 GPU replay、修复并实时采集 RGB
+15. [ManiSkill 复现实验与 M2-W 结果总览](13_reproduction_and_m2w_summary.md)：统一记录官方复现、M1-W 7D/原生 4D、LeRobot Diffusion Policy、M2-W 和当前 7D 诊断结论
 
 ## M1-R Policy Decorator MS2/v2 Residual 路线
 
@@ -133,9 +134,9 @@ split leakage report 和 `frozen_protocol.json`。其中 `reference_replay_50/` 
 StackCube 的文档顺序固定为“数据协议 → 模型对照子表”；official 模型复现作为子表中的独立分组，
 完整细节仍保留在 official guide 中。其中：
 
-1. [M1-W StackCube 数据与控制协议预检](02_m1_w_protocol_audit.md) 已冻结 GPU live-RGB、7D action、18D proprioception、state bank 和 split。
+1. [M1-W StackCube 数据与控制协议预检](02_m1_w_protocol_audit.md) 已冻结 GPU live-RGB、7D action、18D proprioception、state bank 和 split；同一 source 的 `[0,1,2,6]` 投影 4D 全量 replay 为 `911/987` success-once、`844/987` success-at-end。
 2. [官方 StackCube RGB Golden Anchor](07_official_stackcube_rgb_anchor.md) 已完成 990-demo 官方 4D/默认 57D state 的 50k 与 100k 单卡复现；主 verification 分别为 `0.340 / 0.330` 与 `0.520 / 0.470`。
-3. 下面的五条主线及 official 4-GPU 补充行构成 **StackCube 模型对照子表**；official 复现结果在表中单独分组，按训练 steps、数据来源和 rollout contract 记录，不把它误读成无条件总排行榜。
+3. 下面的 M2-W、M2 Base、LeRobot、official 和 native-4D 主线及 official 4-GPU 补充行构成 **StackCube 模型对照子表**；official 复现结果在表中单独分组，按训练 steps、数据来源和 rollout contract 记录，不把它误读成无条件总排行榜。
 
 ### StackCube 模型对照子表
 
@@ -153,13 +154,17 @@ StackCube 的文档顺序固定为“数据协议 → 模型对照子表”；of
 </thead>
 <tbody>
 <tr>
-<th rowspan="4">M1-W StackCube<br>数据协议</th>
+<th rowspan="5">M1-W StackCube<br>数据协议</th>
 <td><a href="04_m2_w_action_only_flow.md">M2-W Action-only Flow + M1-W GPU 7D 数据</a></td>
 <td><strong>50k steps</strong>；GPU development 200 states / horizon 500；<code>43/200 / 43/200</code>（21.5% / 21.5%）。candidate 为 step 50k、<code>n_action_steps=8</code>；test 未访问。</td>
 </tr>
 <tr>
-<td><a href="09_m2_base_action_flow.md">M2-W Action-only Flow（7D per-channel normalization rerun） + M1-W GPU 7D 数据</a></td>
-<td><strong>50k steps / 4-GPU DDP</strong>；GPU development 100 states / horizon 200；step 30k、<code>n_action_steps=8</code> 被选中；<code>18/100 / 18/100</code>（18.0% / 18.0%）。<code>ever_grasped=95%</code>、<code>ever_on_cube=28%</code>；test 未访问。<a href="../../../outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/development_gpu/selected_checkpoint.json">selected checkpoint</a></td>
+<td><a href="09_m2_base_action_flow.md">M2 Base Action-only Flow + M1-W GPU 7D 数据</a></td>
+<td><strong>50k steps / 4-GPU DDP</strong>；GPU development 100 states / horizon 200；selected step 30k、<code>n_action_steps=8</code>；<code>18/100 / 18/100</code>（18.0% / 18.0%）。<a href="../../../outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/development_gpu/selected_checkpoint.json">selected checkpoint</a></td>
+</tr>
+<tr>
+<td><a href="09_m2_base_action_flow.md">M2 Base Action-only Flow + M1-W 7D 的 projected 4D success-at-end 数据</a></td>
+<td><strong>50k steps / 4-GPU DDP</strong>；监督 action 只取 <code>[0,1,2,6]</code>；GPU development 100 states，selected step 50k、<code>n_action_steps=8</code> 为 <code>22/100 / 22/100</code>；held-out test 为 <code>21/100 / 21/100</code>。<a href="../../../outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/development_gpu/selected_checkpoint.json">selected checkpoint</a> · <a href="../../../outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/test_gpu/metrics.json">test metrics</a></td>
 </tr>
 <tr>
 <td><a href="06_m2_diffusion_policy.md">LeRobot Diffusion Policy + M1-W GPU 7D 数据</a></td>
@@ -188,7 +193,7 @@ StackCube 的文档顺序固定为“数据协议 → 模型对照子表”；of
 <td><strong>50k / 100k steps</strong>；GPU development 200 states / horizon 500：50k 为 <code>100/200 / 0/200</code>，100k 为 <code>103/200 / 0/200</code>。不是官方 motion-planning 4D replay。</td>
 </tr>
 <tr>
-<td><a href="09_m2_base_action_flow.md">M2-W Action-only Flow + M1-W 原生 4D 数据</a></td>
+<td><a href="09_m2_base_action_flow.md">M2 Base Action-only Flow + M1-W 原生 4D 数据</a></td>
 <td><strong>100k steps / 4-GPU</strong>；global batch <code>256</code>；step 100k、<code>n_action_steps=4</code> 被选中；train mean tail loss <code>0.02532</code>。GPU development：<code>83/95 / 83/95</code>（87.4% / 87.4%）；post-selection test：<code>82/96 / 82/96</code>（85.4% / 85.4%）。<a href="../../../outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/development_gpu/selected_checkpoint.json">selected checkpoint</a> · <a href="../../../outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/test_gpu/metrics.json">test metrics</a></td>
 </tr>
 </tbody>
@@ -196,22 +201,22 @@ StackCube 的文档顺序固定为“数据协议 → 模型对照子表”；of
 
 ### 从这些主线可以得到的结论
 
-- 按训练步数绑定后的结果速览：M2-W（50k）+ GPU 7D 为 `0.215 / 0.215`；本次 7D
-  per-channel normalization rerun（50k / 4-GPU，selected step 30k、`n_action_steps=8`）为
+- 按训练步数绑定后的结果速览：M2-W（50k）+ GPU 7D 为 `0.215 / 0.215`；M2 Base GPU 7D
+  per-channel route（50k / 4-GPU，selected step 30k、`n_action_steps=8`）为
   `0.180 / 0.180`；LeRobot Diffusion Policy
   （50k）+ GPU 7D 为 `0.095 / 0.095`；官方 Diffusion + 官方 4D（50k / 100k）分别为
   `0.340 / 0.330`、`0.520 / 0.470`；官方 Diffusion + 18D state + 官方 4D（50k）为
   `0.335 / 0.270`；官方 Diffusion + GPU 7D（50k）为 `0.135 / 0.000`。
 - 在同一套 M1-W GPU 7D 数据和基本相同的 development state-bank 口径下，M2-W Action-only Flow
-  的 `0.215 / 0.215` 明显高于 LeRobot Diffusion Policy 的 `0.095 / 0.095`；新的 per-channel
-  normalization rerun 为 `0.180 / 0.180`，没有超过旧结果，说明当前问题不只是 7D 各通道的尺度不一致。
-  在这条数据线上，M2-W 的模型/训练配置仍比 LeRobot Diffusion Policy 更有效。
-- 新 rerun 的 `ever_grasped=95%` 但 `ever_on_cube=28%`，说明策略大多能够接触并抓住目标，主要失败发生在
+  的 `0.215 / 0.215` 明显高于 LeRobot Diffusion Policy 的 `0.095 / 0.095`；M2 Base GPU 7D
+  per-channel route 为 `0.180 / 0.180`，没有超过 M2-W formal；由于 runner/config 也不同，当前不能把差异归因于 7D 各通道的尺度不一致。
+  这条 M2 Base route 与 M2-W formal 是不同 runner/config，不能把两者写成同一个模型结果。
+- M2 Base GPU 7D route 的 `ever_grasped=95%` 但 `ever_on_cube=28%`，说明策略大多能够接触并抓住目标，主要失败发生在
   搬运后的放置/堆叠阶段；这与 development success 仅 `18.0%` 的结果一致。当前更应优先检查 7D
   数据的动作条件、未来监督和 repair route 分布，而不是继续单纯延长训练步数。
 - 官方 4D replay 的官方默认 state（57D）路线从 50k 的 `0.340 / 0.330` 提升到 100k 的
   `0.520 / 0.470`，说明这条官方 pipeline 继续训练确实有收益，不能用 50k 结果代表其上限。
-- M2-W 在 M1-W 原生 4D 数据上完成的 100k route 为 development `83/95`（87.4%），
+- M2 Base 在 M1-W 原生 4D 数据上完成的 100k route 为 development `83/95`（87.4%），
   post-selection test `82/96`（85.4%）；这个结果明显高于 M2-W 7D 的 50k，但不能单独归因于
   action 维度，还要同时考虑训练预算、数据 provenance、control contract 和 rollout split。
 - 57D→18D 的官方 state 对照目前不能下严格结论：两者同时改变了训练 demo 数（990→787）、
@@ -220,24 +225,56 @@ StackCube 的文档顺序固定为“数据协议 → 模型对照子表”；of
 - 官方 DP 在 M1-W GPU 7D 上只有 `0.135 / 0.000`，而 M2-W 在同类数据上是 `0.215 / 0.215`；
   7D 数据路线确实存在泛化问题，但目前不能把差异归因给 action 维度本身，因为控制模式、模型和
   数据 pipeline 也一起变了。
+- `[0,1,2,6]` 投影 4D 的全量 replay 为 `911/987` success-once、`844/987` success-at-end；
+  因此当前不再把“投影 action 本身不可执行”作为主解释。M2 Base 投影 4D 训练的 development/test
+  结果为 `22/100`、`21/100`，说明 replay 可执行不等于模型能从对应 RGB/state 学会同一动作。
+- M2 Base GPU 7D 的 selected step 30k 为 `18/100`，投影 4D success-at-end route 的 selected
+  step 50k 为 development `22/100`、test `21/100`；native 4D 100k 则为 test `82/96`。目前更稳妥
+  的工作假设是：7D 与 native 4D 的 RGB/state 轨迹和时间对齐不一致，削弱了 learned policy 的跨路线复制。
 - M2-W 的 train probe 是 `0.90 / 0.90`，development 只有 `0.215 / 0.215`，且 train/dev
   normalized MSE 为 `0.00778 / 0.10635`（约 13.7 倍差距）。因此当前最明确的瓶颈是泛化/数据覆盖，
   不能把训练集闭环成功率当作正式模型成绩。
 
+可视化对照（同 episode / timestep 的 7D 与 native-4D RGB）见
+[episode timeline](../../../outputs/maniskill/m1w_rgb_4d_vs_7d_visual_comparison/same_episode_timeline_ep0000_clean.png)、
+[t=50](../../../outputs/maniskill/m1w_rgb_4d_vs_7d_visual_comparison/same_timestep_t050_clean.png) 和
+[t=80](../../../outputs/maniskill/m1w_rgb_4d_vs_7d_visual_comparison/same_timestep_t080_clean.png)。这些图支持
+“输入轨迹不同”的诊断方向，但不是新的模型 success 结果。
+
+### 7D→4D 投影 replay 诊断
+
+这不是 policy rollout，而是固定同一批 987 条 M1-W source episode，只取 action
+`[0,1,2,6]`，切换到 `pd_ee_delta_pos` 后在 `physx_cuda` 中按时间步 replay。结果如下：
+
+| 范围 | success-once | success-at-end |
+| --- | ---: | ---: |
+| 全量 987 | `911/987`（92.30%） | `844/987`（85.51%） |
+| development 100 | `95/100` | `92/100` |
+| test 100 | `90/100` | `84/100` |
+| train 787 | `726/787` | `668/787` |
+
+其中 `67` 条 episode 曾经 success 但在 episode 结束时未保持；baseline route 为
+`736/805` once、`679/805` end，repair route 为 `175/182` once、`165/182` end。
+这说明投影 action 的环境可执行性大体成立，但不能替代 learned policy 的 RGB/state→action
+泛化评测。完整记录见
+[action projection metrics](../../../outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/action_projection_0126_full/metrics.json)。
+
 ### 当前缺失或尚未闭环的结果
 
-1. 7D M2-W 的两个 development 结果（原 formal `43/200`、per-channel normalization rerun
-   `18/100`）都没有独立 held-out test；rerun 还只访问了 development state-bank，不能作为最终测试成绩。
-   M1-W native-4D 的 M2-W 100k route 是补充组，已有 post-selection test `82/96`。
-2. 第 1 条的 `selected_checkpoint.json` 已记录 50k + `n_action_steps=8` 候选，但 selection gate 为
+1. M2-W formal 的 development 结果 `43/200` 没有独立 held-out test；其 planned 7D per-channel
+   formal rerun 没有形成 8-GPU training output，不能引用 `18/100`。当前 `18/100` 是 M2 Base GPU
+   7D route 的结果；M1-W native-4D 的 M2 Base 100k route 已有 post-selection test `82/96`。
+2. M2-W formal 的 `selected_checkpoint.json` 已记录 50k + `n_action_steps=8` 候选，但 selection gate 为
    false；没有 frozen base 或 test 结果，因此只能称为 development 最优候选，不能称为完整 frozen baseline。
-3. 第 2 条只有 50k development 选模，没有独立 test，也没有当前 sidecar 可直接引用的 train loss。
-4. 第 4 条只有 50k；还缺同一份 18D/4D 官方数据、同一训练和评测协议下的 100k continuation。
-5. 第 3 条的 100k 已有 100-episode 官方 CPU verification；如果要和更大规模 sweep 对齐，还缺
+3. M2 Base GPU 7D route 目前只完成 50k development 选模；projected-4D success-at-end route 已有
+   50k development `22/100` 和 held-out test `21/100`，但仍没有与 native-4D route 完全相同的
+   data provenance 和 input trajectory，因此不能作为动作维度的单变量结论。
+4. 官方 18D/4D 对照目前只有 50k；还缺同一份数据、同一训练和评测协议下的 100k continuation。
+5. 官方模型复现的 100k 已有 100-episode 官方 CPU verification；如果要和更大规模 sweep 对齐，还缺
    100k checkpoint 的 400-episode multigpu 汇总（现有 checkpoint sweep 到 90k）。
-6. 7D 的 per-channel normalization 已完成一次 M2-W 对照，但同一 episode/split 下的 7D→4D 投影和
-   baseline-only（排除 repair route）对照尚未完成，暂时不能把失败单独归因于 rotation channel 或
-   repair route。
+6. M2 Base 7D 与 projected-4D 的独立 test 已分别完成/部分完成（7D 仍只有 development，projected-4D test 为 `21/100`）；
+   若要继续归因，还需要同一 reset、controller/backend、RGB、state 和 action source 的逐帧配对采集，
+   而不是再把 replay success 当作 learned-policy 证据。
 
 补充区分：`official_dp_stackcube_native_4d` 和其 `100k` 目录使用的是 M1-W 重生成的原生 4D 数据，
 不是 official 模型复现组的“官方 4D replay”；它们已经在上面的 `M1-W 原生 4D 数据` 分组中单列，
@@ -245,5 +282,6 @@ development 结果另见
 [50k native-4D metrics](../../../outputs/maniskill/official_dp_stackcube_native_4d/20_eval/development/metrics.json)
 和 [100k selection](../../../outputs/maniskill/official_dp_stackcube_native_4d_100k/20_eval/development/selection.json)。
 
-实际运行结果在远端产生后，统一登记到 [实验运行记录](../../experiment_log.md)。M0 的上游路线见
-[Mini-WAM 与 Residual RL 完整实验总计划](../../../plans/2026-08-11-Mini-WAM与Residual-RL-完整实验总计划.md)。
+实际运行结果在远端产生后，统一登记到 [实验运行记录](../../experiment_log.md)。M1-R/RL 路线见
+[Residual RL 母计划](../../../plans/2026-08-11-Mini-WAM与Residual-RL-完整实验总计划.md)；WAM 文献复现与
+StackCube 迁移路线单独见 [文献模型复现实验指南](../literature/README.md)。

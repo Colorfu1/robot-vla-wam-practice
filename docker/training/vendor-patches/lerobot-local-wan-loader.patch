@@ -1,0 +1,213 @@
+diff --git a/src/lerobot/policies/fastwam/wan/components.py b/src/lerobot/policies/fastwam/wan/components.py
+index 59a9b610..6eaeb99f 100644
+--- a/src/lerobot/policies/fastwam/wan/components.py
++++ b/src/lerobot/policies/fastwam/wan/components.py
+@@ -15,6 +15,7 @@
+ from __future__ import annotations
+ 
+ import logging
++import os
+ from collections.abc import Sequence
+ from pathlib import Path
+ from typing import TYPE_CHECKING, Any
+@@ -49,6 +50,166 @@ WAN_T5_TOKENIZER = "google/umt5-xxl"
+ WAN22_DIFFUSERS_MODEL_ID = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+ 
+ 
++def _local_component_path(kind: str) -> Path | None:
++    """Resolve a raw Wan component from the repository-local artifact tree.
++
++    The released LeRobot checkpoint contains the trainable FastWAM weights, but
++    the frozen Wan VAE and UMT5 encoder are stored as the raw DiffSynth/Wan
++    artifacts.  They are deliberately not fetched from Hugging Face during a
++    formal run.  The upstream FastWAM loader already consumes these files, so
++    LR-REL uses the same local source of truth when the launcher exposes it.
++    """
++
++    overrides = {
++        "text_encoder": "W0_FASTWAM_TEXT_ENCODER_PATH",
++        "vae": "W0_FASTWAM_VAE_PATH",
++        "tokenizer": "W0_FASTWAM_TOKENIZER_PATH",
++    }
++    if kind not in overrides:
++        raise ValueError(f"unknown local Wan component: {kind}")
++
++    candidates: list[Path] = []
++    override = os.environ.get(overrides[kind], "").strip()
++    if override:
++        candidates.append(Path(override).expanduser())
++
++    model_roots: list[Path] = []
++    for variable in ("W0_FASTWAM_MODEL_ROOT", "DIFFSYNTH_MODEL_BASE_PATH"):
++        value = os.environ.get(variable, "").strip()
++        if value:
++            model_roots.append(Path(value).expanduser())
++    policy_root = os.environ.get("W0_FASTWAM_POLICY_ROOT", "").strip()
++    policy_path = Path(policy_root).expanduser() if policy_root else None
++
++    if kind == "text_encoder":
++        for root in model_roots:
++            candidates.extend(
++                [
++                    root
++                    / "DiffSynth-Studio/Wan-Series-Converted-Safetensors/models_t5_umt5-xxl-enc-bf16.safetensors",
++                    root / "Wan-AI/Wan2.2-TI2V-5B/models_t5_umt5-xxl-enc-bf16.pth",
++                    root / "Wan-AI/Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth",
++                ]
++            )
++        if policy_path is not None:
++            candidates.extend(
++                [
++                    policy_path / "models_t5_umt5-xxl-enc-bf16.safetensors",
++                    policy_path / "models_t5_umt5-xxl-enc-bf16.pth",
++                ]
++            )
++    elif kind == "vae":
++        for root in model_roots:
++            candidates.extend(
++                [
++                    root / "DiffSynth-Studio/Wan-Series-Converted-Safetensors/Wan2.2_VAE.safetensors",
++                    root / "Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth",
++                ]
++            )
++        if policy_path is not None:
++            candidates.extend(
++                [policy_path / "Wan2.2_VAE.safetensors", policy_path / "Wan2.2_VAE.pth"]
++            )
++    else:
++        for root in model_roots:
++            candidates.extend(
++                [
++                    root / "Wan-AI/Wan2.2-TI2V-5B/google/umt5-xxl",
++                    root / "Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl",
++                ]
++            )
++        if policy_path is not None:
++            candidates.append(policy_path / "google/umt5-xxl")
++
++    seen: set[str] = set()
++    for candidate in candidates:
++        key = str(candidate)
++        if key in seen:
++            continue
++        seen.add(key)
++        if kind == "tokenizer":
++            if candidate.is_dir() and (candidate / "tokenizer_config.json").is_file():
++                return candidate
++        elif candidate.is_file():
++            return candidate
++    return None
++
++
++def _load_local_state_dict(path: Path) -> dict[str, torch.Tensor]:
++    if path.suffix == ".safetensors":
++        from safetensors.torch import load_file
++
++        return dict(load_file(str(path), device="cpu"))
++
++    state_dict = torch.load(path, map_location="cpu", weights_only=True)
++    if isinstance(state_dict, dict) and len(state_dict) == 1:
++        for wrapper in ("state_dict", "module", "model_state"):
++            if wrapper in state_dict and isinstance(state_dict[wrapper], dict):
++                state_dict = state_dict[wrapper]
++                break
++    if not isinstance(state_dict, dict) or not all(
++        isinstance(key, str) and isinstance(value, torch.Tensor) for key, value in state_dict.items()
++    ):
++        raise TypeError(f"local Wan checkpoint is not a flat tensor state dict: {path}")
++    return state_dict
++
++
++def _load_local_wan_text_encoder(*, torch_dtype: torch.dtype, device: str) -> torch.nn.Module:
++    path = _local_component_path("text_encoder")
++    if path is None:
++        raise FileNotFoundError(
++            "W0 local UMT5 encoder is missing. Expected models_t5_umt5-xxl-enc-bf16.safetensors "
++            "under W0_FASTWAM_MODEL_ROOT/DiffSynth-Studio/Wan-Series-Converted-Safetensors "
++            "or set W0_FASTWAM_TEXT_ENCODER_PATH."
++        )
++    try:
++        from fastwam.models.wan22.wan_video_text_encoder import WanTextEncoder as LocalWanTextEncoder
++    except ModuleNotFoundError as exc:
++        raise RuntimeError(
++            "LR-REL found the local UMT5 weights but cannot import the pinned FastWAM raw "
++            "component loader. Expose FastWAM/src through W0_FASTWAM_SOURCE_ROOT/PYTHONPATH."
++        ) from exc
++
++    model = LocalWanTextEncoder()
++    state_dict = _load_local_state_dict(path)
++    if state_dict and all(key.startswith("model.") for key in state_dict):
++        state_dict = {key.removeprefix("model."): value for key, value in state_dict.items()}
++    try:
++        model.load_state_dict(state_dict, strict=True)
++    except RuntimeError as exc:
++        raise RuntimeError(f"local UMT5 encoder does not match FastWAM architecture: {path}") from exc
++    logger.info("Loaded local Wan UMT5 text encoder: %s", path)
++    return model.to(device=device, dtype=torch_dtype).eval()
++
++
++def _load_local_wan_vae(*, torch_dtype: torch.dtype, device: str) -> torch.nn.Module:
++    path = _local_component_path("vae")
++    if path is None:
++        raise FileNotFoundError(
++            "W0 local Wan VAE is missing. Expected Wan2.2_VAE.safetensors under "
++            "W0_FASTWAM_MODEL_ROOT/DiffSynth-Studio/Wan-Series-Converted-Safetensors "
++            "or set W0_FASTWAM_VAE_PATH."
++        )
++    try:
++        from fastwam.models.wan22.wan_video_vae import WanVideoVAE38 as LocalWanVideoVAE38
++    except ModuleNotFoundError as exc:
++        raise RuntimeError(
++            "LR-REL found the local Wan VAE weights but cannot import the pinned FastWAM raw "
++            "component loader. Expose FastWAM/src through W0_FASTWAM_SOURCE_ROOT/PYTHONPATH."
++        ) from exc
++
++    model = LocalWanVideoVAE38()
++    state_dict = _load_local_state_dict(path)
++    if state_dict and not all(key.startswith("model.") for key in state_dict):
++        state_dict = {f"model.{key}": value for key, value in state_dict.items()}
++    try:
++        model.load_state_dict(state_dict, strict=True)
++    except RuntimeError as exc:
++        raise RuntimeError(f"local Wan VAE does not match FastWAM architecture: {path}") from exc
++    logger.info("Loaded local Wan VAE: %s", path)
++    return model.to(device=device, dtype=torch_dtype).eval()
++
++
+ class WanTextEncoder(torch.nn.Module):
+     """FastWAM text-encoder contract over `transformers.UMT5EncoderModel`.
+ 
+@@ -106,12 +267,21 @@ class WanTokenizer:
+ 
+ 
+ def build_wan_tokenizer(*, model_id: str = WAN_T5_TOKENIZER, tokenizer_max_len: int) -> WanTokenizer:
++    local_path = _local_component_path("tokenizer")
++    if local_path is not None:
++        model_id = str(local_path)
++        logger.info("Loaded local Wan tokenizer: %s", local_path)
+     return WanTokenizer(name=model_id, seq_len=int(tokenizer_max_len))
+ 
+ 
+ def load_pretrained_wan_vae(*, torch_dtype: torch.dtype, device: str) -> WanVideoVAE38:
+     """Load real Wan2.2 VAE weights from the diffusers repo (offline base creation)."""
+     require_package("diffusers", extra="fastwam")
++    if _local_component_path("vae") is not None:
++        # The repository-local artifact is the raw Wan/DiffSynth checkpoint,
++        # whose native implementation already applies Wan's latent scaling.
++        # Keep the official diffusers path below for non-W0 callers.
++        return _load_local_wan_vae(torch_dtype=torch_dtype, device=device)  # type: ignore[return-value]
+     vae = AutoencoderKLWan.from_pretrained(WAN22_DIFFUSERS_MODEL_ID, subfolder="vae", torch_dtype=torch_dtype)
+     return WanVideoVAE38(dtype=torch_dtype, device=device, pretrained=vae)
+ 
+@@ -129,6 +299,11 @@ def load_pretrained_wan_text_encoder(
+     embedding table is indexed by the tokenizer's vocabulary.
+     """
+     require_package("transformers", extra="fastwam")
++    if _local_component_path("text_encoder") is not None:
++        # The repository-local artifact is the raw Wan/DiffSynth checkpoint;
++        # use the pinned FastWAM implementation instead of asking Transformers
++        # to resolve a missing HF diffusers repo while offline.
++        return _load_local_wan_text_encoder(torch_dtype=torch_dtype, device=device)  # type: ignore[return-value]
+     encoder = UMT5EncoderModel.from_pretrained(model_id, subfolder=subfolder, torch_dtype=torch_dtype)
+     return WanTextEncoder(dtype=torch_dtype, device=device, pretrained=encoder)
+ 

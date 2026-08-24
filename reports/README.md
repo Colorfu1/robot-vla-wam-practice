@@ -15,6 +15,7 @@
 - [PushT Diffusion Pilot](guides/pusht_diffusion/README.md)
 - [SmolVLA LIBERO LoRA 与语言增强（目标协议已完成；C3 background retention 待补）](guides/smolvla_libero/README.md)
 - [ManiSkill M0 PickCube、M1-W、M1-R 与 Peg/MS2 诊断指南](guides/maniskill/README.md)
+- [文献模型复现实验指南](guides/literature/README.md)
 
 实验指南负责说明实验目标、实验设计、完整命令、结果落点和判断标准。实际运行后，
 还需要在 [实验运行记录](experiment_log.md) 中补充对应条目。

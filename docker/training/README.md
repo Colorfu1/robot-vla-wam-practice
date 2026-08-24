@@ -63,6 +63,102 @@ docker build \
   .
 ```
 
+## Thin runtime-fix layers
+
+Two small layers sit on top of the already-built W0 image. They exist so a runtime
+library fix does not rebuild the large FastWAM environments and vendor checkouts.
+Both must be reapplied when the W0 image itself is rebuilt, or the fixes vanish
+silently.
+
+| Dockerfile | What it adds | Why |
+| --- | --- | --- |
+| `Dockerfile.w0-fastwam-runtime-patch` | `libglu1-mesa` | robosuite's EGL cleanup path imports libGLU through PyOpenGL |
+| `Dockerfile.w0-fastwam-torchcodec-fix` | FFmpeg 4.4 runtime libraries | makes `torchcodec` loadable, which stops the training DataLoader from exhausting host RAM |
+| `Dockerfile.w0-fastwam-torchcodec-fix` | `gcc` + `libc6-dev` | triton compiles its CUDA driver shim at `import deepspeed`; without a compiler the launcher dies once the cache is cold |
+
+The torchcodec layer fixes a failure that is invisible at runtime and fatal hours
+later. `lerobot` selects its decode backend with
+`importlib.util.find_spec("torchcodec")`, which succeeds because the Python package
+is installed, but `from torchcodec.decoders import VideoDecoder` then fails with
+`Could not load libtorchcodec ... We support versions 4, 5, 6 and 7` because the
+image only carries FFmpeg 8 (`libavutil.so.60`) inside the conda env.
+`decode_video_frames` catches that and falls back to pyav *from inside the except
+block*, so every decode leaves an exception whose traceback pins the failed import's
+frames. Those frames form reference cycles that also hold the pyav objects and the
+decoded tensors, so nothing is freed until a full gc pass.
+
+Measured, with `scripts/experiments/literature/probe_w0_dataset_memory.py`:
+
+| | before | after |
+| --- | ---: | ---: |
+| large tensors held in cycles (40 samples) | 4 | 0 |
+| `frame` / `traceback` objects in cycles | 50 / 12 | 0 / 0 |
+| pyav objects in cycles (`VideoFormat`, ...) | 112 | 0 |
+| objects gc must free per report (150 samples) | 48-96 | 0 |
+| host RSS growth | ~29 MiB/sample | 0.0 MiB/sample |
+
+Across 64 DataLoader workers that was about 5 GiB per training step, and four 8-GPU
+runs died at steps 265, 270, 560 and 598 on reaching the 1788.9 GiB cgroup limit:
+the OOM killer took a worker, its rank blocked in `queue.get` and never enqueued its
+gradient allreduce, and the other seven spun in DeepSpeed's `allreduce_and_copy`
+until the 600 s NCCL watchdog killed the job.
+
+FFmpeg 4.4 from jammy is used because it is the least invasive version torchcodec
+accepts. It adds only FFmpeg 4-era sonames, which cannot collide with the conda
+env's FFmpeg 8, so no conda package is touched and `LD_LIBRARY_PATH` is unchanged.
+Installing FFmpeg 6/7 would have required either resolving conda-forge into the
+pinned training env or prepending a foreign prefix to `LD_LIBRARY_PATH`, both of
+which risk shadowing `libstdc++`/`zlib` for torch. The LIBERO dataset is AV1, so
+AV1 decoding is mandatory; jammy's `libavcodec58` carries libdav1d and the layer
+fails the build if the import does not work.
+
+### Why the compiler is in the same layer
+
+`import deepspeed` reaches
+`deepspeed/model_implementations/transformers/ds_transformer.py`, which imports `TritonMLP`
+whenever `get_accelerator().is_triton_supported()` is true -- that is, on any device with
+compute capability >= 8, so H20 (9.0) qualifies. The `@triton.autotune` decorator then
+resolves `driver.active`, whose `CudaUtils` constructor compiles
+`triton/backends/nvidia/driver.c` and caches the result under `~/.triton/cache`.
+
+This is a pre-existing latent failure, not a consequence of the FFmpeg change: the previous
+image fails identically three times out of three from a cold cache. It stayed hidden because
+a long-lived container keeps the compiled `cuda_utils.so`, and because a process where NVML
+fails to initialise reports `torch.cuda.is_available() == False`, which makes
+`is_triton_supported()` false and skips the import entirely. Recreating the container
+discarded the cache and the failure surfaced as
+`RuntimeError: Failed to find C compiler. Please specify via CC environment variable.`
+
+`libc6-dev` must be named explicitly: it is only a *Recommends* of `gcc-11`, so
+`--no-install-recommends` omits it and the compile dies on
+`fatal error: stdlib.h: No such file or directory`.
+
+Training numerics are unaffected. `TritonMLP` and `TritonSelfAttention` are inference-path
+classes that ZeRO-1 training never instantiates, so only the import changes.
+
+```bash
+FIX_TAG="w0-fastwam-$(date +%Y%m%d)-torchcodec-gcc"
+
+docker build \
+  --file docker/training/Dockerfile.w0-fastwam-torchcodec-fix \
+  --build-arg "BASE_IMAGE=${IMAGE_REPOSITORY}:latest" \
+  --tag "${IMAGE_REPOSITORY}:${FIX_TAG}" \
+  docker/training
+```
+
+Verify against a real AV1 file before pushing; the build-time check only proves the
+import, not decoding:
+
+```bash
+docker run --rm -v "${PWD}:/repo:ro" -w /repo \
+  --entrypoint /opt/conda/envs/fastwam-upstream/bin/python \
+  "${IMAGE_REPOSITORY}:${FIX_TAG}" \
+  scripts/experiments/literature/probe_w0_dataset_memory.py \
+    --stage lerobot --samples 150 --work-dir /tmp/probe
+```
+
+Expect `gc freed 0` on every report and `0.0 MiB/sample`.
+
 ## Verify locally
 
 ```bash

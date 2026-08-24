@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "experiment_id": "w0_fastwam_libero_reproduction",
+  "status": "protocol_frozen",
+  "sources": {
+    "paper": "arxiv:2603.16666",
+    "fastwam_repo": "https://github.com/yuantianyuan01/FastWAM",
+    "fastwam_commit": "45d8e1458921d83f8ad6cf9ce993d371208dabd0",
+    "libero_repo": "https://github.com/Lifelong-Robot-Learning/LIBERO.git",
+    "libero_commit": "8f1084e3132a39270c3a13ebe37270a43ece2a01",
+    "fastwam_hf_repo": "yuanty/fastwam",
+    "fastwam_hf_revision": "139eebb6d90cdd9bdbbe465f72c6edc9ad5a518a",
+    "lerobot_repo": "https://github.com/huggingface/lerobot",
+    "lerobot_commit": "30da8e687a6dfc617fcd94afc367ac7071c376ce",
+    "lerobot_hf_repo": "ZibinDong/fastwam_libero_uncond_2cam224",
+    "lerobot_hf_revision": "a784645f9ce367ba6953dd20a7a7f0310c85747c",
+    "libero_dataset_repo": "yuanty/LIBERO-fastwam",
+    "libero_dataset_revision": "main",
+    "wan_model_id": "Wan-AI/Wan2.2-TI2V-5B",
+    "tokenizer_model_id": "Wan-AI/Wan2.1-T2V-1.3B",
+    "common_model_id": "DiffSynth-Studio/Wan-Series-Converted-Safetensors"
+  },
+  "known_artifacts": {
+    "upstream_checkpoint": {
+      "file": "libero_uncond_2cam224.pt",
+      "bytes": 12041735140,
+      "sha256": "1000437cfcf55c000094f79a2600634c502bcb5b492476b94bf8509883a49579"
+    },
+    "lerobot_model": {
+      "file": "model.safetensors",
+      "sha256": "251b09499056a2cd784bbe31f12e1e74fb90d9d70960552a5131c74f3ddb791c"
+    }
+  },
+  "environments": {
+    "upstream": {
+      "name": "fastwam-upstream",
+      "python": "3.10",
+      "purpose": "pinned FastWAM canonical evaluation and training"
+    },
+    "lerobot": {
+      "name": "fastwam-lerobot",
+      "python": "3.12",
+      "purpose": "LeRobot v0.6.0 policy/checkpoint integration"
+    }
+  },
+  "protocol": {
+    "task": "libero_uncond_2cam224_1e-4",
+    "suites": [
+      "libero_spatial",
+      "libero_object",
+      "libero_goal",
+      "libero_10"
+    ],
+    "tasks_per_suite": 10,
+    "total_tasks": 40,
+    "demos_per_suite": 500,
+    "total_demos": 2000,
+    "total_demos_note": "raw LIBERO count; the _no_noops training set is train_episodes",
+    "train_episodes": 1712,
+    "train_frames": 277713,
+    "train_episodes_per_suite": {
+      "libero_spatial": 434,
+      "libero_object": 457,
+      "libero_goal": 433,
+      "libero_10": 388
+    },
+    "val_episodes": 0,
+    "test_episodes": 0,
+    "split_note": "upstream configs/data/libero_2cam.yaml sets val_set_proportion=0.0 and defines no val block, so runtime.build_datasets aliases val_ds to train_ds; generalization evidence comes only from closed-loop eval",
+    "mujoco_version": "3.3.2",
+    "camera_names": [
+      "front",
+      "wrist"
+    ],
+    "camera_resolution": [
+      224,
+      224
+    ],
+    "concatenated_image_size": [
+      224,
+      448
+    ],
+    "proprio_dim": 8,
+    "action_dim": 7,
+    "action_horizon": 32,
+    "n_action_steps": 10,
+    "raw_num_frames": 33,
+    "action_video_freq_ratio": 4,
+    "video_frames": 9,
+    "binarize_gripper": true,
+    "text_cfg_scale": 1.0,
+    "num_inference_steps": 10,
+    "train_seed": 42,
+    "eval_seed": 42,
+    "eval_trials_per_task": 50,
+    "eval_episode_length": {
+      "libero_spatial": 300,
+      "libero_object": 300,
+      "libero_goal": 300,
+      "libero_10": 600
+    }
+  },
+  "training": {
+    "steps": 20000,
+    "gpus": 8,
+    "per_gpu_batch_size": 16,
+    "global_batch_size": 128,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.01,
+    "lr_scheduler_type": "cosine",
+    "mixed_precision": "bf16",
+    "max_grad_norm": 1.0,
+    "save_every": 2000,
+    "eval_every": 0,
+    "num_workers": 8,
+    "action_denoising_steps": 10,
+    "cfg_scale": 1.0
+  },
+  "causal_pair": {
+    "variants": {
+      "with_video": {
+        "lambda_video": 1.0
+      },
+      "no_video": {
+        "lambda_video": 0.0
+      }
+    },
+    "only_declared_difference": "model.loss.lambda_video",
+    "same_init_data_noise_update": true,
+    "smoke_steps": 5
+  },
+  "resources": {
+    "upstream_eval_min_gpu_gib": 32,
+    "lerobot_preferred_gpu_gib": 80,
+    "causal_gpu_count": 8,
+    "causal_min_gpu_gib": 80
+  },
+  "paths": {
+    "default_output_root": "outputs/literature/w0_fastwam",
+    "vendor_root": "third_party/w0_fastwam",
+    "cache_root": "pretrained/w0_fastwam",
+    "preflight_root": "outputs/literature/w0_fastwam/preflight",
+    "artifact_root": "outputs/literature/w0_fastwam/artifacts"
+  },
+  "paper_reference": {
+    "suite_success_rates": {
+      "libero_spatial": 0.982,
+      "libero_object": 1.0,
+      "libero_goal": 0.97,
+      "libero_10": 0.952
+    },
+    "average": 0.976,
+    "artifact_tolerance": 0.03,
+    "suite_tolerance": 0.05,
+    "causal_min_gap": 0.02
+  }
+}

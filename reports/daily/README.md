@@ -14,6 +14,7 @@
 - [2026-07-31 PushT 路线条件与 SmolVLA LIBERO 训练基建](2026-07-31-PushT路线条件与SmolVLA-LIBERO训练基建.md)
 - [2026-08-07 C3 改写增强 LoRA 正式评测结论](2026-08-07-C3改写增强LoRA正式评测结论.md)
 - [2026-08-10 ManiSkill M0 收尾与 PickCube 论文参照](2026-08-10-ManiSkill-M0收尾与PickCube论文参照.md)
+- [2026-08-19 W0 Fast-WAM UP-REL 与 LR-REL 复现结论](2026-08-19-W0-FastWAM-UP-REL与LR-REL复现结论.md)
 
 本目录只保存按日期形成的阶段性进展。可复现操作步骤应维护在
 [实验指南](../guides/README.md)，实验指标摘要应维护在

@@ -3,6 +3,10 @@
 !docker/
 !docker/training/
 !docker/training/Dockerfile
+!docker/training/Dockerfile.w0-fastwam-runtime-patch
+!docker/training/Dockerfile.w0-fastwam-torchcodec-fix
+!docker/training/vendor-patches/
+!docker/training/vendor-patches/*.patch
 !docker/training/conda-linux-64.lock
 !docker/training/requirements-linux-64.lock
 !docker/training/source-requirements-linux-64.lock

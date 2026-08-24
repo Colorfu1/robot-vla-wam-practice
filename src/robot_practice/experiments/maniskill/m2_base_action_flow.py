@@ -18,6 +18,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import time
 from collections.abc import Mapping
@@ -140,6 +141,14 @@ def _available_episode_ids(source_h5: str) -> frozenset[int]:
 
 
 def _split_ids(config: Mapping[str, Any], split: str) -> tuple[int, ...]:
+    inputs = config.get("inputs", {})
+    episode_index_md = inputs.get("episode_index_md")
+    episode_index_split = str(inputs.get("episode_index_split", "train"))
+    if episode_index_md and split == episode_index_split:
+        ids = _read_markdown_episode_ids(episode_index_md, section=f"{split}_episode_ids")
+        if not ids:
+            raise ValueError(f"Markdown episode index has no {split!r} episode IDs")
+        return ids
     manifest = _read_json(config["inputs"]["split_manifest"])
     raw_splits = manifest.get("splits", manifest)
     if not isinstance(raw_splits, Mapping) or split not in raw_splits:
@@ -166,6 +175,56 @@ def _split_ids(config: Mapping[str, Any], split: str) -> tuple[int, ...]:
     return ids
 
 
+def _read_markdown_episode_ids(path: str | Path, *, section: str) -> tuple[int, ...]:
+    """Read a strict numeric episode-ID block from a Markdown index.
+
+    The index remains human-readable, while the fenced numeric block gives
+    the training route a deterministic machine-readable boundary.  Only the
+    requested ``##``/``### <section>`` block is consumed; IDs in other
+    sections are never implicitly mixed into a split.
+    """
+
+    target = _rooted(path)
+    if not target.is_file():
+        raise FileNotFoundError(f"M2 base episode index does not exist: {_portable(target)}")
+    headings = {f"## {section}", f"### {section}"}
+    in_section = False
+    in_fence = False
+    values: list[int] = []
+    for line_number, raw_line in enumerate(target.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if line.startswith("#"):
+            if line in headings:
+                in_section = True
+                continue
+            if in_section:
+                break
+        if not in_section:
+            continue
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence or not line:
+            continue
+        if re.fullmatch(r"[0-9]+", line) is None:
+            raise ValueError(
+                f"Markdown episode index {_portable(target)} has non-numeric ID "
+                f"at line {line_number}: {line!r}"
+            )
+        values.append(int(line))
+    if not in_section:
+        raise ValueError(
+            f"Markdown episode index {_portable(target)} has no section for {section!r}"
+        )
+    if in_fence:
+        raise ValueError(f"Markdown episode index {_portable(target)} has an unclosed code fence")
+    if len(set(values)) != len(values):
+        raise ValueError(f"Markdown episode index {_portable(target)} contains duplicate episode IDs")
+    if not values:
+        raise ValueError(f"Markdown episode index {_portable(target)} section {section!r} is empty")
+    return tuple(values)
+
+
 def _expected_action_dim(config: Mapping[str, Any]) -> int:
     action_dim = int(config["protocol"]["action_dim"])
     if action_dim not in SUPPORTED_ACTION_DIMS:
@@ -177,19 +236,57 @@ def _expected_action_dim(config: Mapping[str, Any]) -> int:
     return action_dim
 
 
+def _source_action_dim(config: Mapping[str, Any]) -> int:
+    source_action_dim = int(config["protocol"].get("source_action_dim", config["protocol"]["action_dim"]))
+    if source_action_dim not in SUPPORTED_ACTION_DIMS:
+        raise ValueError(f"M2 base supports source_action_dim=4 or 7, got {source_action_dim}")
+    return source_action_dim
+
+
+def _action_projection_indices(config: Mapping[str, Any]) -> tuple[int, ...]:
+    target_action_dim = _expected_action_dim(config)
+    source_action_dim = _source_action_dim(config)
+    configured = config["protocol"].get("action_projection_indices")
+    if configured is None:
+        if source_action_dim != target_action_dim:
+            raise ValueError(
+                "source_action_dim differs from action_dim; "
+                "protocol.action_projection_indices is required"
+            )
+        return tuple(range(source_action_dim))
+    indices = tuple(int(value) for value in configured)
+    if len(indices) != target_action_dim:
+        raise ValueError(
+            "protocol.action_projection_indices length must equal target action_dim "
+            f"({target_action_dim}), got {len(indices)}"
+        )
+    if len(set(indices)) != len(indices) or any(index < 0 or index >= source_action_dim for index in indices):
+        raise ValueError(
+            "protocol.action_projection_indices must contain unique indices within "
+            f"[0, {source_action_dim})"
+        )
+    return indices
+
+
 def _validate_source_structure(config: Mapping[str, Any]) -> dict[str, Any]:
     source = _rooted(config["inputs"]["source_h5"])
     metadata = _rooted(config["inputs"]["source_metadata"])
     split_manifest = _rooted(config["inputs"]["split_manifest"])
-    for path, label in (
+    episode_index_md = config["inputs"].get("episode_index_md")
+    required_paths = [
         (source, "source HDF5"),
         (metadata, "source metadata"),
         (split_manifest, "split manifest"),
-    ):
+    ]
+    if episode_index_md:
+        required_paths.append((_rooted(str(episode_index_md)), "Markdown episode index"))
+    for path, label in required_paths:
         if not path.is_file():
             raise FileNotFoundError(f"M2 base {label} does not exist: {_portable(path)}")
 
     action_dim = _expected_action_dim(config)
+    source_action_dim = _source_action_dim(config)
+    action_projection_indices = _action_projection_indices(config)
     split_ids = {split: _split_ids(config, split) for split in ("train", "development", "test")}
     all_split_ids = [episode_id for values in split_ids.values() for episode_id in values]
     if len(set(all_split_ids)) != len(all_split_ids):
@@ -209,9 +306,9 @@ def _validate_source_structure(config: Mapping[str, Any]) -> dict[str, Any]:
         for key in keys:
             group = handle[key]
             actions = group["actions"]
-            if actions.ndim != 2 or actions.shape[1] != action_dim:
+            if actions.ndim != 2 or actions.shape[1] != source_action_dim:
                 raise ValueError(
-                    f"{key}/actions must be [T,{action_dim}], got {tuple(actions.shape)}"
+                    f"{key}/actions must be [T,{source_action_dim}], got {tuple(actions.shape)}"
                 )
             action_count = int(actions.shape[0])
             if action_count <= 0:
@@ -234,7 +331,7 @@ def _validate_source_structure(config: Mapping[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"{key} qpos+qvel is not 18D")
 
     metadata_value = _read_json(metadata)
-    return {
+    result = {
         "source_h5": _portable(source),
         "source_metadata": _portable(metadata),
         "split_manifest": _portable(split_manifest),
@@ -244,10 +341,18 @@ def _validate_source_structure(config: Mapping[str, Any]) -> dict[str, Any]:
         "episode_count": len(keys),
         "available_episode_count": len(keys),
         "action_dim": action_dim,
+        "source_action_dim": source_action_dim,
+        "action_projection_indices": list(action_projection_indices),
         "split_counts": {name: len(values) for name, values in split_ids.items()},
         "action_count_total": int(sum(action_counts)),
         "metadata_keys": sorted(str(key) for key in metadata_value),
     }
+    if episode_index_md:
+        episode_index_path = _rooted(str(episode_index_md))
+        result["episode_index_md"] = _portable(episode_index_path)
+        result["episode_index_md_sha256"] = _sha256_file(episode_index_path)
+        result["episode_index_split"] = str(config["inputs"].get("episode_index_split", "train"))
+    return result
 
 
 class RGBH5WindowDataset(Dataset[dict[str, Tensor]]):
@@ -267,6 +372,8 @@ class RGBH5WindowDataset(Dataset[dict[str, Tensor]]):
         self.split = split
         self.path = _rooted(config["inputs"]["source_h5"])
         self.action_dim = _expected_action_dim(config)
+        self.source_action_dim = _source_action_dim(config)
+        self.action_projection_indices = _action_projection_indices(config)
         episode_ids = _split_ids(config, split)
         self.entries: list[tuple[int, int]] = []
         with _open_h5_read_only(self.path) as handle:
@@ -287,6 +394,9 @@ class RGBH5WindowDataset(Dataset[dict[str, Tensor]]):
             "split": split,
             "episode_count": len(episode_ids),
             "sample_count": len(self.entries),
+            "source_action_dim": self.source_action_dim,
+            "action_dim": self.action_dim,
+            "action_projection_indices": list(self.action_projection_indices),
             "full_dataset_in_memory": False,
             "worker_local_persistent_handle": True,
             "window_reads": {"observation_steps": EXPECTED_OBS_STEPS, "action_horizon": EXPECTED_HORIZON},
@@ -344,7 +454,9 @@ class RGBH5WindowDataset(Dataset[dict[str, Tensor]]):
         states = torch.from_numpy(np.concatenate((qpos, qvel), axis=-1))
 
         action_stop = min(action_count, action_index + EXPECTED_HORIZON)
-        selected = np.asarray(group["actions"][action_index:action_stop], dtype=np.float32)
+        selected = np.asarray(
+            group["actions"][action_index:action_stop], dtype=np.float32
+        )[:, self.action_projection_indices]
         padding = np.arange(EXPECTED_HORIZON) >= selected.shape[0]
         if selected.shape[0] < EXPECTED_HORIZON:
             selected = np.concatenate(
@@ -379,6 +491,7 @@ def compute_train_only_stats(config: Mapping[str, Any], output_path: str | Path)
 
     source = _rooted(config["inputs"]["source_h5"])
     action_dim = _expected_action_dim(config)
+    action_projection_indices = _action_projection_indices(config)
     image_sum = np.zeros(3, dtype=np.float64)
     image_squared_sum = np.zeros(3, dtype=np.float64)
     state_sum = np.zeros(EXPECTED_STATE_DIM, dtype=np.float64)
@@ -390,7 +503,7 @@ def compute_train_only_stats(config: Mapping[str, Any], output_path: str | Path)
     with _open_h5_read_only(source) as handle:
         for episode_id in _split_ids(config, "train"):
             group = _episode_group(handle, episode_id)
-            actions = np.asarray(group["actions"], dtype=np.float64)
+            actions = np.asarray(group["actions"], dtype=np.float64)[:, action_projection_indices]
             qpos = np.asarray(group["obs/agent/qpos"][: actions.shape[0]], dtype=np.float64)
             qvel = np.asarray(group["obs/agent/qvel"][: actions.shape[0]], dtype=np.float64)
             states = np.concatenate((qpos, qvel), axis=-1)
@@ -421,6 +534,9 @@ def compute_train_only_stats(config: Mapping[str, Any], output_path: str | Path)
             "source_split": "train",
             "source_episode_count": len(_split_ids(config, "train")),
             "source_frame_count": frame_count,
+            "source_action_dim": _source_action_dim(config),
+            "action_dim": action_dim,
+            "action_projection_indices": list(action_projection_indices),
             "stats": stats.to_dict(),
         },
     )
@@ -585,6 +701,8 @@ def validate_config(
         "experiment_id": payload["experiment_id"],
         "task": TASK_ID,
         "action_dim": action_dim,
+        "source_action_dim": _source_action_dim(payload),
+        "action_projection_indices": list(_action_projection_indices(payload)),
         "state_dim": EXPECTED_STATE_DIM,
         "backend": protocol["backend"],
         "global_batch_size": 256,
@@ -606,6 +724,9 @@ def validate_config(
         expected_metadata_hash = str(inputs.get("source_metadata_sha256", ""))
         if expected_metadata_hash and expected_metadata_hash != source_info["source_metadata_sha256"]:
             raise ValueError("M2 base source metadata hash changed")
+        expected_episode_index_hash = str(inputs.get("episode_index_md_sha256", ""))
+        if expected_episode_index_hash and expected_episode_index_hash != source_info.get("episode_index_md_sha256"):
+            raise ValueError("M2 base Markdown episode index hash changed")
         result["source"] = source_info
     return result
 
@@ -659,6 +780,8 @@ def _train_impl(
                     "phase": "smoke" if smoke else "train",
                     "task": TASK_ID,
                     "action_dim": int(config["protocol"]["action_dim"]),
+                    "source_action_dim": _source_action_dim(config),
+                    "action_projection_indices": list(_action_projection_indices(config)),
                     "control_mode": config["protocol"]["control_mode"],
                     "global_batch_size": 256,
                     "world_size": world_size,
@@ -666,6 +789,7 @@ def _train_impl(
                     "optimizer_steps": max_steps,
                     "config_sha256": _json_sha256({key: value for key, value in config.items() if not key.startswith("_")}),
                     "source": validation.get("source"),
+                    "training_episode_count": len(_split_ids(config, "train")),
                     "test_access_count": 0,
                     "data_loader": {
                         "backend": "hdf5_lazy",
@@ -828,6 +952,8 @@ def _train_impl(
                     metadata={
                         "task": TASK_ID,
                         "action_dim": int(config["protocol"]["action_dim"]),
+                        "source_action_dim": _source_action_dim(config),
+                        "action_projection_indices": list(_action_projection_indices(config)),
                         "control_mode": config["protocol"]["control_mode"],
                         "config_sha256": _json_sha256({key: value for key, value in config.items() if not key.startswith("_")}),
                         "train_split": "train",

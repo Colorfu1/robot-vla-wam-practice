@@ -71,6 +71,13 @@ Run the smoke checks before considering environment or dependency work complete:
 - The project targets Python 3.10 and Ruff line length 100.
 - `PYTHONNOUSERSITE=1` is part of the environment design; preserve it so user-site
   packages do not leak into this workspace.
+- Every long-running training, evaluation, or rollout entrypoint must expose
+  observable progress while it runs. At minimum, report the completed/total
+  work units (training steps, evaluation episodes/tasks, or rollout episodes)
+  periodically to stdout and to a persistent log under the experiment output.
+  A `tqdm` bar is preferred for foreground runs; for `nohup`, multi-process, or
+  multi-GPU runs, structured `STATUS`/`DONE` lines with counts are sufficient.
+  A final JSON written only at the end is not an acceptable progress signal.
 
 ## Required Experiment Fields
 
@@ -129,3 +136,34 @@ upload, or push from this repository:
 - Before replacing an older vault note, write and verify the new canonical copies first.
   Compare each destination byte-for-byte with its repository source, then remove only the
   explicitly mapped superseded note. Leave unrelated vault notes untouched.
+
+## Remote Experiment Failure Diagnosis
+
+For remote training or evaluation failures, follow this loop and wait for the user to
+paste the remote logs before making another diagnosis:
+
+1. Separate launcher errors from worker errors. Record the exact phase, variant, GPU
+   assignment, output root, worker return code, and the command that was actually run.
+2. Inspect the persistent output in this order: top-level `run.log`, the affected
+   `task_logs/*.log`, and any nested logs named by the worker. Capture the final log
+   section plus targeted matches for `Traceback`, `Fatal`, `Aborted`, `CUDA`, `EGL`,
+   `GL_`, `mjr_`, `Hydra`, `out of memory`, and `FileNotFound`.
+3. Verify cheap prerequisites before theorizing: expected dataset metadata, model and
+   tokenizer files, output/cache contents, active Python module paths, and source/vendor
+   checksums when a manually synchronized vendor tree is involved.
+4. State three to five ranked, falsifiable hypotheses. Run one minimal experiment that
+   changes one variable and distinguishes the leading hypotheses. Do not present a
+   workaround or a passing control as proof of root cause.
+5. For a code fix, modify the local repository first, inspect the exact diff, provide
+   the local-to-remote `rsync` command, then provide the remote vendor-copy command if
+   the relevant source is ignored or vendored. Provide one exact remote validation/run
+   command and wait for its logs.
+6. Keep confirmed cause, workaround, measured result, and remaining uncertainty
+   separate. Never silently edit the remote checkout or claim a remote run succeeded
+   without its pasted log/result.
+
+When a failure is in repository source, a Docker rebuild is normally unnecessary: sync
+the changed repository file to the remote checkout. Rebuild the image only when the
+Dockerfile, installed dependencies, base image, or image-layer files changed. For
+ignored `third_party` sources, manually synchronize the source into the runtime vendor
+tree and verify both checksums before rerunning.

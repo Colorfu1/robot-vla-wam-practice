@@ -1372,3 +1372,123 @@ Use one section per run. Record incomplete or failed runs too.
 - Conclusion: LR-REL integration 已完成 2000-episode 定量评测，但**不构成与 UP-REL 的 parity 声明**。两个阻断性缺陷已修复：`MUJOCO_EGL_DEVICE_ID` 被当作物理卡号导致 `mjr_readPixels` native SIGABRT；released checkpoint 的 `norm_map.VISUAL=MEAN_STD(0.5,0.5)` 与 pinned core 的 `*2-1` 重复映射，使 VAE 收到 `4x-3` 而非 `2x-1`。残余 2.2pp 几乎全部来自 `libero_spatial` task 5（UP 96% vs LR 28%）；已逐项排除初始状态（40 task 全部 `max_abs_delta=0`）、动作执行路径、action ensembler、settling 步数（34.0% vs 28.0%）、渲染分辨率（40.0% vs 28.0%）与 dtype（30.0% vs 25.0%），**该缺口未解释，不补填归因**
 - Result artifacts: `outputs/literature/w0_fastwam/lerobot_released_visualfix/summary.json`、同目录 `shards/*/eval_info.json` 与 `task_status/`、`outputs/literature/w0_fastwam/lr_task_probe/`（task 5 的五个 arm）、`outputs/literature/w0_fastwam/egl_calibration.json`、`reports/daily/2026-08-19-W0-FastWAM-UP-REL与LR-REL复现结论.md`
 - Modes: Formal / released-checkpoint closed-loop evaluation（integration cross-check，与 UP-REL 分栏）
+
+## 2026-08-20 — Fast-WAM W0 Node 6 FW-V/FW-NV 5-step distributed smoke
+
+- Date: 2026-08-20
+- Task suite: LIBERO-Spatial / Object / Goal / LIBERO-10 四个 `_no_noops_lerobot` 训练集，共 1,712 episodes / 277,713 frames（与 released stats 逐数字相等）
+- Dataset size: 1,712 episodes；无 validation/test split（`val_set_proportion: 0.0`，`val_ds = train_ds`），`eval_every` 是训练集上的 teacher-forced monitor
+- Observation keys: front + wrist RGB（原生 512×512 解码，模型侧 224×448）与 8D proprioception
+- Action space: 7D end-effector，含 gripper
+- Action horizon: 与 released 配方一致（`libero_uncond_2cam224_1e-4`）
+- Control frequency: N/A（训练，非 rollout）
+- Train loss: 5 步；`with_video` 与 `no_video` 均 `status: complete`；`no_video` 的 `loss_video` 恒 `0.0000`
+- Open-loop action error: N/A
+- Closed-loop success rate: N/A（smoke，不产生评测结果）
+- Latency: 不用 5 步日志估算步时（`speed=0.08–0.10 step/s` 被 warmup 主导，比稳态低 3–4 倍）
+- Failure cases: 无。单卡在结构上装不下（ZeRO-1 在 `world_size=1` 不分片，需 92.4 GiB），必须 8 卡
+- Conclusion: 因果对照的开关真实生效——`no_video` 的 `loss_video` 恒 0 是确定性证据，与 seed 无关。这只验证管路，不支持任何机制结论
+- Result artifacts: `outputs/literature/w0_fastwam/train_smoke_8gpu/`、`train_smoke_loss/`（权重已清理，manifest 与 train.log 保留）
+- Modes: Smoke / distributed pipeline verification
+
+## 2026-08-20 — Fast-WAM W0 Node 7 causal training 的宿主内存 OOM 根因与修复
+
+- Date: 2026-08-20 至 2026-08-21
+- Task suite: 同上四个 suite
+- Dataset size: 1,712 episodes / 277,713 frames；`num_epochs=10` / `max_steps=null` → trainer 推导 21,700 步（冻结配置的 20,000 步相当于 9.22 epochs = 配方的 92.2%）
+- Observation keys: 同上
+- Action space: 7D end-effector，含 gripper
+- Action horizon: 同 released 配方
+- Control frequency: N/A（训练）
+- Train loss: 修复后 step 620 正常推进；修复前四次运行分别在 step 265 / 270 / 560 / 598 中止
+- Open-loop action error: N/A
+- Closed-loop success rate: N/A（本条只记录基础设施故障与修复，因果对照结果另行记录）
+- Latency: 修复前稳态 4.0 s/step（单组 21,700 步约 24 小时）；修复后 2.53 s/step（约 15.3 小时）。提速来自 torchcodec 的精确 seek
+- Failure cases: 四次 8 卡训练死于 cgroup 内存 OOM（`memory.limit_in_bytes` 1788.9 GiB 被顶满，`failcnt=25`）。链条：`lerobot` 用 `find_spec("torchcodec")` 选后端并成功，但 `from torchcodec.decoders import VideoDecoder` 因 torchcodec 只支持 FFmpeg 4–7、镜像只有 FFmpeg 8 而失败；`decode_video_frames` 在 except 块内回落 pyav，每次解码留下的异常 traceback 钉住失败 import 的栈帧，构成引用环并连带钉住 pyav 对象与解码大张量。实测每样本 2 个 traceback（每相机一次）、约 29 MiB/样本，64 个 worker 合计约 5 GiB/step。OOM killer 杀一个 worker 后其 rank 阻塞在 `queue.get`、不再 enqueue 梯度 allreduce，其余 7 个在 DeepSpeed `allreduce_and_copy` 自旋至 600 s NCCL watchdog 杀全场（缺席 rank 在三次里分别是 3、1、0，轮换）
+- Conclusion: 已修复。`Dockerfile.w0-fastwam-torchcodec-fix` 装 jammy FFmpeg 4.4 运行库（只增加 FFmpeg 4 时代 soname，与 conda 的 FFmpeg 8 不冲突），同层补 `gcc` + `libc6-dev`（独立的潜伏故障：`import deepspeed` 在 capability ≥ 8 设备上导入 `TritonMLP`，triton 需现场编译 `driver.c`，老容器靠热缓存绕过）。修复后内存斜率 5–6 → 0.017 GiB/step，cgroup 用量稳定 280 GiB（15%），已越过全部四个历史崩溃点。被测量排除的假设：FUSE 存储阻塞（缺席 rank 是 `S` 不是 `D`）、`expandable_segments`（GPU allocator）、降 `num_workers`（8→2 斜率不变）、glibc arena 碎片（`MALLOC_*` 三项斜率不变，配置已移除）、`__getitem__` 异常重试（`_get` 抛出率 0/120）、`torch.compile`（本路径不调用）。**副作用需记录**：训练解码器由 pyav 变为 torchcodec，AV1→RGB 可能有舍入差异且取帧变准，故本次训练输入与之前 pyav 跑不是逐位相同；FW-V/FW-NV 两组同解码器，因果对照不受影响，且更接近上游
+- Result artifacts: 镜像 `w0-fastwam-20260821-torchcodec-gcc`（digest `sha256:ce864b5ed496ac0c63c7ec8d5b946ab3a7d6c6f9c6e22aa9b78429e69d95a058`）、`docker/training/Dockerfile.w0-fastwam-torchcodec-fix`、`scripts/experiments/literature/watch_w0_stall.sh`、`scripts/experiments/literature/probe_w0_dataset_memory.py`、`outputs/literature/w0_fastwam/causal_10ep/with_video/`
+- Modes: Diagnostic / infrastructure fix（不是实验结果）
+
+## 2026-08-22 — Fast-WAM W0 eval 的 EGL 渲染设备竞态
+
+- Date: 2026-08-21 至 2026-08-22
+- Task suite: LIBERO-Spatial / Object / Goal / LIBERO-10，40 tasks
+- Dataset size: N/A（本条是渲染基础设施诊断，不产生策略结果）
+- Observation keys: front + wrist RGB（MuJoCo/EGL 实时渲染，非数据集解码）
+- Action space: 7D end-effector，含 gripper
+- Action horizon: 32；execute/replan 10
+- Control frequency: LIBERO 默认 20 Hz
+- Train loss: N/A
+- Open-loop action error: N/A
+- Closed-loop success rate: N/A（eval 在 40 个 worker 中的第一个 abort 后 fail-closed 中止）
+- Latency: 稳态约 14.9 步/秒（0.067 s/env-step），与 UP-REL 的 17–33 s/episode 同量级；
+  episode 1 的 4.49 s/it 是启动开销，不是稳态
+- Failure cases: `eval-upstream-released` 在 `libero_spatial task 5` / `gpu5` 上
+  `Fatal Python error: Aborted`（native SIGABRT），栈顶 `binding_utils.py:171 read_pixels`
+  → `mjr_readPixels`，发生在 episode 2 第 22 步（累积约 141 次渲染）。launcher fail-closed 后
+  SIGTERM 其余 worker，它们各自 dump 栈——这些 dump 是 teardown 的结果，不是独立故障
+- Conclusion: 用 `scripts/experiments/literature/sweep_w0_egl_pairs.py` 扫出 8×8 全矩阵后确立
+  两条规则，强度不同。**确定性**：GL 上下文落在本进程 CUDA 所在的物理卡上会立刻 abort；每行
+  恰好一格失败，且该格可由 PCI 确定性算出（`nvidia-smi pci.bus_id` ⋈ `/sys/class/drm/card*/device`
+  ⋈ EGL 的 `EGL_DRM_DEVICE_FILE_EXT`），本机得 `{0:6,1:7,2:4,3:5,4:2,5:3,6:0,7:1}`，逐格等于实测。
+  **竞态**：GL 落在其他进程的 CUDA 卡上时，8 路并发下恒等映射 4/8 失败、环形映射 3/8 失败，且两次
+  失败的目标卡集合无交集（`[0,2,5,7]` vs `[1,4,6]`）——负载对称却部分失败，是竞态而非确定性属性。
+  推论是 `N` worker 占满 `N` 卡无安全分配，需渲染卡与计算卡不重叠（如 4 计算 + 4 纯渲染）。
+  单进程跨卡渲染稳定（`(cuda 5, egl 5)` 400 步 / 4 trial / 同任务全通过），所以任何单进程探针都
+  复现不了并发故障——这也是原自动标定长期接受一个对八张卡全错的恒等映射的原因。
+  **未解释**：旧节点用同配置跑通 2000 集 × 8 worker，原因不明；`compute_mode` 全为 `Default`
+  排除了独占模式，而旧节点的驱动与 GPU UUID 已无从追溯（当时 manifest 不记指纹、标定文件被覆盖）。
+  该竞态规则只在本节点被测量，换机器必须重扫。
+  **与训练无关**：训练读数据集预编码的 mp4、不调用 MuJoCo/EGL，launcher 还 `unset
+  MUJOCO_EGL_DEVICE_ID`；FW-V 完整跑完 21,700 步未受影响。
+  **与 FFmpeg 修复无关**：eval 不解码视频；且逐包对比确认那层只新增 `libsdl2-2.0-0`、`libva-drm2`、
+  `libwayland-cursor0` 三个沾图形的包，`libgl1`/`libegl1`/`libglvnd0`/Mesa 系列在旧镜像中已存在且
+  版本未变，`libGL.so.1` 仍由 libglvnd 分发到 NVIDIA（探针实测 `vendor=NVIDIA Corporation`）
+- Result artifacts: `outputs/literature/w0_fastwam/egl_pair_sweep.json`、
+  `scripts/experiments/literature/sweep_w0_egl_pairs.py`、
+  `outputs/literature/w0_fastwam/eval_final_with_video/task_logs/`（abort 现场）；
+  代码侧：映射改为每次 eval 重新推导（不读缓存）、推导失败默认拒绝启动、探针失败打印原因、
+  两条 eval 路径的 manifest 记录 `render_fingerprint`
+- Modes: Diagnostic / infrastructure（不是实验结果）
+
+## 2026-08-23 — Fast-WAM W0 `FW-V` 本地训练 checkpoint 的正式闭环评测
+
+- Date: 2026-08-21 18:49 至 21:15（评测）；训练 2026-08-20 至 08-21
+- Task suite: LIBERO-Spatial / Object / Goal / LIBERO-10，40 tasks × 50 trials = 2,000 episodes
+- Dataset size: 1,712 episodes / 277,713 timesteps（四个 `_no_noops` LeRobot 数据集）
+- Observation keys: front + wrist RGB（224×448 横向拼接，9 帧）、8D proprio（只用第 0 帧）
+- Action space: 7D end-effector（含 gripper）
+- Action horizon: 32
+- Control frequency: LIBERO 默认 20 Hz
+- Train loss: 未记录（本地 `train.log` 副本停在 step 590，是 OOM 那几次的残留；成功那次的日志
+  仍在远端未同步。**不补填数字。**）
+- Open-loop action error: 未测量
+- Closed-loop success rate: **1921/2000 = 96.05%**；`libero_object` 499/500（99.8%）、
+  `libero_spatial` 486/500（97.2%）、`libero_goal` 483/500（96.6%）、`libero_10` 453/500（90.6%）
+- Latency: 总墙钟 8,753 s（2.43 h），4 GPU 计算 + 4 GPU 纯渲染、40 worker 分 10 波，
+  每 episode 约 17.5 s。UP-REL 用 8 卡为 5,015 s
+- Failure cases: 逐 task 与 UP-REL 相比，只有 7/40 个 task 变化 ≥3 集，最大 ±4；下降集中在
+  `libero_10_4`（−4）、`libero_goal_9`（−4）、`libero_10_2`/`libero_10_8`/`libero_goal_2`（各 −3），
+  上升在 `libero_spatial_9`（+4）、`libero_spatial_4`（+3）。**没有任何 task 崩塌**
+  （对比 LR-REL 的 `libero_spatial task 5` 曾从 96% 掉到 28%），所以整体 −0.4pp 是弥散噪声
+- Conclusion: 训练配置 = 10 epoch / 21,700 步、`lambda_video=1.0`、`lambda_action=1.0`、
+  global batch 128（8×16）、lr 1e-4 cosine、bf16、seed 42、video expert 可训。
+  **与 UP-REL released checkpoint 统计上不可区分**：96.05% vs 96.45%，差 −0.4pp，而 n=2000、
+  p≈0.96 的二项 σ ≈ 0.44pp，差值在 1σ 内。**相对论文的 97.6% 低 1.55pp**，该缺口未解释。
+  评测完整性：`status=complete`、40/40 task、`duplicate_task_keys=[]`、
+  `duplicate_trial_indices=[]`、`missing_task_count=0`。
+  渲染配置：`egl_map_source=explicit`、`egl_device_map={0:2,1:3,2:0,3:1}`、`num_gpus=4`，
+  即 4 张卡计算、渲染落在另外 4 张无 CUDA 上下文的卡上；2,000 集零 abort，验证了 2026-08-22
+  条目里确立的规则。`render_fingerprint` 已写入 manifest。
+  **归一化口径**：manifest 记 `dataset_stats.chosen="upstream"`，即本次用的是上游 released 的
+  stats 而非训练自己写的那份。事后逐值比对 1,484 个数值项，`isclose(rtol=1e-5, atol=1e-8)`
+  全部通过、最大绝对差 2.38e-07（≈ float32 eps），**两份等价，本结果未受影响**。但这暴露
+  `_resolve_eval_dataset_stats` 只查 checkpoint 直接父目录而训练把 stats 写在上两层，属
+  「这次没出事是运气」，已修（向上最多找 3 层，并把纯相对判据改成 isclose 口径——原判据在
+  近零字段上会把 7.6e-10 的绝对差报成 2.4e-05 相对差而误告警）。
+  **标签需注意**：本次复用 `--phase=eval-upstream-released`，因此 manifest 与 summary 的
+  `variant` 字段写的是 `"UP-REL"`，但 `checkpoint` 字段指向
+  `causal_10ep/with_video/checkpoints/weights/step_021700.pt`。**引用时以 checkpoint 为准，
+  不要把这条当成 released-checkpoint baseline。**
+- Result artifacts: `outputs/literature/w0_fastwam/eval_fwv_21700_4gpu/{summary.json,run_manifest.json,run.log}`
+- Modes: Formal / Closed-loop（`FW-V` 组；`FW-FZ` 主对照尚未开始训练，因果对照未完成）

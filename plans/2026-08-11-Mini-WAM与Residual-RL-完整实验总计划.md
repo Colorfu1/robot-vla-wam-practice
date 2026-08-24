@@ -1,13 +1,15 @@
-# 2026-08-11 Mini-WAM 与 Residual RL 完整实验总计划
+# 2026-08-11 WAM 与 Residual RL 完整实验总计划
 
 - 日期：2026-08-11
-- 状态：`in-progress`（M0 `done`；M1-W `done`；M1-R 用户暂缓；当前推进 M2-W，之后进入 W0/W1）
-- 最后更新：2026-08-13；WAM 与 Residual 改为独立依赖链。M1-R 暂待切换 `maniskill2-pidec`
+- 状态：`in-progress`（M0/M1-W `done`；M2-W native-4D base 已完成验证；WAM 主线
+  已改为 Fast-WAM -> Light-WAM -> StackCube literature-aligned transfer，当前只执行 W0）
+- 最后更新：2026-08-17；WAM 与 Residual 保持独立依赖链。M1-R 暂待切换 `maniskill2-pidec`
   环境后恢复。WAM 保留 ManiSkill3，R0/R1
   改在 Policy Decorator 的 ManiSkill2 0.5.3 + repo-local `PegInsertionSide-v2` 上执行，
   R2/R3 仍进入 LIBERO。
 - 类型：综述性母计划；不直接作为实验执行单。
-- 作用：把阶段零、Joint Mini-WAM、W4 Imagined Actor-Critic、Residual RL 和最终 LIBERO 迁移整理为一份唯一总路线。
+- 作用：把阶段零、WAM 文献锚点与 StackCube 迁移、W4、Residual RL 和最终
+  LIBERO 迁移整理为一份综述性母路线。
 - 执行原则：每个编号开跑前另建一份可直接执行的子计划；完整命令、机器配置和最终超参数写入子计划，不写死在总计划中。
 
 ## 0. 合并规则与版本优先级
@@ -16,7 +18,10 @@
 
 1. 阶段零、M0/M1 和全局数据协议：以 `Mini-WAM与残差RL三阶段实验计划-M2修订版` 为底稿；
    2026-08-12 的 MS3-WAM / MS2-Residual 分线决议覆盖其中的三任务同栈假设。
-2. Mini-WAM：以 `Mini-WAM Joint World-Action实验计划-W4-ActorCritic版` 为最终版本；它覆盖旧 W0–W3 reranking 路线，并新增 W4。
+2. WAM：以
+   [WAM 文献锚点复现与 StackCube 迁移路线](2026-08-17-WAM文献锚点复现与StackCube迁移路线.md)
+   为唯一 active contract；它覆盖本文中所有 Mini-WAM、latent horizon、shuffled-future
+   和旧 W0-W3 细节。
 3. Residual RL：沿用 `Residual-RL-R0-R3-PolicyDecorator-FlowMatching修订版` 的算法结构，
    但 R0/R1 不再迁移到 ManiSkill3；二者固定在 Policy Decorator 的原始 MS2/v2
    environment/data/controller contract，R2/R3 才迁入 LIBERO。
@@ -37,7 +42,9 @@
 
 整个实验链回答三个彼此独立、最后再组合的问题：
 
-1. **Mini-WAM / Joint World-Action Learning**：在相同 demonstrations、相同 action architecture 和相同 inference path 下，训练时加入 action-conditioned future/world supervision，能否直接学出更好的 Flow-Matching action policy？
+1. **Literature-anchored World-Action Learning**：先在官方 LIBERO 协议上复现
+   Fast-WAM 的 video co-training causal gain，再复现 Light-WAM 的 downsampled-latent
+   efficiency/non-inferiority，最后回到 StackCube 做同 action path 的三组对照。
 2. **W4 / Model-Based RL**：如果 learned world representation 已经对 direct policy 有价值，能否进一步把 learned dynamics 当作 imagination environment，在不增加真实训练交互的前提下优化主 actor？
 3. **Residual RL**：一个已经掌握主体行为的 frozen imitation/VLA policy，能否通过小型 residual 获得闭环提升；并且在相同真实交互预算下，包括 reward optimization、critic/bootstrapping 和 exploration/data collection 在内的完整 Residual RL 算法，是否比只用新数据继续模仿学习更有价值？
 
@@ -53,12 +60,16 @@ M0 ManiSkill3 端到端探针（done）
         ↓
 M1-W：MS3 StackCube GPU 数据与控制协议冻结（done）
         ↓
-M2-W：RGB Action-only Flow baseline + headroom
+M2-W：native-4D RGB Action-only Flow baseline + headroom（done）
+        ├────────────────────────┐
+        │ StackCube action anchor  │
+W0 Fast-WAM official LIBERO artifact + causal reproduction
         ↓
-       W0 → W1 → W2 → W3 ─────→ F0
-                      │
-                      ├→ W4（可选增强）
-                      └→ W2-P（可选 reranking probe）
+W1 Light-WAM official LIBERO latent-compression reproduction
+        ↓
+W2 StackCube Action-only vs Fast-WAM-aligned vs Light-WAM-aligned
+        ↓
+W3 StackCube one-shot formal → F0/W4
 
 M3 / W-Data（可选数据扩展；不 gate W0）
 
@@ -77,24 +88,33 @@ F1 → F2 → F3    # TODO
 
 当前只允许按以下顺序推进：
 
-1. M1-W 已完成 StackCube state banks、finalize 和 frozen-protocol validation；M2-W 已解除该项
-   协议阻塞，但仍按 M2-W 子计划执行。
-2. M1-W 关闭后执行 M2-W：先冻结 Action-only Flow baseline 与 development headroom，再进入
-   W0。W0 通过 action intervention gate 后才启动 W1；不能从 M2-W 跳过 W0 直接扫 horizon。
-3. M1-R→M2-R 是独立 Residual 依赖链，不再阻塞 M2-W。当前优先完成 W 线；恢复 Residual 线时
+1. M1-W 已完成；M2-W 采用 M1-W 重生成的 native-4D live-RGB data，100k Action-only Flow
+   checkpoint、`n_action_steps=4` 与 4D GPU rollout contract 已形成进入 WAM 的 base anchor。
+2. 当前只执行 Fast-WAM W0：先跑官方 released checkpoint，再训练同初始化
+   `lambda_video=1/0` causal pair，确认 world/video co-training 能改善 direct action。
+3. W0 通过后才新建 Light-WAM W1 执行计划；W0/W1 都通过后才设计
+   StackCube W2；W2 冻结前 400-state formal bank 继续关闭。
+4. M1-R→M2-R 是独立 Residual 依赖链，不再阻塞 M2-W。当前优先完成 W 线；恢复 Residual 线时
    仍必须先完成 M1-R，且不得把 MS3/MS2 数据、controller、horizon、state bank 或指标并表。
 
-M2-W 的可执行细节由
-[2026-08-13 M2-W StackCube Action-only Flow 基线与 Headroom](2026-08-13-M2-W-StackCube-Action-only-Flow基线与Headroom.md)
-冻结。
+WAM 共同合同由
+[WAM 文献锚点复现与 StackCube 迁移路线](2026-08-17-WAM文献锚点复现与StackCube迁移路线.md)
+冻结；当前唯一可执行细节由
+[W0 Fast-WAM LIBERO 复现与机制锚点](2026-08-17-W0-Fast-WAM-LIBERO复现与机制锚点.md)
+冻结。旧 StackCube WAM 总入口、Mini-WAM W0 与旧 W1-W3 全部 `dropped`。原 2026-08-13 M2-W 7D
+子计划已标记 `dropped`，不得再用其 7D gate 覆盖 native-4D baseline。
 
 ### 2.2 三条方法线的边界
 
 ```text
-W0–W3  Mini-WAM:
-同一 demonstrations
-→ future/world auxiliary supervision
-→ 更新 direct action policy
+W0–W1  Literature reproduction:
+official LIBERO + official WAM artifacts
+→ Fast-WAM co-training mechanism
+→ Light-WAM latent compression
+
+W2–W3  StackCube transfer:
+same tiny Flow/data/eval
+→ Action-only vs two literature-aligned auxiliaries
 → inference 只走 action path
 
 W4  Imagined Actor-Critic:
@@ -139,8 +159,9 @@ task
 
 | 路线 / 阶段 | 任务 | 默认演示源 | 角色 |
 | --- | --- | --- | --- |
-| Mini-WAM | ManiSkill3 `StackCube-v1` | M1-W 冻结的 GPU-native 7D source / LeRobot 数据集 | 主候选 |
-| M1-W 数据与协议 | ManiSkill3 `StackCube-v1` | GPU-native 7D source；官方 motion-planning 仅作 provenance | 主 WAM 候选；GPU route |
+| W0/W1 literature anchor | LIBERO Spatial/Object/Goal/Long | Fast-WAM/Light-WAM 官方 preprocessed LIBERO data | 官方 artifact/mechanism reproduction |
+| W2/W3 StackCube transfer | ManiSkill3 `StackCube-v1` | M1-W 重生成的 native `pd_ee_delta_pos` 4D live-RGB data | 三组 tiny-model 对照与 formal test |
+| M1-W 数据与协议 | ManiSkill3 `StackCube-v1` | 官方 motion-planning provenance → native 4D GPU replay/repair/live-RGB | 主 WAM 数据路线；GPU rollout |
 | M1-R 协议预检 | ManiSkill2 0.5.3 + Policy Decorator `PegInsertionSide-v2` | Policy Decorator 原生 7D EEF demonstrations（metadata 为 `PegInsertionSide-v0`） | M1-W 完成后执行的独立 Residual 协议 gate |
 | Residual R0/R1 | ManiSkill2 0.5.3 + Policy Decorator `PegInsertionSide-v2` | Policy Decorator 原生 7D EEF demonstrations（metadata 为 `PegInsertionSide-v0`） | 保持数据、controller、环境与 residual recipe 同栈 |
 | Residual R2/R3 | LIBERO + frozen SmolVLA | LIBERO 冻结 train demonstrations + 明确记账的在线交互 | VLA 迁移与算法归因 |
@@ -156,11 +177,12 @@ task
 
 ## 4. 数据与评测边界
 
-### 4.1 ManiSkill3 WAM 路线
+### 4.1 WAM 文献复现与 ManiSkill3 迁移
 
-1. StackCube 使用固定 revision 的官方 motion-planning provenance 和 GPU-native 7D source；
-   正式数据走 GPU baseline replay、失败集 EE repair、fingerprint merge 和 final live RGB replay，
-   不切换到官方 RL demonstrations。这一规则只属于 ManiSkill3 WAM 路线，不外推到 MS2 Residual 路线。
+1. StackCube 使用固定 revision 的官方 motion-planning provenance，经官方 conversion 得到 native
+   `pd_ee_delta_pos` 4D action，再走 GPU baseline replay、失败集 repair、fingerprint merge 和
+   final live-RGB replay；不切换到官方 RL demonstrations，不把旧 7D 标签投影成 4D。这一规则
+   只属于 ManiSkill3 WAM 路线，不外推到 MS2 Residual 路线。
 2. 每个任务训练前必须审计并落盘：
    - replay survival；
    - first-success 分布；
@@ -173,16 +195,19 @@ task
    - success predicate、termination 与 sparse/dense reward 的语义一致性；
    - train/development/test state 隔离报告。
 3. PickCube 4D 的 `replay survival ≥95% / action 越界=0 / 成功前帧≥85% / first-success p90≤90` 只作为协议模板起点；StackCube 在 M1-W 子计划中已冻结自己的数据保留、horizon 和 fingerprint gate，不机械复用 PickCube 阈值。
-4. W0–W3 的核心数据固定为：
+4. W0/W1 使用各自官方预处理 LIBERO data/evaluator，不使用 `D_core`。
+5. W2/W3 回到 StackCube 后，核心数据固定为：
 
 ```text
 D_core = M1-W 清理并冻结的 task demonstrations
 ```
 
 同一 trajectory 同时提供当前 observation、ground-truth action chunk 和 future target，因此 future supervision 不计作额外 interaction data。
-5. W0–W3 的 Action-only / True-Future / Shuffled-Future 对照必须使用完全相同的 `D_core`、训练 budget 和 split。
-6. 任何 frozen-policy success/failure/recovery rollout 都属于额外 data augmentation；必须单列为 `M3 / W-Data`，不能混进核心 Mini-WAM 因果实验。
-7. development 用于选 checkpoint / horizon / architecture；正式 test 只在配置冻结后运行一次。
+6. W2 的 `SC-A/SC-F/SC-L` 必须使用完全相同的 `D_core`、window order、
+   action architecture、训练 budget 和 split。
+7. 任何 frozen-policy success/failure/recovery rollout 都属于额外 data augmentation；必须单列为
+   `M3 / W-Data`，不能混进 W2 核心因果实验。
+8. development 用于冻结 W2 architecture/checkpoint/claim；W3 formal test 只运行一次。
 
 ### 4.2 M1-R：ManiSkill2 Policy Decorator Residual 路线
 
@@ -252,10 +277,11 @@ M0 不再追加实验，冻结结论：
 不是“哪个任务最难”，而是 WAM 候选在当前 ManiSkill3 版本下能否形成干净、可解释、
 可复现的数据与 action contract。
 
-M1-W 只对 ManiSkill3 `StackCube-v1` 形成正式 WAM 输入协议。官方 motion-planning 数据只作
-provenance；正式 source 是已有 GPU-native 7D `pd_ee_delta_pose` artifact，formal horizon 固定
-500，native horizon 50 只作诊断。PlugCharger 因 full replay survival 和 actual-EEF retarget
-均未通过而退出本路线，Peg 进入后续独立 M1-R。
+M1-W 只对 ManiSkill3 `StackCube-v1` 形成正式 WAM 输入协议。最初冻结的 GPU-native 7D
+`pd_ee_delta_pose` artifact 保留为历史协议产物；M2-W 后续已经用同一 motion-planning provenance
+重生成 native `pd_ee_delta_pos` 4D GPU live-RGB data，并由该 4D 路线接替 W0–W3 正式输入。
+PlugCharger 因 full replay survival 和 actual-EEF retarget 均未通过而退出本路线，Peg 进入后续
+独立 M1-R。
 
 ### 必须落盘
 
@@ -302,17 +328,17 @@ formal audit runner 和可恢复的阶段产物已准备。source/environment au
 
 ## M2 — 任务专属 baseline + headroom
 
-M2 不再承担“Oracle gap 决定能否做 Mini-WAM”的职责。主线只做两件事：
+M2 不再承担“Oracle gap 决定能否进入 WAM”的职责。主线只做两件事：
 
-1. 为 Mini-WAM 冻结正式 Action-only Flow baseline；
+1. 为 WAM 文献迁移路线冻结正式 Action-only Flow baseline；
 2. 为 Residual RL 冻结正式 state Flow base，并确认存在适合 residual correction 的 headroom。
 
-### M2-W — Mini-WAM Action-only Flow baseline
+### M2-W — StackCube Action-only Flow baseline
 
-默认先跑 ManiSkill3 `StackCube-v1` + M1-W 已冻结的 GPU-native 7D source / LeRobot 数据集；
-官方 motion-planning 只作为 provenance。具体 archive、trajectory 数量与 hash 在 M1-W/M2-W
-子计划中冻结。可执行合同见
-[2026-08-13 M2-W StackCube Action-only Flow 基线与 Headroom](2026-08-13-M2-W-StackCube-Action-only-Flow基线与Headroom.md)。
+M2-W 里程碑已由 ManiSkill3 `StackCube-v1` + M1-W native-4D live-RGB data 完成。正式 base
+contract 固定为 `pd_ee_delta_pos` 4D、双 RGB + 18D state、`2/16/4`、Euler/10、100k selected
+checkpoint、GPU PhysX 与 200-step closed-loop。实际命令和结果边界见
+`reports/guides/maniskill/09_m2_base_action_flow.md`；旧 7D 子计划不再执行。
 
 #### Base
 
@@ -345,7 +371,7 @@ M2-W 必须冻结：
 - checkpoint-selection protocol；
 - 最终 baseline checkpoint。
 
-#### M2-W Gate
+#### M2-W Gate `passed`
 
 进入 W0 只要求：
 
@@ -356,9 +382,8 @@ M2-W 必须冻结：
 
 **不再要求 Oracle@K gap。**
 
-若 `StackCube-v1` base 已接近 ceiling 或明显不适合作为 headroom task，停止并另建候选任务
-子计划；不自动切 Plug/Peg/TurnFaucet，不做全任务扫描。Plug 若要重开，必须先有新的独立数据与
-horizon 协议计划，不能复用已退出 M1-W 的历史产物。
+当前不再重新选择任务或 action contract。W0–W3 必须以已冻结 native-4D base 为锚点；不得因
+WAM 结果不佳改回 7D、切 Plug/Peg/TurnFaucet 或扫描其他任务。
 
 ### M2-P — Proposal / Oracle / reranking mechanism probe `optional`
 
@@ -418,7 +443,9 @@ LIBERO 任务另按其 frozen SmolVLA headroom 选择，不受 ManiSkill2 task i
 
 新版中，M3 **不再位于 M2 → W0 的主链路上**。
 
-核心 W0–W3 与 W4 主版本首先只使用 `D_core`，保证 world supervision 的收益不和“多拿数据”混淆。
+M3 只是未来 StackCube W2 之后的可选数据扩展，不 gate 使用官方 LIBERO 数据的
+Fast-WAM W0 或 Light-WAM W1。W2 主版本仍只使用 `D_core`，保证 world
+supervision 的收益不和“多拿数据”混淆。
 
 后续如果要研究 failure/off-policy data 是否增强 world supervision，可单独采集：
 
@@ -428,778 +455,27 @@ LIBERO 任务另按其 frozen SmolVLA headroom 选择，不受 ManiSkill2 task i
 - recovery / near-failure states；
 - 唯一明确的采集 checkpoint。
 
-任何使用 M3 数据的实验必须同时给 Action-only baseline 相同的数据预算，或明确标成 data-augmentation study，不能把结果归因给 Mini-WAM 本体。
+任何使用 M3 数据的实验必须同时给 Action-only baseline 相同的数据预算，或明确标成
+data-augmentation study，不能把结果归因给 world supervision 本身。
 
 ---
 
-# 阶段一：Joint Mini-WAM + W4
+# 阶段一：WAM 文献锚点与 StackCube 迁移（W0–W3）
 
-#### 1. 为什么重设计
+本阶段只执行：
 
-##### 1.1 已存在的 mini-WAM 不是旧计划里的 reranker
+1. W0 Fast-WAM 官方 LIBERO artifact、causal mechanism 与 direct-deployment 复现；
+2. W1 Light-WAM 官方 LIBERO latent-compression 与效率复现；
+3. W2 StackCube Action-only / Fast-WAM-aligned / Light-WAM-aligned development 对照；
+4. W3 StackCube 400-state one-shot formal evaluation。
 
-`keivalya/mini-wam` 对 mini-WAM 的直接定义是：
+完整依赖、配置和 gate 统一由
+[WAM 文献锚点复现与 StackCube 迁移路线](2026-08-17-WAM文献锚点复现与StackCube迁移路线.md)
+管理；当前唯一可执行子计划是
+[W0 Fast-WAM LIBERO 复现与机制锚点](2026-08-17-W0-Fast-WAM-LIBERO复现与机制锚点.md)。
 
-```text
-image_t + language + state_t
-        ↓
-action_t + state_{t+1} + image_{t+1}
-```
-
-它的核心思想是 **“act while predicting what its action will do to the world”**。当前仓库仍是 WIP，但其方向从一开始就是 action generation + future prediction，而不是：
-
-```text
-Frozen policy → K proposals → world model/value score → argmax
-```
-
-因此旧计划实际验证的是一个 **lightweight action-conditioned world model + test-time reranking**，不是原 mini-WAM 的主范式。
-
-##### 1.2 当前更成熟的 WAM 工作也支持 joint world-action learning
-
-- **Fast-WAM（arXiv:2603.16666）**：训练时保留 world/video co-training，action expert 与 world representation 联合学习；推理时可跳过显式 future generation，直接输出 action。
-- **LiLa-WAM（arXiv:2608.03701）**：在一个轻量共享 stream 中联合 future-state prediction 与 Flow-Matching action generation；训练目标为
-
-  $$
-  \mathcal L = \mathcal L_{fm}+\lambda_{ff}\mathcal L_{ff},
-  $$
-
-  future decoder 只在训练时使用，部署时丢弃。
-- **WLA（arXiv:2606.05979）**：world prediction 通过共享表示影响 Action Expert；world prediction 可在 inference 关闭，也可以作为额外 test-time scaling 打开。
-
-因此本项目的 Mini-WAM 主问题改为：
-
-> **future/world supervision 能否塑造一个更好的 direct action policy？**
-
-而不是：
-
-> 一个外接 world-model scorer 能否替 frozen policy 选 action？
-
----
-
-#### 2. 新 Mini-WAM 的模型定义
-
-##### 2.1 Action-only Flow baseline
-
-先保留 M2 训练得到的任务专属 Flow-Matching policy 作为严格 baseline：
-
-```text
-RGB + robot state + task/goal
-              ↓
-       visual/context encoder
-              ↓
-         action expert
-              ↓
-     Flow-Matching action chunk
-```
-
-训练目标只有：
-
-$$
-\mathcal L_{action}=\mathcal L_{fm}.
-$$
-
-以 ground-truth action chunk $x_1$、Gaussian source noise $x_0$ 和 flow time $s$ 为例：
-
-$$
-x_s=(1-s)x_0+s x_1,
-\qquad
-v^*=x_1-x_0,
-$$
-
-$$
-\mathcal L_{fm}=\mathbb E\|\hat v_s-v^*\|_2^2.
-$$
-
-##### 2.2 Joint Mini-WAM
-
-第一版不生成 RGB，不加 reward/value head，不做 MPC。结构固定为：
-
-```text
-            RGB + robot state + task/goal
-                         ↓
-                 visual/context tokens
-                         │
-            noisy action tokens x_s
-                         │
-                         ▼
-             shared action/world trunk
-                 /                \
-                /                  \
-       Flow velocity head       future latent head
-              ↓                       ↓
-        action chunk A         z_hat_{t+Δ}
-```
-
-关键约束：
-
-1. **future head 与 action head 必须共享真正参与 action generation 的 trunk**；不能只在视觉 encoder 外面挂一个与 action 无关的 auxiliary MLP。
-2. future prediction 必须能够读取 action-token 信息，使其有机会表示
-
-   $$
-   (o_t, A_{t:t+H})\rightarrow o_{t+\Delta}
-   $$
-
-   的 consequence，而不是仅靠当前 observation 猜最可能的下一状态。
-3. 第一版复用 Action-only baseline 的视觉 encoder / action expert 规模；**不同时更换成更大的 backbone**，避免把收益归因给模型容量变化。
-4. future target 使用 latent feature，不预测像素。
-
-##### 2.3 Future target
-
-用 frozen / EMA target encoder 提取真实未来 observation：
-
-$$
-z^{target}_{t+\Delta}
-=
-\operatorname{sg}(E_{target}(o_{t+\Delta})).
-$$
-
-共享 trunk 产生 predicted future latent，再通过轻量 decoder/projector 对齐 target feature：
-
-$$
-\hat z_{t+\Delta}=F_{future}(h_t).
-$$
-
-第一版 future loss 使用 feature-space cosine loss：
-
-$$
-\mathcal L_{future}
-=
-1-\cos(\hat z_{t+\Delta},z^{target}_{t+\Delta}).
-$$
-
-总训练目标：
-
-$$
-\boxed{
-\mathcal L
-=
-\mathcal L_{fm}
-+
-\lambda_{future}\mathcal L_{future}
-}
-$$
-
-##### 2.4 Deployment contract
-
-正式 Mini-WAM 部署时：
-
-```text
-observation
-   ↓
-Mini-WAM shared trunk + Flow action head
-   ↓
-action chunk
-   ↓
-execute
-```
-
-**future decoder 默认关闭/丢弃。**
-
-主方法 inference 中不存在：
-
-```text
-K candidates
-Oracle
-DirectScore
-reward head
-value head
-argmax reranking
-ensemble pessimism
-```
-
-这些只能作为额外机制探针，不能再定义 Mini-WAM 本体。
-
----
-
-#### 3. 对 M2 / M3 的结构性修改
-
-##### 3.1 M2-W 不再要求 Oracle gap 才能进入 Mini-WAM
-
-旧 M2-W 的 `Oracle@8 - First@1` 是 reranking 路线的前提，但 **joint Mini-WAM 直接输出 action，不依赖 candidate selection**。
-
-因此主线 M2 只需确认：
-
-- Flow-Matching Action-only baseline 已掌握任务主体；
-- baseline 没有接近 ceiling；
-- 数据/controller/eval protocol 已冻结；
-- baseline checkpoint、训练预算和 split 可作为后续公平对照。
-
-旧的 Flow candidate / matched continuation / Oracle@K 审计改名为：
-
-> **M2-P：Proposal / reranking mechanism probe（可选）**
-
-它只服务后面的可选 W2-P，不再是 W0–W3 Mini-WAM 主线或 W4 的进入 gate。
-
-##### 3.2 M3 的 policy rollout 不再是 W0 前置条件
-
-joint Mini-WAM 的主 claim 必须先在 **与 Action-only baseline 完全相同的数据**上成立。
-
-因此核心 W0–W3 使用同一份数据；W4 的主版本也只从同一批数据构造 world/reward supervision：
-
-```text
-D_core = M1-W 清理并冻结的 task demonstrations
-```
-
-同一个 trajectory 同时天然提供：
-
-- 当前 observation / robot state；
-- ground-truth action chunk；
-- 未来 observation / state target。
-
-原 M3 的 success/failure frozen-policy rollout 移出主前置链路，后续如果要研究 off-policy / failure data 对 world supervision 的作用，再单独设 `W-Data` 数据扩展实验。
-
-否则如果：
-
-```text
-Action-only 只看 demonstrations
-Mini-WAM 额外看大量 policy rollout
-```
-
-即使 Mini-WAM 更好，也无法区分收益来自 `future supervision` 还是 `more data`。
-
----
-
-### 4. 新 W0–W3 主实验 + W4 Model-Based RL 增强分支
-
-#### W0 — Future branch 是否真的学到 action-conditioned future
-
-##### 要证明什么
-
-证明 future head 不是一个只靠当前 observation 做时间外推的普通 predictor，而是其预测**确实依赖 action tokens**。
-
-核心命题：
-
-$$
-\hat z_{t+\Delta}
-=
-F(o_t,A_{t:t+H})
-$$
-
-中的 $A$ 不能被忽略。
-
-##### 数据
-
-只使用 `D_core` demonstrations；不使用 M2 Oracle terminal labels，不额外采 policy rollout。
-第一版机制 gate 的 future target 固定为 M2-W 选中的 `Δ=n_action_steps`；W0 不在多个 horizon
-之间选优。只有该锚点证明 action-conditioned 后，W1 才比较 `1/n_action_steps/H_chunk`。
-
-##### 实验设置
-
-在相同 observation 上做 action intervention：
-
-1. **Original Action**：正确 action chunk；
-2. **Action Replace**：替换成另一 trajectory / 不匹配状态的 action chunk；
-3. **Action Noise**：对 action tokens 加扰动；
-4. **Action→Future Mask**：阻断 future/readout 从 action tokens 获取信息；
-5. **No-action / Current-latent baseline**：只根据当前 observation 预测未来。
-
-这些 intervention 直接借鉴 LiLa-WAM 对 action-conditioned future tokens 的验证思路，但使用 M1-W/M2-W 最终冻结的 ManiSkill3 任务与数据协议。
-
-##### 主要指标
-
-- future latent cosine error / similarity；
-- action replacement 前后 predicted future 的变化；
-- 正确 action 与 mismatched action 对真实 future target 的预测差；
-- 按 simulator stage 分层的 future error：grasp / transport / place / static 等；
-- object pose / robot state probe 仅作解释性诊断，不作为唯一 gate。
-
-##### 通过条件
-
-必须同时看到：
-
-- Original Action 的 future prediction 明显优于 No-action；
-- Action Replace 后 future prediction 显著退化；
-- 阻断 action→future 信息流后显著退化；
-- 效应在多个 task stage 存在，而不是只由某个单一静态阶段贡献。
-
-若不通过：
-
-> 不能声称 Mini-WAM 学到了 action-conditioned world dynamics；先修共享 trunk / attention / future target，不进入 W1。
-
----
-
-#### W1 — 什么 future horizon 才真正提供 foresight，而不是局部时间平滑
-
-##### 要证明什么
-
-W0 只证明 action 会影响 future prediction；W1 进一步问：
-
-> **预测多远的 future 才会给 action learning 提供真正的 control-relevant foresight？**
-
-如果只预测 $t+1$ 就和长 horizon 一样有效，那么我们的结果更接近“temporal auxiliary regularization”，不能强声称 multi-step foresight。
-
-##### 设置
-
-第一版只做小规模 development sweep，不做大范围扫参。
-
-future target horizon：
-
-```text
-Δ = 1
-Δ = n_action_steps        # 当前 chunk 实际执行到重新观测的位置
-Δ = H_chunk               # action chunk 的末端
-```
-
-可选增加一个 multi-horizon head：
-
-```text
-Δ ∈ {1, n_action_steps, H_chunk}
-```
-
-共享同一 action-only architecture、训练数据、训练步数和 `λ_future` 初值。
-
-##### 主要指标
-
-- 各 horizon 的 future latent prediction error；
-- action intervention sensitivity；
-- development closed-loop success；
-- 按阶段的 success / failure；
-- action Flow loss 作为优化诊断，不作为最终 control 结论。
-
-##### 选择规则
-
-在 development 上预注册选择一个主 horizon，后续 W2/W3/W4 固定，不再用 test 调整。
-
-优先选择：
-
-> **能够改善 closed-loop action performance，同时仍具有稳定 action-conditioned future prediction 的最短 horizon。**
-
-这样避免为了“更像 world model”而无意义地拉长预测距离。
-
----
-
-#### W2 — Future supervision 是否真的改善 action learning
-
-##### 要证明什么
-
-这是第一个直接回答 Mini-WAM 核心因果问题的实验：
-
-> **在完全相同的 demonstrations、action architecture 和 inference 路径下，正确 future supervision 是否让 action policy 变得更好？**
-
-##### 必做对照
-
-| Variant | Action loss | Future head | Future target | 作用 |
-| --- | --- | --- | --- | --- |
-| A0 Action-only Flow | ✓ | × | — | VLA / Flow baseline |
-| A1 Joint Mini-WAM | ✓ | ✓ | 正确 `t+Δ` future | 主方法 |
-| A2 Shuffled-Future | ✓ | ✓ | 其他 trajectory / mismatched future | 控制“多一个 head / 多一个辅助 loss” |
-| A3 Current-State Aux（可选） | ✓ | ✓ | `z_t` | 控制“一般 feature reconstruction regularization” |
-
-所有 variant 必须：
-
-- 相同 demonstrations；
-- 相同 train/dev split；
-- 相同且预注册的单个 training seed；
-- 相同 action expert 主体；
-- 相同 optimizer / update steps / batch budget；
-- 相同 Flow sampler / ODE steps；
-- inference 都只走 action path。
-
-##### 为什么 Shuffled-Future 是关键对照
-
-如果：
-
-```text
-A0 Action-only      65%
-A2 Shuffled-Future  66%
-A1 True-Future      76%
-```
-
-才说明收益主要来自 **正确 temporal/world supervision**。
-
-如果 A1 与 A2 相当，则只能说增加 auxiliary objective / regularization 有效，不能说 learned foresight 有效。
-
-##### 主要指标
-
-- development closed-loop success；
-- stage-conditioned success；
-- paired state-set bootstrap CI；
-- action execution smoothness / invalid action rate 只作安全诊断；
-- training memory / throughput；
-- inference latency 必须与 A0 基本同级，因为 future decoder 不参与部署。
-
-W2 不要求多个独立 training seeds。正式统计使用单个预注册 training seed、固定 paired initial-state bank 和 paired-state bootstrap；该 CI 只覆盖这个固定训练运行下的状态集差异，不声称覆盖训练随机性或跨 seed 稳健性。
-
-##### Gate
-
-进入正式 W3 至少要求：
-
-- A1 > A0，且 paired bootstrap 95% CI 下界 > 0；
-- A1 > A2，证明正确 future target 比 shuffled auxiliary supervision 更有价值；
-- improvement 不能以明显更高 test-time latency 为代价。
-
-建议将 `+5pp` 作为 practical strong-pass 参考，而不是领域通用阈值；统计显著性仍以预注册 paired CI 为主。
-
-如果 A1 只提升 offline action loss、closed-loop 不涨，则记录：
-
-> future supervision 改善了拟合，但没有转化成 control benefit。
-
-停止把 Mini-WAM 推向后续组合实验。
-
----
-
-#### W3 — Direct-action Mini-WAM 正式闭环验证
-
-##### 要证明什么
-
-这是新 Mini-WAM 主线的**最终方法实验**，取代旧 W3 的 ensemble/pessimistic-reranker 实验。
-
-正式 claim：
-
-> **一个训练时同时学习 future dynamics 的轻量 Flow action policy，在部署时不做 explicit future rollout、不做 K-candidate reranking，仍能比 action-only Flow policy 获得更好的闭环控制。**
-
-##### 冻结配置
-
-W3 开始前冻结：
-
-- W1 选出的 `Δ`；
-- `λ_future`；
-- encoder / shared trunk / action expert 结构；
-- Flow ODE solver 与 steps；
-- checkpoint-selection protocol；
-- development/test split；
-- 数据规模和训练 step budget；
-- 与 W2 一致的单个预注册 training seed 与 paired initial-state bank。
-
-##### 正式比较
-
-核心只保留：
-
-```text
-Action-only Flow
-vs
-Joint Mini-WAM
-```
-
-Shuffled-Future 保留为机制消融结果。W3 正式 test 不重复多个 training seeds，只对预注册的单个训练运行做一次 frozen paired-state 评测。
-
-##### 正式评测
-
-至少报告：
-
-- overall closed-loop success；
-- simulator 原生 stage success / failure；
-- paired per-state outcome；
-- development 与一次性 frozen test；
-- inference latency；
-- peak GPU memory；
-- 参数量区分 train-time-only decoder 与 deployment-active parameters。
-
-W3 的结论范围限定为“在预注册的单个 training seed 和固定 state bank 上”；paired bootstrap 不作为跨训练 seed 置信区间。
-
-##### W3 成功时可以声称什么
-
-若 Joint Mini-WAM 显著超过 Action-only，并且 W0/W2 的机制对照同时通过，可以声称：
-
-> **action-conditioned future supervision 在共享 world-action representation 中提供了可用于控制的 foresight，并在不依赖 test-time world rollout / reranking 的情况下改善了直接 action policy。**
-
-不能仅凭 W3 success 单独声称：
-
-- latent 就是完整物理 simulator；
-- 模型能进行长 horizon planning；
-- future prediction 在 inference 是必要的。
-
-这些需要额外实验。
-
-
-#### W4 — Imagined Actor-Critic / Model-Based Policy Optimization（独立增强分支）
-
-##### 定位
-
-W4 **不是**把 critic 接到 Mini-WAM 后面，在 test time 从 `K` 个 proposal 中挑最高分动作。
-
-它验证的是另一条经典 world-model control 路线：
-
-> **既然 W0–W3 已经证明 Mini-WAM 学到的 future/world representation 对 action learning 有用，那么能否进一步把 learned world model 当作 imagination environment，在模型内部训练 actor + critic，再让优化后的 actor 直接输出动作？**
-
-因此 W4 属于 **model-based RL / imagined policy optimization**，而不是 Mini-WAM 的基础定义。W0–W3 即使已经形成完整主结论，W4 仍可以独立失败。
-
-##### 为什么不能直接把 W3 future head 当成 Dreamer world model
-
-W3 的 future auxiliary objective 只要求：
-
-$$
-(o_t,A_{t:t+H})\rightarrow \hat z_{t+\Delta}.
-$$
-
-这足够验证 future supervision 是否改善 action policy，但还不足以支撑 actor-critic imagination。W4 至少需要额外建立：
-
-1. **可递归 latent transition**
-
-   $$
-   \hat z_{t+1}=D_\psi(\hat z_t,a_t);
-   $$
-
-2. **reward / progress model**
-
-   $$
-   \hat r_t=R_\psi(\hat z_t,a_t);
-   $$
-
-3. **critic / value model**
-
-   $$
-   V_\phi(\hat z_t);
-   $$
-
-4. **可被 imagined return 优化的 actor**。
-
-因此 W4 新增的是 **control model heads**，不是给 W3 加一个 scalar critic 就结束。
-
-##### W4.0 — World-control model sanity check
-
-先使用与 W0–W3 相同的 `D_core` / replay protocol 训练或适配：
-
-```text
-observation
-   ↓
-frozen / target encoder
-   ↓
-latent z_t
-   │
-   ├── action a_t ──→ latent transition Dψ ──→ ẑ_{t+1}
-   │
-   └── action a_t ──→ reward model Rψ ──────→ r̂_t
-```
-
-reward target 优先使用 ManiSkill simulator 原生 reward / task-progress signal，从**同一条 replayed trajectory**获得；第一版不额外通过在线交互扩大数据量。
-
-进入 actor-critic 前必须确认：
-
-- one-step latent transition 明显优于 copy/no-action；
-- action shuffle 后 transition prediction 显著退化；
-- reward / progress prediction 在 development 上具有稳定区分能力；
-- recursive rollout 在预注册的短 imagination horizon 内没有立即失控。
-
-这里不追求“完整 simulator”，只要求模型足够支持短 horizon policy optimization。
-
-##### W4.1 — Actor 与 critic
-
-主 actor **沿用 W3 的 Flow-Matching action policy 参数化**，而不是另起一个完全不同的控制器。
-
-给定 latent state 和 Gaussian source noise：
-
-$$
-\epsilon_t\sim\mathcal N(0,I),
-\qquad
-A_t=F_\theta(z_t,\epsilon_t).
-$$
-
-Flow sampler 是可重参数化的；W4 第一版不依赖精确 `\log \pi(A|z)`，而是通过 differentiable Flow ODE + frozen world dynamics 对 imagined return 做 pathwise gradient。这样与后面的 PPO/SAC residual 线保持方法上的清晰区分。
-
-critic 使用 imagined $\lambda$-return：
-
-$$
-G_t^\lambda
-=
-\hat r_t
-+
-\gamma\left[(1-\lambda)V_\phi(\hat z_{t+1})
-+\lambda G_{t+1}^\lambda\right].
-$$
-
-critic loss：
-
-$$
-\mathcal L_V
-=
-\mathbb E\left[
-\left(V_\phi(\hat z_t)-\operatorname{sg}(G_t^\lambda)\right)^2
-\right].
-$$
-
-actor objective：
-
-$$
-J_{actor}(\theta)
-=
-\mathbb E\left[G_t^\lambda\right],
-$$
-
-梯度通过 sampled Flow action 和 frozen latent dynamics 回到 actor；**world model 在 actor update 时 stop-gradient / frozen**，防止 actor 与 model 同时漂移导致归因不清。
-
-##### W4.2 — 第一版训练协议
-
-W4 主版本固定为 **offline imagination first**：
-
-```text
-D_core demonstrations / replay
-        ↓
-train world transition + reward model
-        ↓
-freeze world model
-        ↓
-start from W3 Joint Mini-WAM actor
-        ↓
-imagined rollouts
-        ↓
-train critic + update actor
-        ↓
-real simulator only for development / final evaluation
-```
-
-第一版**不在训练过程中新增真实 environment interaction**。这样 W4 与 Residual RL 的差异最干净：
-
-- W4：用 learned model 产生 imagined transitions；
-- Residual RL：用真实 simulator interaction 学 residual。
-
-若 offline-imagination W4 已经失败，不立刻增加 online model refresh；额外真实数据作为后续独立 `W4-Online` 扩展，不混入主结论。
-
-##### W4.3 — 必做对照
-
-| Variant | Future/world model | Critic | Actor optimization | 额外真实训练交互 | 用途 |
-| --- | --- | --- | --- | ---: | --- |
-| B0 Action-only Flow | × | × | BC / Flow Matching | 0 | 基线 |
-| B1 Joint Mini-WAM (W3) | ✓ auxiliary | × | BC / Flow Matching | 0 | world supervision 主方法 |
-| B2 Mini-WAM + Critic-only evaluation | ✓ | ✓ | **不更新 actor** | 0 | 控制“只是多了 value head” |
-| B3 Mini-WAM + Imagined Actor-Critic | ✓ recursive | ✓ | **imagined return 更新 actor** | 0 | W4 主方法 |
-
-`B2` 不做 K-candidate reranking；critic 只做诊断，真实部署动作仍由原 actor 直接输出。它用于确认 W4 的收益来自 **policy optimization**，而不是“训练了一个 value head”本身。
-
-##### W4.4 — 正式评测
-
-至少报告：
-
-- closed-loop success；
-- 相对 W3 Joint Mini-WAM 的绝对增益；
-- stage-conditioned success / failure；
-- imagined return 与真实 rollout return 的 calibration；
-- actor update 前后 action distribution shift；
-- world-model rollout error 随 imagination horizon 的增长；
-- 训练所用**额外真实 environment interactions = 0**（主版本）；
-- imagined model steps、训练 wall-clock 和显存开销单独记账。
-
-W4 的核心比较是：
-
-$$
-\text{Mini-WAM + Imagined Actor-Critic}
-\quad vs\quad
-\text{Joint Mini-WAM direct action}.
-$$
-
-如果 W4 提升，才支持：
-
-> **learned world model 不仅能作为 action-learning auxiliary supervision，还能作为 imagination environment 进一步优化 policy。**
-
-如果 W4 不提升甚至下降，则记录：
-
-> **在当前数据和模型精度下，world supervision 对 direct policy 有价值，但 model-based policy optimization 受到 model bias / rollout error 限制。**
-
-这不会推翻 W0–W3 的 Mini-WAM 结论。
-
-##### W4.5 — 与 Residual RL 的边界
-
-W4 与后续 Residual RL 不合并，二者回答不同问题：
-
-```text
-Joint Mini-WAM
-      │
-      ├──────── W4: Model-Based RL
-      │            learned world model
-      │            → imagined rollout
-      │            → critic
-      │            → optimize main actor
-      │
-      └──────── Residual RL
-                   real simulator interaction
-                   → reward / critic
-                   → optimize residual Δa
-                   → base actor frozen
-```
-
-核心差异：
-
-| 维度 | W4 Imagined Actor-Critic | Residual RL |
-| --- | --- | --- |
-| dynamics 来源 | learned world model | real simulator/environment |
-| 主训练交互 | imagined | real |
-| 优化对象 | 主 actor / action policy | residual policy `Δa` |
-| base 是否冻结 | world model 冻结；actor 被更新 | base actor 冻结 |
-| 主要风险 | model bias / compounding error | real interaction cost / exploration |
-| 主要问题 | world model 能否减少真实控制学习成本 | real-feedback residual 能否纠正 frozen base |
-
-后续若两条线都通过，可以再做跨线比较：在相同**真实 environment interaction budget**下比较 W4、Residual RL 和 Online BC；该比较属于最终组合/效率实验，不作为 W4 的进入 gate。
-
----
-
-### 5. 可选机制实验：W2-P / Test-time imagination probe
-
-旧计划的 Oracle / candidate reranking 不删除，但**降级为可选 probe**，不再属于 Mini-WAM 主架构。
-
-只有在 W3 已经证明 Joint Mini-WAM direct action 有收益后，才值得问：
-
-> 训练出的 future model 在 test time 进一步显式使用，是否还能提供额外收益？
-
-可比较：
-
-```text
-Joint Mini-WAM direct action       # 主部署方式
-Joint Mini-WAM + K proposal rerank # 可选 test-time scaling
-Oracle@K                           # simulator upper bound，仅 reference
-```
-
-这个实验回答的是 Fast-WAM 式问题：
-
-> **WAM 的收益主要来自 training-time world supervision，还是还需要 test-time future imagination？**
-
-若 direct action 与 explicit rerank 相当：
-
-> future/world modeling 的主要价值在训练 representation/action policy；不需要部署时 planning。
-
-若 rerank 仍显著更好：
-
-> 显式 future prediction 还有额外 test-time control value，可作为后续 scaling 分支。
-
-无论结果如何，都不再把 reranking 定义成 Mini-WAM 本体。
-
----
-
-### 8. 数据公平性原则
-
-1. **W0–W4 的真实环境训练数据必须从同一套冻结 demonstrations / replay 协议出发；W0–W3 核心对照严格使用相同 demonstrations。**
-2. future target 只是同一 trajectory 的未来帧/状态，不算额外 interaction data。
-3. 任何新增 frozen-policy rollout / failure / recovery data，必须单列为后续 data augmentation 实验。
-4. 如果 Mini-WAM 使用额外 rollout，而 baseline 没有使用，结果不能单独归因给 world supervision。
-5. W4 主版本允许无限制的 **imagined model steps**，但额外真实 environment interaction 必须保持为 `0`；imagined steps 与真实 steps 分开记账，不能混称 sample efficiency。
-6. W4 的 reward/progress labels 必须来自同一 `D_core` replay / simulator 原生信号；若新增真实 rollout，必须另列为 `W4-Online`。
-7. test state 一次性冻结；W1/W2 的架构与 horizon 选择只用 development。
-
----
-
-### 9. 第一版复杂度边界
-
-为了保持 Mini，**W0–W3 核心主线**仍然：
-
-- 不预测 RGB / video pixels；
-- 不引入大规模 video DiT；
-- 不加 reward/value head；
-- 不把 Oracle terminal rollout 当训练 label；
-- 不把 K-candidate reranking 当默认 inference；
-- 不在第一版同时更换视觉 backbone、action expert 和数据源；
-- 不做 5-model ensemble / pessimistic planner。
-
-**reward/value/actor-critic 只允许出现在 W4 独立增强分支。** W4 第一版也不允许边训练边新增真实 rollout；先验证纯 offline-imagination 是否成立。
-
-如果 Joint Mini-WAM 的 W0–W3 本身都不能稳定超过 Action-only Flow，则 W4 不启动。这样避免用更复杂的 RL 机制掩盖基础 world-action learning 本身不成立。
-
----
-
-### 10. 需要落盘的最小结果矩阵
-
-| Experiment | Action-only | True-Future | Shuffled-Future | 主要结论 |
-| --- | ---: | ---: | ---: | --- |
-| W0 future error | — / baseline | ✓ | ✓ | future 是否 action-conditioned |
-| W1 `Δ=1` | ✓ | ✓ | — | 局部 future supervision |
-| W1 `Δ=n_exec` | ✓ | ✓ | — | 与闭环 replan horizon 对齐 |
-| W1 `Δ=H_chunk` | ✓ | ✓ | — | chunk 末端 foresight |
-| W2 development success | ✓ | ✓ | ✓ | 正确 future supervision 是否有因果贡献 |
-| W3 formal test success | ✓ | ✓ | 机制结果复用 | direct-action Mini-WAM 主结果 |
-| W3 inference latency | ✓ | ✓ | — | future branch 是否真正零/低额外部署成本 |
-| W4 world-control sanity | — | ✓ | — | recursive dynamics / reward model 是否足够支撑 imagination |
-| W4 imagined actor-critic | baseline 复用 | W3 vs W4 | — | world model 是否能进一步优化 direct actor |
-| W4 real interaction budget | 0 | 0（主版本） | — | 与后续 Residual RL 分离真实样本成本 |
-
----
+旧 Mini-WAM、future-horizon、shuffled-future 和旧 formal-test 方案不再保留。
+W4 暂不设计；只有新 W3 完成后，才根据已验证的 world representation 另建计划。
 
 ---
 
@@ -1923,66 +1199,18 @@ Diffusion control，不支持“Flow Matching 是唯一原因”的单变量结�
 
 # 阶段三：LIBERO 迁移与最终组合
 
-## F0 — Joint Mini-WAM 迁移到语言条件 VLA
+## F0 — LIBERO 后续迁移（待重定义）
 
-### 研究问题
+旧 Joint Mini-WAM 迁移方案已删除。由于新的 W0/W1 已直接在官方 LIBERO
+协议上建立文献锚点，F0 不再预设 action-only / future auxiliary 的旧对照。
 
-W3 在 ManiSkill 上回答的是“future/world supervision 能否改善 direct action policy”。F0 要验证这一机制能否迁移到真正的语言条件 VLA / LIBERO，而不是只在单任务 ManiSkill 成立。
+只有 W3 完成后，才根据 Fast-WAM、Light-WAM 和 StackCube transfer 的实际证据决定：
 
-### Base 与公平对照
+- 是否还需要迁移到另一种语言条件 VLA；
+- 迁移目标是 architecture、supervision representation 还是 deployment contract；
+- 是否直接进入与 Residual RL 的互补性实验。
 
-固定一个经过预审、未饱和且具有稳定 headroom 的 frozen / trainable SmolVLA 配置；第一版仍保持：
-
-```text
-Action-only SmolVLA / Flow action expert
-vs
-Joint world-action SmolVLA
-```
-
-两者必须：
-
-- 使用相同 LIBERO train demonstrations；
-- 使用相同 language / vision / robot-state inputs；
-- 使用相同 action expert 主体；
-- 使用相同 optimizer、update steps、batch budget 和 Flow sampler；
-- 仅 Joint 版本额外加入正确 future latent supervision；
-- inference 默认关闭 future decoder，不做 K-candidate reranking。
-
-### 必做机制对照
-
-至少保留：
-
-1. Action-only；
-2. True-Future Joint；
-3. Shuffled-Future；
-4. 必要时 Current-State auxiliary diagnostic。
-
-这样 F0 仍能回答“正确 world/future target 是否比一般 auxiliary regularization 更有价值”。
-
-### 评测
-
-至少报告：
-
-- canonical closed-loop success；
-- held-out paraphrase；
-- paired per-state outcome；
-- stage / failure-type breakdown（在已有 evaluator 能可靠提供的范围内）；
-- inference latency；
-- peak GPU memory；
-- deployment-active parameter count；
-- future decoder train-time-only 参数量。
-
-### F0 Gate
-
-进入后续组合阶段至少要求：
-
-- Joint > Action-only；
-- Joint > Shuffled-Future；
-- improvement 不能依赖 test-time world rollout / reranking；
-- canonical capability 不出现不可接受的退化；
-- held-out paraphrase 方向与 canonical 至少不出现明显相反结论。
-
-如果 F0 失败：记录“Mini-WAM direct-action 机制在当前 ManiSkill 设置成立，但尚未迁移到语言条件 VLA”；不通过增加 test-time planner 来掩盖迁移失败。
+在独立 F0 计划冻结前，不执行训练、选模或 LIBERO formal evaluation。
 
 ---
 
@@ -2017,18 +1245,18 @@ Joint world-action SmolVLA
 | M0 → M1-W | 已通过；基础 replay→dataset→policy→closed-loop 管路成立 | M0 关闭 |
 | M1-W → M2-W | MS3 StackCube GPU 数据/协议、D_core、LeRobot dataset、state banks 与 frozen manifest 全部通过；M1-W 状态为 `done` | M2-W 保持 blocked；先收口 M1-W |
 | M1-R → M2-R | MS2 0.5.3、pinned Policy Decorator checkout、v0-data/v2-env、原生 7D EEF、hash、TimeLimit 与 split 冻结；exact replay reference 通过 | 停止 Residual base；不借 MS3 数据填补 |
-| M2-W → W0 | Action-only Flow 掌握任务主体、未 ceiling、baseline/config 已冻结 | 先修 base；如 StackCube 不合适，另立候选任务子计划，不自动切换 Plug |
+| M2-W → W0 | 已通过：StackCube action anchor 已冻结；W0 另用官方 LIBERO Fast-WAM，不 warm-start M2-W | 不再重开 StackCube base/task 选择 |
 | M2-R → R0 | MS2/v2 state Flow base 掌握主体且存在 precision/execution headroom | 先修 MS2 data/base/chunk contract，不让 residual 重学任务 |
-| W0 → W1 | correct action 对 future prediction 有显著贡献；replace/mask 后退化 | 修共享 trunk / attention / future target |
-| W1 → W2 | 至少一个 `Δ` 同时有稳定 future prediction 与较好 development control | 缩短 horizon 或停止 multi-step foresight claim |
-| W2 → W3 | 单个预注册 training seed 下 True-Future > Action-only 且 > Shuffled-Future；paired-state bootstrap 95% CI 下界 > 0 | 不做正式 Mini-WAM claim；该 CI 不外推到跨 training seed 稳健性 |
-| W3 → W4 | W3 frozen test 显著超过 Action-only | W4 不启动；W0–W3 结论独立保留 |
-| W3 → F0 | direct-action Mini-WAM 主结论成立 | 不迁移到 LIBERO Joint WAM |
+| W0 → W1 | Fast-WAM released artifact 通过；with-video 相对 no-video `>=2pp` 且 paired CI 下界 `>0`；direct inference 无 future generation | 停止 Light-WAM；不用 paper table 绕过 |
+| W1 → W2 | Light-WAM released artifact 通过；2x latent 相对 1x `>=-2pp`，memory/throughput 改善 | 不设计 StackCube literature-aligned variants |
+| W2 → W3 | `SC-A/SC-F/SC-L` 同 action path/budget，development 方法与 checkpoint 已冻结 | 不打开 400-state formal test |
+| W3 → W4 | 新 W3 formal 主结论成立 | W4 不启动 |
+| W3 → F0 | literature-aligned direct-action WAM 在 StackCube formal 成立 | 重新设计 F0，不复用旧 Joint Mini-WAM |
 | R0 → R1 | MS2/v2 + Flow Base + 原版 chunk Residual recipe 相对 frozen base 提升约 ≥10pp，多 seed 方向一致且 residual 不失控 | 优先审计 exact replay/data/chunk contract，再查 Flow/scale/alpha/exploration/SAC |
 | R1 → R2 | MS2/v2 visual/learned-representation residual system 保留 privileged-state residual 增益约 80% | 记录 representation-transfer bottleneck，不归因到单一组件，不迁移 LIBERO |
 | R2 → R3 | frozen SmolVLA 被 residual 稳定改善，canonical degradation 可控 | 停止 Residual VLA 主线 |
 | R3 → Final | 同真实 interaction budget 下，各方法使用自然 collection/exploration，Residual RL 显著超过 Online/Weighted/Residual BC | 只声称 online data 有用，不声称 Residual RL 完整算法有额外优势 |
-| F0 → F1 | Joint Mini-WAM 在 LIBERO 仍有可归因的 direct-action 提升 | F1–F3 保持 TODO / 不启动 |
+| F0 → F1 | 待新 W3 完成后重新设计并预注册 | F1–F3 保持 TODO / 不启动 |
 | F1 → F2 | TODO | TODO |
 | F2 → F3 | TODO | TODO |
 
@@ -2043,9 +1271,12 @@ Joint world-action SmolVLA
 5. **MS2/v2 task identity 必须精确。** R0/R1 runtime 固定 Policy Decorator repo-local
    `PegInsertionSide-v2`，data metadata 固定 `PegInsertionSide-v0`；不得把二者合并称为“v2
    数据”，也不得在训练中途退回 native v0 predicate。
-6. **Mini-WAM 核心因果实验禁止数据不公平。** Joint 不能比 Action-only 多看额外真实 rollout。
-7. **防止 future branch 退化成 no-action predictor。** W0 必须包含 action replace / noise / mask / no-action controls。
-8. **防止“更大模型”伪装成 world-supervision 收益。** W2/W3 不同时更换 backbone、action expert 和数据源。
+6. **W0/W1 复现禁止 artifact 与 mechanism 混淆。** Released checkpoint 只证明可运行；
+   Fast-WAM `lambda_video=1/0` 和 Light-WAM `1x/2x` 对照必须分别完成。
+7. **Fast-WAM 无 no-video released checkpoint。** 未训练等初始化 causal pair 时，
+   不得把 paper Table 2 写成本地机制复现。
+8. **防止“更大模型”伪装成 world-supervision 收益。** W2 的 `SC-A/SC-F/SC-L`
+   必须使用同 backbone、action expert、data 和 update budget。
 9. **W2/W3 使用单个预注册 training seed。** 固定 paired state bank 和 paired bootstrap 用于衡量该训练运行下的状态差异，不对跨 training seed 稳健性作声称。
 10. **防止 W4 model exploitation。** recursive rollout error 一旦在短 horizon 内失控，不扩大 imagination horizon；先修 world-control model。
 11. **W4 imagined steps 与真实交互分开记账。** 主版本额外真实训练 interaction 必须为 `0`。
@@ -2065,11 +1296,15 @@ Joint world-action SmolVLA
 - M1-R 协议审计：`outputs/policy_decorator_ms2/m1_r_protocol_audit/`
 - Peg MS3 历史诊断：`outputs/maniskill/m1_protocol_audit/PegInsertionSide-v1/` 与
   `outputs/maniskill/m1_peg_continue_diagnosis/`（只读保留，不作为正式数据）
-- M2-W frozen base：`outputs/maniskill/m2_task_base/<任务>/`
+- M2-W frozen base：`outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k/`
 - M2-R frozen base：`outputs/policy_decorator_ms2/m2_r_base/`
 - M2-P Oracle/proposal probe：`outputs/maniskill/m2_proposal_probe/<任务>/`
 - M3 / W-Data：`datasets/generated/maniskill_policy_rollouts/<任务>/<checkpoint>/`
-- W0–W4：`outputs/maniskill/<实验编号>/`
+- W0 Fast-WAM 文献复现：`outputs/literature/w0_fastwam/`
+- W1 Light-WAM 文献复现：`outputs/literature/w1_lightwam/`
+- W2 StackCube literature-aligned development：`outputs/maniskill/w2_wam_aligned/`
+- W3 StackCube formal：`outputs/maniskill/w3_wam_aligned_formal/`
+- W4：`outputs/maniskill/w4/`
 - Residual R0–R1：`outputs/policy_decorator_ms2/<实验编号>/`
 - LIBERO R2–R3 / F0–F3：`outputs/smolvla_libero/{pilot,eval}/<实验编号>/`
 - 每个实验的可执行子计划：`plans/YYYY-MM-DD-<编号与主题>.md`
@@ -2097,7 +1332,8 @@ bootstrap / statistical summary
 
 ```text
 M0–M2 先把协议和公平 baseline 固定住；
-W0–W3 证明 world supervision 本身能让 direct Flow policy 更好；
+W0 先验证 explicit next-state + next-image supervision 能否让 direct Flow policy 更好；
+W1–W3 只在 W0 成立后重新设计 latent 轻量化、因果对照和 formal test；
 W4 再测试 learned world 能否在纯 imagination 中继续优化主 actor；
 R0–R3 独立证明 real-feedback residual correction，并用 R3 检验同交互预算下完整 Residual RL 算法是否超过只用新数据继续模仿学习；
 F0 把 Joint Mini-WAM 迁移到语言条件 VLA；

@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
+from robot_practice.experiments.maniskill import eval_stackcube_action_flow as evaluator
 from robot_practice.experiments.maniskill import m2_w_action_flow as runner
 from robot_practice.policies.wam_tiny.action_flow import (
     BASE_IMAGE_KEY,
@@ -28,6 +30,128 @@ def test_m2_config_and_real_m1_inputs_pass_the_contract() -> None:
     assert result["global_batch_size"] == 256
     assert result["test_access_allowed"] is False
     assert len(result["m1_frozen_protocol_sha256"]) == 64
+
+
+def test_7d_action_normalization_profile_is_explicit_and_train_only() -> None:
+    config = runner.load_config(CONFIG)
+    normalization = config["normalization"]
+    assert normalization["profile"] == "7d_action_per_channel_zscore"
+    assert normalization["source_split"] == "train"
+    assert normalization["action"]["method"] == "mean_std"
+    assert normalization["action"]["per_channel"] is True
+    assert normalization["action"]["clip_before_stats"] is False
+    assert len(normalization["action"]["channel_names"]) == 7
+
+
+def test_7d_action_normalization_rejects_global_or_leaky_stats() -> None:
+    config = runner.load_config(CONFIG)
+    config["normalization"]["source_split"] = "development"
+    with pytest.raises(ValueError, match="normalization.*train"):
+        runner.validate_config(config, check_inputs=False)
+
+    config = runner.load_config(CONFIG)
+    config["normalization"]["action"]["per_channel"] = False
+    with pytest.raises(ValueError, match="per-channel"):
+        runner.validate_config(config, check_inputs=False)
+
+
+def test_training_checkpoint_eval_contract_is_explicit() -> None:
+    config = runner.load_config(CONFIG)
+    assert config["training"]["eval_during_training"] is True
+    assert config["training"]["eval_num_envs"] == 64
+    assert config["evaluation"]["n_action_steps"] == [4, 8]
+
+
+def test_eval_maps_local_cuda_devices_to_physical_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("M2_W_PHYSICAL_GPU", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5,7")
+    assert evaluator._physical_gpu_label(torch.device("cuda:0")) == "5"
+    assert evaluator._physical_gpu_label(torch.device("cuda:1")) == "7"
+
+
+def test_training_eval_uses_in_process_policy_without_reload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class FakeModel:
+        def eval(self) -> FakeModel:
+            return self
+
+    class FakePolicy:
+        n_action_steps = 4
+
+        def __init__(self) -> None:
+            self.model = FakeModel()
+            self.used = False
+            self._chunk_index = 0
+
+        @property
+        def chunk_index(self) -> int:
+            return self._chunk_index
+
+        def reset(self) -> None:
+            self._chunk_index = 0
+
+        def select_action(self, observations: object, *, fingerprints: list[str]) -> torch.Tensor:
+            del observations, fingerprints
+            self.used = True
+            self._chunk_index += 1
+            return torch.zeros((1, 7), dtype=torch.float32)
+
+    observation = {"observation": "fake"}
+    signals = {
+        "is_cubeA_grasped": np.array([False]),
+        "is_cubeA_on_cubeB": np.array([False]),
+        "is_cubeA_static": np.array([False]),
+        "success": np.array([True]),
+        "fail": np.array([False]),
+    }
+    policy = FakePolicy()
+    monkeypatch.setattr(
+        evaluator,
+        "load_state_bank",
+        lambda path, max_episodes=None: [
+            {"index": 0, "start_state_fingerprint": "fake-fingerprint"}
+        ],
+    )
+    monkeypatch.setattr(evaluator, "_stack_context", lambda history: {})
+    monkeypatch.setattr(evaluator, "_reset_exact_state", lambda env, rows, device: observation)
+    monkeypatch.setattr(evaluator, "_signals", lambda info, batch_size: signals)
+
+    class FakeEnv:
+        unwrapped = None
+
+        def __init__(self) -> None:
+            self.unwrapped = self
+            self.device = "cpu"
+
+        def get_info(self) -> dict[str, object]:
+            return {}
+
+        def step(self, action: np.ndarray) -> tuple[dict[str, str], None, np.ndarray, np.ndarray, dict]:
+            del action
+            return observation, None, np.array([True]), np.array([False]), {}
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(evaluator, "_make_env", lambda *args, **kwargs: FakeEnv())
+    payload = evaluator.run_development_rollout(
+        state_bank=tmp_path / "development.jsonl",
+        output_dir=tmp_path / "rollout",
+        n_action_steps=4,
+        checkpoint=tmp_path / "checkpoint_step_00000007.pt",
+        policy=policy,
+        checkpoint_step=7,
+        max_episodes=1,
+        max_steps=1,
+        num_envs=1,
+        device="cpu",
+        smoke=True,
+    )
+    assert policy.used is True
+    assert payload["summary"]["checkpoint_step"] == 7
+    assert payload["summary"]["n_action_steps"] == 4
+    assert payload["worker"]["policy_device"] == "cpu"
 
 
 def test_config_rejects_global_batch_drift() -> None:

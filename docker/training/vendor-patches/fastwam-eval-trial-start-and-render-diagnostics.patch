@@ -1,0 +1,454 @@
+diff --git a/experiments/libero/eval_libero_single.py b/experiments/libero/eval_libero_single.py
+index af558a4..47a14f4 100644
+--- a/experiments/libero/eval_libero_single.py
++++ b/experiments/libero/eval_libero_single.py
+@@ -1,4 +1,5 @@
+ import json
++import gc
+ import inspect
+ import logging
+ import os
+@@ -49,6 +50,46 @@ OmegaConf.register_new_resolver("split", lambda s, idx: s.split("/")[int(idx)])
+ os.environ["TOKENIZERS_PARALLELISM"] = "false"
+ 
+ 
++def _w0_diag_enabled() -> bool:
++    return os.environ.get("W0_DIAG") == "1"
++
++
++def _w0_diag_interval() -> int:
++    try:
++        return max(1, int(os.environ.get("W0_DIAG_INTERVAL", "25")))
++    except ValueError as error:
++        raise ValueError("W0_DIAG_INTERVAL must be a positive integer") from error
++
++
++def _w0_diag_snapshot(stage: str, *, env=None, episode_idx: int | None = None, timestep: int | None = None) -> None:
++    """Emit compact native-renderer state for remote abort diagnosis."""
++
++    if not _w0_diag_enabled():
++        return
++
++    fields = {
++        "stage": stage,
++        "pid": os.getpid(),
++        "episode": episode_idx,
++        "timestep": timestep,
++        "hard_reset": os.environ.get("W0_HARD_RESET", "default_true"),
++        "reuse_env": os.environ.get("W0_REUSE_ENV", "0"),
++        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", "unset"),
++        "mujoco_egl_device_id": os.environ.get("MUJOCO_EGL_DEVICE_ID", "unset"),
++    }
++
++    if env is not None:
++        sim_env = getattr(env, "env", env)
++        sim = getattr(sim_env, "sim", None)
++        render_context = getattr(sim, "_render_context_offscreen", None)
++        fields["sim_id"] = id(sim) if sim is not None else None
++        fields["render_context_id"] = id(render_context) if render_context is not None else None
++        fields["gl_context_id"] = id(getattr(render_context, "gl_ctx", None)) if render_context is not None else None
++
++    payload = " ".join(f"{key}={value}" for key, value in fields.items())
++    print(f"[W0-DIAG] {payload}", flush=True)
++
++
+ class NumpyEncoder(json.JSONEncoder):
+     def default(self, obj):
+         if isinstance(obj, np.integer):
+@@ -309,6 +350,56 @@ def _get_future_frame_capture_steps(cfg: DictConfig) -> list[int]:
+     return [step_idx * action_video_freq_ratio for step_idx in range(num_future_frames + 1)]
+ 
+ 
++def _step_with_render_diagnostics(env, action, *, episode_idx: int, timestep: int):
++    """Validate and optionally trace an action immediately before env.step.
++
++    A native EGL abort does not give Python a chance to report the preceding
++    action.  Keep the normal path identical, but fail clearly on non-finite
++    actions and provide an opt-in trace for remote renderer probes.
++    """
++
++    action_array = np.asarray(action, dtype=np.float64)
++    if action_array.ndim != 1 or action_array.size != 7:
++        raise ValueError(
++            f"LIBERO action must be a finite 7D vector, got shape={action_array.shape} "
++            f"episode={episode_idx} timestep={timestep}"
++        )
++    action_scale = os.environ.get("W0_ACTION_SCALE")
++    if action_scale is not None:
++        try:
++            action_array *= float(action_scale)
++        except ValueError as exc:
++            raise ValueError(f"W0_ACTION_SCALE must be numeric, got {action_scale!r}") from exc
++    if not np.isfinite(action_array).all():
++        raise ValueError(
++            f"LIBERO action contains non-finite values episode={episode_idx} "
++            f"timestep={timestep} action={action_array.tolist()}"
++        )
++
++    if os.environ.get("W0_RENDER_DIAGNOSTIC") == "1":
++        sim_env = getattr(env, "env", env)
++        sim = getattr(sim_env, "sim", None)
++        data = getattr(sim, "data", None)
++        qpos = np.asarray(getattr(data, "qpos", []), dtype=np.float64)
++        qvel = np.asarray(getattr(data, "qvel", []), dtype=np.float64)
++        qpos_max = float(np.max(np.abs(qpos))) if qpos.size else None
++        qvel_max = float(np.max(np.abs(qvel))) if qvel.size else None
++        print(
++            f"[W0-RENDER-TRACE] episode={episode_idx} timestep={timestep} "
++            f"action_min={float(np.min(action_array)):.6g} "
++            f"action_max={float(np.max(action_array)):.6g} "
++            f"action_norm={float(np.linalg.norm(action_array)):.6g} "
++            f"qpos_max={qpos_max} qvel_max={qvel_max}",
++            flush=True,
++        )
++    if _w0_diag_enabled() and timestep % _w0_diag_interval() == 0:
++        _w0_diag_snapshot("before_step", env=env, episode_idx=episode_idx, timestep=timestep)
++    result = env.step(action_array)
++    if _w0_diag_enabled() and timestep % _w0_diag_interval() == 0:
++        _w0_diag_snapshot("after_step", env=env, episode_idx=episode_idx, timestep=timestep)
++    return result
++
++
+ def _frame_to_rgb_array(frame: Any) -> np.ndarray:
+     if isinstance(frame, dict):
+         images = []
+@@ -376,16 +467,42 @@ def _predict_action_chunk(
+     prompt_template = DEFAULT_PROMPT
+     prompt = prompt_template.format(task=task_description)
+ 
++    dummy_action = os.environ.get("W0_DUMMY_ACTION") == "1"
++    dummy_after_obs = os.environ.get("W0_DUMMY_AFTER_OBS") == "1"
++
++    # Diagnostic-only path: keep model construction/checkpoint loading and
++    # image rendering, but skip both policy inference and CUDA observation
++    # preprocessing.  This isolates native EGL from model/device interaction.
++    # W0_DUMMY_AFTER_OBS deliberately goes through _obs_to_model_input below
++    # and is used to bisect the image/proprio preprocessing path.
++    if dummy_action and not dummy_after_obs:
++        dummy = np.asarray(get_libero_dummy_action(), dtype=np.float32)
++        return (
++            np.repeat(dummy[None, :], action_horizon, axis=0),
++            get_libero_image(obs),
++            None,
++        )
++
++    input_device = os.environ.get("W0_INPUT_DEVICE", model_device)
++
+     image, proprio, imgs = _obs_to_model_input(
+         obs,
+         cfg=cfg,
+         processor=processor,
+         width=input_w,
+         height=input_h,
+-        device=model_device,
++        device=input_device,
+         dtype=model.torch_dtype,
+     )
+ 
++    if dummy_action:
++        dummy = np.asarray(get_libero_dummy_action(), dtype=np.float32)
++        return (
++            np.repeat(dummy[None, :], action_horizon, axis=0),
++            imgs,
++            None,
++        )
++
+     infer_kwargs = {
+         "prompt": prompt,
+         "input_image": image,
+@@ -426,6 +543,15 @@ def _predict_action_chunk(
+     action = invert_gripper_action(action)
+     if bool(cfg.EVALUATION.get("binarize_gripper", False)):
+         action[..., -1] = np.sign(action[..., -1])
++
++    # Diagnostic-only path: execute the complete model inference and action
++    # post-processing path, but discard the predicted action before it reaches
++    # MuJoCo.  This separates an inference/runtime failure from a failure
++    # caused by executing the model-generated action sequence.
++    if os.environ.get("W0_DISCARD_PREDICTED_ACTION") == "1":
++        dummy = np.asarray(get_libero_dummy_action(), dtype=np.float32)
++        return np.repeat(dummy[None, :], action_horizon, axis=0), imgs, None
++
+     return action, imgs, predicted_future_frames
+ 
+ 
+@@ -463,8 +589,11 @@ def run_single_episode(
+     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+     capture_steps = set(_get_future_frame_capture_steps(cfg)[1:])
+ 
++    _w0_diag_snapshot("before_reset", env=env, episode_idx=episode_idx, timestep=0)
+     env.reset()
++    _w0_diag_snapshot("after_reset", env=env, episode_idx=episode_idx, timestep=0)
+     obs = env.set_init_state(initial_state)
++    _w0_diag_snapshot("after_set_init_state", env=env, episode_idx=episode_idx, timestep=0)
+     if use_action_ensembler:
+         ensembler = ActionEnsembler()
+         ensembler.reset()
+@@ -519,7 +648,12 @@ def run_single_episode(
+             imgs = get_libero_image(obs)
+             replay_images.append(imgs.copy())
+ 
+-        obs, _, done, _ = env.step(pending_actions.pop(0))
++        obs, _, done, _ = _step_with_render_diagnostics(
++            env,
++            pending_actions.pop(0),
++            episode_idx=episode_idx,
++            timestep=t,
++        )
+         if visualize_future_video and current_predicted_future_clip is not None:
+             current_replan_step += 1
+             if current_replan_step in capture_steps:
+@@ -594,8 +728,15 @@ def run_single_task(
+     input_w: int,
+     input_h: int,
+     model_device: str,
++    trial_start: int,
+ ) -> dict:
+-    env, task_description = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
++    # Recreate the offscreen environment for every trial.  Reusing one
++    # OffScreenRenderEnv across many resets leaves the MuJoCo/EGL render
++    # context alive for the whole task process; with the pinned robosuite /
++    # MuJoCo stack this can eventually abort inside mjr_readPixels without a
++    # Python exception.  A fresh env preserves the initial-state protocol but
++    # gives each trial an independent renderer lifetime.
++    task_description = task.language
+     visualize_future_video = bool(cfg.EVALUATION.get("visualize_future_video", False))
+     results = {
+         "successes": 0,
+@@ -607,66 +748,100 @@ def run_single_task(
+         results["episode_future_video_psnr"] = []
+         results["future_video_psnr_mean"] = None
+ 
+-    for trial_idx in range(int(cfg.EVALUATION.num_trials)):
+-        success, replay_images, predicted_future_video_clips, episode_mean_psnr = run_single_episode(
+-            env=env,
+-            initial_state=initial_states[trial_idx],
+-            task_description=task_description,
+-            model=model,
+-            processor=processor,
+-            cfg=cfg,
+-            episode_idx=trial_idx,
+-            action_horizon=action_horizon,
+-            input_w=input_w,
+-            input_h=input_h,
+-            model_device=model_device,
+-        )
+-        if success:
+-            results["successes"] += 1
+-            results["success_episodes"].append(trial_idx)
+-        else:
+-            results["failure_episodes"].append(trial_idx)
+-        if visualize_future_video:
+-            results["episode_future_video_psnr"].append(episode_mean_psnr)
+-
+-        save_rollout_video(
+-            video_dir,
+-            replay_images,
+-            f"task{cfg.EVALUATION.task_id}_trial{trial_idx}",
+-            success=success,
+-            task_description=task_description,
+-        )
+-        if visualize_future_video:
+-            if len(predicted_future_video_clips) == 0:
+-                logging.warning(
+-                    "No predicted future frames collected for task %s trial %s.",
+-                    cfg.EVALUATION.task_id,
+-                    trial_idx,
++    num_trials = int(cfg.EVALUATION.num_trials)
++    reuse_env = os.environ.get("W0_REUSE_ENV") == "1"
++    shared_env = None
++    if reuse_env:
++        shared_env, _ = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
++        _w0_diag_snapshot("shared_env_created", env=shared_env, episode_idx=trial_start, timestep=0)
++
++    try:
++        for local_trial_idx in range(num_trials):
++            trial_idx = trial_start + local_trial_idx
++            env = shared_env
++            if env is None:
++                env, _ = get_libero_env(task, LIBERO_ENV_RESOLUTION, cfg.get("seed"))
++                _w0_diag_snapshot("env_created", env=env, episode_idx=trial_idx, timestep=0)
++            try:
++                success, replay_images, predicted_future_video_clips, episode_mean_psnr = run_single_episode(
++                    env=env,
++                    initial_state=initial_states[trial_idx],
++                    task_description=task_description,
++                    model=model,
++                    processor=processor,
++                    cfg=cfg,
++                    episode_idx=trial_idx,
++                    action_horizon=action_horizon,
++                    input_w=input_w,
++                    input_h=input_h,
++                    model_device=model_device,
+                 )
++            finally:
++                if not reuse_env:
++                    _w0_diag_snapshot("before_env_close", env=env, episode_idx=trial_idx, timestep=0)
++                    try:
++                        env.close()
++                    except Exception:  # pragma: no cover - renderer-specific cleanup
++                        logging.exception("Failed to close LIBERO env after trial %s", trial_idx)
++                    del env
++                    gc.collect()
++            if success:
++                results["successes"] += 1
++                results["success_episodes"].append(trial_idx)
+             else:
+-                all_gt_frames = []
+-                all_pred_frames = []
+-                for clip in predicted_future_video_clips:
+-                    all_gt_frames.extend(clip["gt_frames"])
+-                    all_pred_frames.extend(clip["pred_frames"])
++                results["failure_episodes"].append(trial_idx)
++            if visualize_future_video:
++                results["episode_future_video_psnr"].append(episode_mean_psnr)
++
++            save_rollout_video(
++                video_dir,
++                replay_images,
++                f"task{cfg.EVALUATION.task_id}_trial{trial_idx}",
++                success=success,
++                task_description=task_description,
++            )
++            if visualize_future_video:
++                if len(predicted_future_video_clips) == 0:
++                    logging.warning(
++                        "No predicted future frames collected for task %s trial %s.",
++                        cfg.EVALUATION.task_id,
++                        trial_idx,
++                    )
++                else:
++                    all_gt_frames = []
++                    all_pred_frames = []
++                    for clip in predicted_future_video_clips:
++                        all_gt_frames.extend(clip["gt_frames"])
++                        all_pred_frames.extend(clip["pred_frames"])
++                        save_prediction_video(
++                            predicted_video_dir,
++                            clip["gt_frames"],
++                            clip["pred_frames"],
++                            f"task{cfg.EVALUATION.task_id}_trial{trial_idx}",
++                            clip["replan_idx"],
++                            success=success,
++                            task_description=task_description,
++                        )
+                     save_prediction_video(
+                         predicted_video_dir,
+-                        clip["gt_frames"],
+-                        clip["pred_frames"],
++                        all_gt_frames,
++                        all_pred_frames,
+                         f"task{cfg.EVALUATION.task_id}_trial{trial_idx}",
+-                        clip["replan_idx"],
++                        "all",
+                         success=success,
+                         task_description=task_description,
+                     )
+-                save_prediction_video(
+-                    predicted_video_dir,
+-                    all_gt_frames,
+-                    all_pred_frames,
+-                    f"task{cfg.EVALUATION.task_id}_trial{trial_idx}",
+-                    "all",
+-                    success=success,
+-                    task_description=task_description,
+-                )
++    finally:
++        if shared_env is not None:
++            _w0_diag_snapshot(
++                "before_shared_env_close", env=shared_env, episode_idx=trial_start, timestep=0
++            )
++            try:
++                shared_env.close()
++            except Exception:  # pragma: no cover - renderer-specific cleanup
++                logging.exception("Failed to close shared LIBERO env")
++            del shared_env
++            gc.collect()
+ 
+     if visualize_future_video:
+         valid_episode_psnr = [x for x in results["episode_future_video_psnr"] if x is not None]
+@@ -700,6 +875,7 @@ def eval_single_process(cfg: DictConfig):
+     model = instantiate(cfg.model, model_dtype=model_dtype, device=model_device)
+     _load_model_checkpoint(model, str(cfg.ckpt))
+     model = model.to(model_device).eval()
++    _w0_diag_snapshot("model_loaded")
+ 
+     dataset_stats_path = _resolve_dataset_stats_path(cfg)
+     dataset_stats = load_dataset_stats_from_json(str(dataset_stats_path))
+@@ -734,17 +910,26 @@ def eval_single_process(cfg: DictConfig):
+     benchmark_dict = benchmark.get_benchmark_dict()
+     task_suite = benchmark_dict[cfg.EVALUATION.task_suite_name]()
+     task = task_suite.get_task(cfg.EVALUATION.task_id)
+-    initial_states = task_suite.get_task_init_states(cfg.EVALUATION.task_id)
+-
+-    while len(initial_states) < int(cfg.EVALUATION.num_trials):
+-        initial_states.extend(initial_states[: (int(cfg.EVALUATION.num_trials) - len(initial_states))])
++    initial_states = list(task_suite.get_task_init_states(cfg.EVALUATION.task_id))
++    trial_start = int(cfg.EVALUATION.get("trial_start", 0))
++    num_trials = int(cfg.EVALUATION.num_trials)
++    if trial_start < 0:
++        raise ValueError(f"EVALUATION.trial_start must be non-negative, got {trial_start}")
++    if num_trials <= 0:
++        raise ValueError(f"EVALUATION.num_trials must be positive, got {num_trials}")
++    required_states = trial_start + num_trials
++    while len(initial_states) < required_states:
++        initial_states.extend(initial_states[: required_states - len(initial_states)])
+ 
+     results = {
+         "task_suite": cfg.EVALUATION.task_suite_name,
+         "task_id": cfg.EVALUATION.task_id,
+         "task_description": None,
+         "successes": 0,
+-        "total_episodes": int(cfg.EVALUATION.num_trials),
++        "total_episodes": num_trials,
++        "trial_start": trial_start,
++        "trial_count": num_trials,
++        "episode_indices_are_global": True,
+         "gpu_id": int(cfg.gpu_id),
+         "success_episodes": [],
+         "failure_episodes": [],
+@@ -753,6 +938,7 @@ def eval_single_process(cfg: DictConfig):
+     }
+ 
+     logging.info("Running LIBERO evaluation with env_num=1")
++    _w0_diag_snapshot("before_task_loop")
+     task_results = run_single_task(
+         task=task,
+         initial_states=initial_states,
+@@ -765,6 +951,7 @@ def eval_single_process(cfg: DictConfig):
+         input_w=input_w,
+         input_h=input_h,
+         model_device=model_device,
++        trial_start=trial_start,
+     )
+     results.update(task_results)
+ 
+diff --git a/experiments/libero/libero_utils.py b/experiments/libero/libero_utils.py
+index 68edfd8..454303a 100644
+--- a/experiments/libero/libero_utils.py
++++ b/experiments/libero/libero_utils.py
+@@ -1,6 +1,7 @@
+ """Utils for evaluating policies in LIBERO simulation environments."""
+ 
+ import math
++import os
+ import time
+ import pathlib
+ 
+@@ -29,6 +30,15 @@ def get_libero_env(task, resolution, seed, env_num=1):
+         "camera_heights": resolution,
+         "camera_widths": resolution,
+     }
++    hard_reset = os.environ.get("W0_HARD_RESET")
++    if hard_reset is not None:
++        normalized = hard_reset.strip().lower()
++        if normalized not in {"0", "1", "false", "true", "no", "yes"}:
++            raise ValueError(
++                "W0_HARD_RESET must be one of 0/1/false/true/no/yes, "
++                f"got {hard_reset!r}"
++            )
++        env_args["hard_reset"] = normalized in {"1", "true", "yes"}
+     if env_num > 1:
+         env = SubprocVectorEnv([lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)])
+     else:

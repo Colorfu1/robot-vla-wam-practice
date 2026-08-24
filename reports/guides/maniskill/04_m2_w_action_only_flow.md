@@ -36,6 +36,18 @@ train-only normalization stats 会缓存到 D_core 目录下的 `.m2_w_normaliza
 绑定 D_core 文件大小/修改时间、D_core manifest、offline split 和 train episode 数；命中时
 启动阶段不再扫描 787 条 train episodes。每次 run 仍会把实际使用的 stats 复制到自己的输出目录。
 
+本次 7D 诊断 rerun 将 normalization profile 显式固定为
+`7d_action_per_channel_zscore`：7 个 `pd_ee_delta_pose` action channel 分别从 train split
+计算 mean/std，统计前不做 clip，std floor 为 `1e-6`；state 和 RGB 也仍只使用 train split
+统计量。它复用同一份 D_core、同一份 offline episode split（787/100/100）和同一份
+development state bank，不改变 M2-W 模型、Flow sampler、seed、global batch 或 action
+contract。旧的 `formal_seed1000` 不覆盖；rerun 使用独立输出目录。
+
+注意：旧 `formal_seed1000` 的运行时代码本身已经对 7D action 使用 train-only 的逐 channel
+mean/std；本次不是把“完全未归一化”的旧模型改成归一化模型，而是把该行为写进配置合同、升级
+统计缓存并用独立目录重跑，确保后续结果可明确追溯。若两次结果接近，应解读为复现确认，而不是
+归因于新增了一个模型结构改动。
+
 ## 1. 前置检查
 
 在仓库根目录执行。环境必须是 Python 3.10 的 `robot-practice`；首次安装按
@@ -120,6 +132,65 @@ bash scripts/experiments/maniskill/run_m2_w_action_flow.sh \
 `per_process_batch_size=32`、`completed_steps=50000` 和 10k–50k 候选 checkpoint。当前
 runner 不会把单卡/四卡静默当成这份正式合同；若目标机器不是 8 卡，应另建 config 和子计划，
 保持 global batch、optimizer steps、模型和 sampler 合同不变。
+
+### 3.1 训练中 checkpoint eval（多 GPU rollout）
+
+正式 `phase=train` 已接入 checkpoint-time development eval；不需要另起一条命令。每到
+`10k/20k/30k/40k/50k` checkpoint，8 个 DDP training rank 会直接复用本 rank 已同步的
+模型，各自使用一张 GPU，并对固定的 200 条 development state 做不重叠切片（每个 rank 约
+25 条）。每个 checkpoint 会分别评测 `n_action_steps=4` 和 `8`，每个 rank 最多创建
+`eval_num_envs=64` 个 ManiSkill GPU 环境；action 推理和仿真 rollout 都在对应 GPU 上，只有
+rank 0 在最后读取 worker JSON 并在 CPU 上合并指标。它不会额外启动 evaluator 进程抢占训练
+显存，也不会读取 offline test 或 state-bank test。
+
+训练期间可查看：
+
+```text
+outputs/maniskill/m2_task_base/StackCube-v1/<run>/training.log
+outputs/maniskill/m2_task_base/StackCube-v1/<run>/training_eval/
+  step_00010000_n4/metrics.json
+  step_00010000_n8/metrics.json
+  ...
+```
+
+`run_manifest.json` 的 `training_evaluation` 记录 backend、GPU 数、每 rank 的环境数和评测
+配置；`training_evaluations` 记录每个 checkpoint/`n_action_steps` 的合并摘要。训练中 eval
+用于监控曲线，不改变 checkpoint；正式选模仍需执行下面的 `select-development`，它会对候选
+checkpoint 做同一套 development-only GPU rollout 和固定排序。
+
+### 3.2 7D per-channel normalization rerun
+
+在 8-GPU 环境执行下面的独立训练。输入 config 仍是 M2-W 的固定 config；新的显式 profile
+会生成 `train_stats_v3_*` cache，并把 profile、channel names、source split 和 stats 写入
+run manifest。不要把输出目录改回已有的 `formal_seed1000`：
+
+```bash
+bash scripts/experiments/maniskill/run_m2_w_action_flow.sh \
+  --phase=train \
+  --config=configs/experiments/maniskill/m2_w_action_only_flow.json \
+  --num-gpus=8 \
+  --output-root=outputs/maniskill/m2_task_base/StackCube-v1/formal_seed1000_7d_per_channel
+```
+
+训练完成后，沿用原来的 development-only 选模流程，但使用新的 train root 和独立输出：
+
+```bash
+bash scripts/experiments/maniskill/run_m2_w_action_flow.sh \
+  --phase=select-development \
+  --config=configs/experiments/maniskill/m2_w_action_only_flow.json \
+  --num-gpus=8 \
+  --num-envs=64 \
+  --train-root=outputs/maniskill/m2_task_base/StackCube-v1/formal_seed1000_7d_per_channel \
+  --output-root=outputs/maniskill/m2_task_base/StackCube-v1/development_7d_per_channel
+```
+
+本机 1-GPU smoke 已验证该 profile 的 stats 重算、懒读 H5、checkpoint reload 和 GPU
+development smoke route；正式 50k 结果需以上述 8-GPU 命令完成后再记录，smoke 数字不计入
+模型结果。
+
+截至当前，`formal_seed1000_7d_per_channel` 尚未形成正式 8-GPU training output，因此本节不
+登记该 rerun 的 success rate。其他文档中出现的 `18/100` 是独立的 M2 Base GPU 7D route
+（`outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/`），不是 M2-W formal rerun；两者不能混称。
 
 训练过程会同时持久化到训练输出目录：`training.log` 保存启动、每 100 steps 的进度、
 checkpoint、完成/失败信息；`loss_history.jsonl` 每个 optimizer step 保存一条结构化记录，

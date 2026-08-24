@@ -1,0 +1,43 @@
+#!/bin/sh
+# Answer DeepSpeed's import-time CUDA version probe. Not a compiler.
+#
+# `import deepspeed` runs `git_version_info.py`, which calls `is_compatible()` on
+# every op builder. `FpQuantizerBuilder.is_compatible()` calls
+# `installed_cuda_version()`, which shells out to `$CUDA_HOME/bin/nvcc -V` purely
+# to read a version number. That function only raises a catchable
+# `MissingCUDAException` when `CUDA_HOME` is None; when the prefix exists but has
+# no compiler the subprocess escapes as `FileNotFoundError` and kills the
+# launcher before training starts. `DS_SKIP_CUDA_CHECK=1` does not help -- it
+# guards `assert_no_cuda_mismatch`, a different function.
+#
+# The W0 image ships a CUDA runtime layout at /usr/local/cuda with no bin/, and
+# the W0 training path compiles nothing: ZeRO-1 with `offload_optimizer.device`
+# and `offload_param.device` set to "none" and no `optimizer` block in
+# `ds_zero1_config.json` needs neither CPUAdam nor FusedAdam. So the probe is the
+# only thing that has to be satisfied.
+#
+# This shim is the stopgap for hosts that cannot reach a package index. The real
+# fix is `cuda-nvcc` in the image (see Dockerfile.w0-fastwam); sitecustomize
+# probes real toolchains first, so this file is silently unused once the image
+# carries one. Any invocation other than a version query fails loudly rather than
+# pretending to compile.
+case "$1" in
+  -V|--version)
+    echo "nvcc: NVIDIA (R) Cuda compiler driver"
+    echo "Copyright (c) 2005-2025 NVIDIA Corporation"
+    echo "Cuda compilation tools, release 12.8, V12.8.61"
+    echo "Build cuda_12.8.r12.8/compiler.0_0"
+    exit 0
+    ;;
+esac
+
+cat >&2 <<'EOF'
+w0 nvcc probe shim: version queries only, this is not a CUDA compiler.
+
+Something asked this shim to compile. The W0 training path is not supposed to
+build any DeepSpeed op (ZeRO-1, offload disabled, no optimizer block), so either
+the configuration changed or a new dependency needs a real toolchain. Install
+cuda-nvcc plus the matching CUDA dev packages in the image instead of extending
+this shim.
+EOF
+exit 2

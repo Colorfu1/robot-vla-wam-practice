@@ -2,9 +2,10 @@
 
 ## 状态
 
-M2 base 的离线数据适配与单卡 2-step smoke 已完成；M1-W 原生 4D 路线的 100k、4 卡训练、
-development 选模和 post-selection test 已完成。本入口与已经冻结的 M2-W 7D 正式 runner 分开：
-这里复用同一 Action-only Flow trunk，允许数据 action 为 4D 或 7D。
+M2 base 的离线数据适配与单卡 2-step smoke 已完成；M1-W GPU 7D、projected 4D 和原生 4D
+路线均已有独立训练产物，其中 native 4D 路线的 100k、4 卡训练、development 选模和
+post-selection test 已完成。本入口与已经冻结的 M2-W 7D 正式 runner 分开：这里复用同一
+Action-only Flow trunk，允许数据 action 为 4D 或 7D。
 
 ## 官方 anchor 的日志在哪里
 
@@ -38,6 +39,159 @@ TensorBoard 读取的标量日志。训练失败时先看文本日志末尾；�
 - 输出为 16 步 action chunk；Flow 训练是随机 `t`、随机高斯源噪声，预测 `x1-x0` velocity，推理固定 Euler/10 steps。
 - `ActionFlowConfig` 与 checkpoint normalization 支持 4D 和 7D。4D 对应 `pd_ee_delta_pos`，7D 对应 `pd_ee_delta_pose`。
 - 7D 示例配置为 `configs/experiments/maniskill/m2_base_m1w_rgb_7d.json`，读取 M1-W 的 D_core；它不改变 M2-W 冻结 runner 的 7D gate。
+
+### 本次 M1-W GPU 7D 训练
+
+本次 7D 训练直接参考已经完成的
+`outputs/maniskill/m2_base_action_flow/m1w_native_rgb_4d/formal_seed1000_100k`，使用
+M2 base runner，不使用 M2-W 的 8-GPU formal runner。现成的 7D config 已固定：
+
+- source：M1-W frozen GPU live-RGB replay，`pd_ee_delta_pose` 7D，987 条 episode；
+- split：train/development/test = `787/100/100`，与 D_core split manifest 一致；
+- 训练：4 GPU、每卡 batch 64、global batch 256、50,000 optimizer steps；
+- normalization：只从 train split 统计 image/state/action 的 mean/std，action 为 7 个 channel
+  分别统计，std floor 为 `1e-6`；
+- 训练阶段只做 offline training；训练完成后再用 M2 base 的 GPU selector 做 development
+  选模和 test 评测。
+
+先做远端 4 卡输入检查：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
+  --phase=validate-config \
+  --config=configs/experiments/maniskill/m2_base_m1w_rgb_7d.json \
+  --num-gpus=4
+```
+
+启动 7D 训练，输出使用独立目录：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
+  --phase=train \
+  --config=configs/experiments/maniskill/m2_base_m1w_rgb_7d.json \
+  --num-gpus=4 \
+  --output-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/formal_seed1000
+```
+
+训练完成后，用同一套 M2 base GPU selector 评估 `5 checkpoints × {n_action_steps=4,8}`：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
+  --phase=select-development \
+  --config=configs/experiments/maniskill/m2_base_m1w_rgb_7d.json \
+  --train-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/formal_seed1000 \
+  --output-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/development_gpu \
+  --num-gpus=4 \
+  --num-envs=64 \
+  --max-steps=200 \
+  --n-action-steps=4,8
+```
+
+development 选模通过后，再执行独立 test 评测：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
+  --phase=evaluate-test \
+  --config=configs/experiments/maniskill/m2_base_m1w_rgb_7d.json \
+  --selection-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/development_gpu \
+  --output-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/test_gpu \
+  --num-gpus=4 \
+  --num-envs=64 \
+  --max-steps=200
+```
+
+### M1-W GPU 7D 已完成结果
+
+这条 M2 Base 7D route 使用 987 条 D_core，train/development/test 为 `787/100/100`，4-GPU
+DDP、global batch `256`、50k steps。development 选模选择 step 30k、`n_action_steps=8`：
+`18/100` success-once、`18/100` success-at-end；`ever_grasped=95%`、`ever_on_cube=28%`。
+训练 loss 的 last 值为 `0.07552`，最后 1,000 steps 均值为 `0.07153`。当前这条 route 只报告
+development，未把 test 访问写入正式结果。
+
+产物：
+
+```text
+outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/formal_seed1000/loss_history.jsonl
+outputs/maniskill/m2_base_action_flow/m1w_rgb_7d/development_gpu/selected_checkpoint.json
+```
+
+### M1-W GPU 7D projected 4D success-at-end 路线
+
+这条路线读取同一份 M1-W 7D H5，但监督 action 只取 `[0,1,2,6]`，使用 4D
+`pd_ee_delta_pos` model/config/pipeline；它不是重新生成的 native 4D 数据。为了只保留原始
+`success_at_end` source，episode index 为 train/development/test = `668/100/100`。训练与
+评测仍使用 4 GPU、global batch `256`、50k steps 和 `physx_cuda`，不访问 native-4D 数据目录。
+
+配置检查与训练：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
+  --phase=validate-config \
+  --config=configs/experiments/maniskill/m2_base_m1w_rgb_4d_success_at_end.json \
+  --num-gpus=4
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
+  --phase=train \
+  --config=configs/experiments/maniskill/m2_base_m1w_rgb_4d_success_at_end.json \
+  --num-gpus=4 \
+  --output-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/formal_seed1000
+```
+
+development 选模和 held-out test：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
+  --phase=select-development \
+  --config=configs/experiments/maniskill/m2_base_m1w_rgb_4d_success_at_end.json \
+  --train-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/formal_seed1000 \
+  --output-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/development_gpu \
+  --num-gpus=4 \
+  --num-envs=64 \
+  --max-steps=200 \
+  --n-action-steps=4,8
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash scripts/experiments/maniskill/run_m2_base_action_flow.sh \
+  --phase=evaluate-test \
+  --config=configs/experiments/maniskill/m2_base_m1w_rgb_4d_success_at_end.json \
+  --selection-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/development_gpu \
+  --output-root=outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/test_gpu \
+  --num-gpus=4 \
+  --num-envs=64 \
+  --max-steps=200
+```
+
+已完成结果：selected step 50k、`n_action_steps=8`；development 为 `22/100 / 22/100`，
+held-out test 为 `21/100 / 21/100`。训练 loss 的 last 值为 `0.04619`，最后 1,000 steps
+均值为 `0.04240`；development/test 的 truncation 分别为 78/100、79/100。结果产物为：
+
+```text
+outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/formal_seed1000/loss_history.jsonl
+outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/development_gpu/selected_checkpoint.json
+outputs/maniskill/m2_base_action_flow/m1w_rgb_4d_success_at_end/test_gpu/metrics.json
+```
+
+### M1-W 7D→4D 全量 replay 诊断
+
+在不做模型推理的情况下，对 D_core 987 条 source episode 只取 action `[0,1,2,6]`，使用
+`pd_ee_delta_pos`、`physx_cuda`、50 个并行 environments 做完整 replay。结果为
+`911/987` success-once（92.30%）和 `844/987` success-at-end（85.51%）；其中 67 条曾经
+success 但没有在 episode 结束时保持。development/test/train 分别为 `95/100 / 92/100`、
+`90/100 / 84/100`、`726/787 / 668/787`。这是 replay/protocol 诊断，不是 learned-policy
+结果；它说明 action projection 大体可执行，不能说明对应 RGB/state 下的 policy 已经学会该映射。
+
+完整记录：
+
+```text
+outputs/maniskill/m1_wam_protocol_audit/StackCube-v1/action_projection_0126_full/metrics.json
+```
 
 ### M1-W 原生 4D 路线
 

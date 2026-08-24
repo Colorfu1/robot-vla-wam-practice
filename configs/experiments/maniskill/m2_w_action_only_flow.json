@@ -92,7 +92,32 @@
     "amp_dtype": "bfloat16",
     "checkpoint_every": 10000,
     "selection_checkpoint_steps": [10000, 20000, 30000, 40000, 50000],
-    "num_workers": 4
+    "num_workers": 4,
+    "eval_during_training": true,
+    "eval_num_envs": 64
+  },
+  "normalization": {
+    "profile": "7d_action_per_channel_zscore",
+    "source_split": "train",
+    "state_and_images": {
+      "method": "mean_std",
+      "source_split": "train"
+    },
+    "action": {
+      "method": "mean_std",
+      "per_channel": true,
+      "std_floor": 0.000001,
+      "clip_before_stats": false,
+      "channel_names": [
+        "delta_position_x",
+        "delta_position_y",
+        "delta_position_z",
+        "delta_rotation_x",
+        "delta_rotation_y",
+        "delta_rotation_z",
+        "gripper"
+      ]
+    }
   },
   "splits": {
     "offline": {

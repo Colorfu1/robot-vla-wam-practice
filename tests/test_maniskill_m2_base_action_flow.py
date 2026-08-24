@@ -18,6 +18,7 @@ from robot_practice.policies.wam_tiny.action_flow import (
 CONFIG = Path("configs/experiments/maniskill/m2_base_official_rgb_4d.json")
 NATIVE_4D_CONFIG = Path("configs/experiments/maniskill/m2_base_m1w_native_rgb_4d.json")
 NATIVE_4D_100K_CONFIG = Path("configs/experiments/maniskill/m2_base_m1w_native_rgb_4d_100k.json")
+M1W_7D_CONFIG = Path("configs/experiments/maniskill/m2_base_m1w_rgb_7d.json")
 
 
 def test_m2_base_config_supports_official_four_d_contract() -> None:
@@ -45,6 +46,38 @@ def test_m2_base_config_supports_m1w_native_four_d_100k_schedule() -> None:
     assert config["training"]["optimizer_steps"] == 100000
     assert config["training"]["selection_checkpoint_steps"][-1] == 100000
     assert result["world_size"] == 4
+
+
+def test_m2_base_config_supports_m1w_gpu_seven_d_contract() -> None:
+    result = runner.validate_config(M1W_7D_CONFIG, check_inputs=True)
+    assert result["action_dim"] == 7
+    assert result["backend"] == "physx_cuda"
+    assert result["world_size"] == 4
+    assert result["per_process_batch_size"] == 64
+    assert result["split_counts"] == {"train": 787, "development": 100, "test": 100}
+    assert result["test_access_allowed"] is False
+
+
+def test_markdown_episode_index_and_7d_to_4d_projection_contract(tmp_path: Path) -> None:
+    index = tmp_path / "episode_index.md"
+    index.write_text(
+        "# index\n\n"
+        "## train_episode_ids\n\n"
+        "```text\n7\n11\n```\n\n"
+        "## all_success_at_end_episode_ids\n\n"
+        "```text\n7\n11\n19\n```\n",
+        encoding="utf-8",
+    )
+    assert runner._read_markdown_episode_ids(index, section="train_episode_ids") == (7, 11)
+    config = {
+        "protocol": {
+            "action_dim": 4,
+            "control_mode": "pd_ee_delta_pos",
+            "source_action_dim": 7,
+            "action_projection_indices": [0, 1, 2, 6],
+        }
+    }
+    assert runner._action_projection_indices(config) == (0, 1, 2, 6)
 
 
 def test_action_flow_model_accepts_four_and_seven_dimensions() -> None:

@@ -2,12 +2,11 @@
 
 ## 状态
 
-- 状态：`in-progress`
-- 阻塞项：无。M1-W 的 state banks、`frozen_protocol.json` 和 `validate-frozen` 已收口；M1-R
-  是独立 Residual 线，用户暂缓不阻塞 M2-W。
-- 范围：实现、训练、在 development 上选择并冻结 StackCube Action-only Flow baseline；
-  不实现 future head，不运行 W0/W1，不读取 offline test split 或 state-bank test split。
-- 最后更新：2026-08-13
+- 状态：`dropped`
+- 原因：本文件冻结的 7D `pd_ee_delta_pose` 正式路线不再执行；M2-W 里程碑已由独立的
+  M1-W native-4D 数据 + 4D Action-only Flow 100k 路线完成。结果只保留在 ManiSkill M2 guide，
+  后续由 2026-08-17 WAM 接入计划继续。
+- 最后更新：2026-08-17
 
 ## 目标
 
@@ -93,8 +92,8 @@ action tokens。W0 的机制锚点固定为 M2-W 选中的 `Δ=n_action_steps`�
 - checkpoint/执行步联合排序：`success_at_end` 降序 → `success_once` 降序 →
   `is_cubeA_on_cubeB` 降序 → normalized action MSE 升序 → amortized policy latency 升序 →
   更早 checkpoint → 更小 `n_action_steps`。任何并列都按该顺序机械消解。
-- test split 在 M2-W 不加载、不评测。最终 test 只在 W3 对 Action-only/True-Future/
-  Shuffled-Future 做一次 paired evaluation。
+- test split 在 M2-W 不加载、不评测。最终 test 的 checkpoint set 与 paired evaluation
+  只由新的 literature-aligned W3 在 W2 完成后冻结。
 
 ## 执行步骤
 

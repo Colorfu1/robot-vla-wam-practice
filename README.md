@@ -18,7 +18,7 @@ Formal 结论。
 | PushT | 研究 Diffusion 的随机闭环行为、采样效率和条件控制 | 完整 DDPM sampling 能产生多个成功闭环 mode；DDIM-5 是当前最佳速度配置，但固定 observation 多峰性、Prototype-ID 和 Route Field 语义控制均未建立 |
 | SmolVLA | 验证 LIBERO 域适配、LoRA、paraphrase 和语言目标服从 | C3 selected `015000` 达到 canonical 88/90、held-out paraphrase 67/90、Prompt Swap 首次达成 30/30；background regression 为 0/210，而 B0 基线为 183/210，当前配置仍有严重 background forgetting |
 | ManiSkill | 验证 PickCube/StackCube 的数据、控制协议、Action-only Flow 和官方 Diffusion Policy 参照 | M0 PickCube 的 4D/CPU 固定 holdout 为 397/400（99.25%）；StackCube 主表按数据来源和 rollout contract 分组记录：官方 4D 默认 57D state 的 DP 在 100k 为 52/100 once、47/100 end；M2-W 50k 为 43/200、43/200；M2 Base + GPU 7D development 选中 step 30k 为 18/100；M2 Base + 投影 4D 的 held-out test 为 21/100。7D 投影 `[0,1,2,6]` 的全量 replay 为 911/987 once、844/987 end；不同组不组成单一排行榜 |
-| WAM 文献复现 | 先在 LIBERO 复现 Fast-WAM/Light-WAM 的公开 artifact 与机制，再迁移到 StackCube tiny 对照 | W0 Fast-WAM 的两条 released-checkpoint 闭环已完成：UP-REL `1929/2000`（96.45%）、LR-REL `1885/2000`（94.25%）。该评测不是 held-out 泛化（初始配置与训练重叠 85.6%）。FW-V/FW-NV 因果对照和 deployment gate 仍未完成，W1/W2/W3 继续等待前置 gate |
+| WAM 文献复现 | 先在 LIBERO 复现 Fast-WAM/Light-WAM 的公开 artifact 与机制，再迁移到 StackCube tiny 对照 | W0 Fast-WAM 的 released/integration 闭环与本地 `FW-V`/`FW-FZ` 对照均已完成：UP-REL `1929/2000`（96.45%）、LR-REL `1885/2000`（94.25%）、FW-V `1921/2000`（96.05%）、FW-FZ `1743/2000`（87.15%）。该评测不是 held-out 泛化（初始配置与训练重叠 85.6%）；deployment 测量仍未完成，W0 不设 pass/fail 阈值，是否继续 W1/W2/W3 由测量结果判断 |
 
 ## 1. LIBERO：ACT 子任务总结
 
@@ -176,7 +176,62 @@ StackCube 的 GPU state-bank 结果统一是 development 200 states、最多 500
 - 每个结果单元格必须同时能追溯到“训练 steps + eval backend + split + episodes + horizon”；
   缺任一关键字段时写 `N/A` 或“未完成”，不从训练内 monitor 推断独立泛化结果。
 
-### 4.3 Residual RL 待进行实验
+## 5. WAM 文献锚点与 StackCube 迁移路线
+
+WAM 路线与 ManiSkill learned-policy 结果分开记录。W0/W1 是 LIBERO 上的文献模型复现，W2/W3
+才回到 StackCube tiny 对照；在 W0/W1 的 artifact、机制和 deployment gate 通过前，不创建
+StackCube formal WAM 结果，也不把论文或上游 README 的数字写成本地测量。
+
+### W0 Fast-WAM baseline
+
+W0 的 released baseline 是上游 released Fast-WAM checkpoint 的本地正式闭环评测（`UP-REL`）；
+`FW-V`/`FW-FZ` 是本地训练的机制对照，不能与 released/integration 结果混成同一组。固定 40 个
+LIBERO tasks、每个 task 50 trials，共 2,000 episodes；无缺失或重复 trial。
+
+> **评测口径说明（重要）**：LIBERO 的闭环评测**不是 held-out 泛化测试**。评测的 2,000 个初始
+> 状态来自 LIBERO 原始的 `<task>.pruned_init`（每 task 恰好 50 条），而训练 demonstration 的
+> 起始配置来自同一来源，实测重叠 **85.6%**（训练集 1,712 episodes / 评测 2,000 初始状态）。
+> 剩下 288 个未覆盖的 trial 不是刻意留出的 test split，而是 OpenVLA 在构建 `_no_noops` 数据集
+> 时**重放失败被剔除**的 demonstration（论文 Appendix E.1），评测端不做对应过滤。所以这里的
+> success 衡量"能否从训练见过的初始配置重新执行"，与所有已发表 LIBERO 数字同口径、可比，
+> 但不能读成对新物体摆放的泛化。明细见
+> [`outputs/literature/w0_fastwam/train_eval_overlap.json`](reports/guides/literature/01_w0_fastwam_libero.md)。
+
+| 模型 / 评测变体 | 数据与协议 | 正式闭环结果 | 状态 |
+| --- | --- | ---: | --- |
+| Fast-WAM W0 `UP-REL` released checkpoint | LIBERO-10 / Goal / Object / Spatial；front + wrist RGB、8D proprio、7D action；上游 checkpoint + 上游 evaluator | **1929/2000（96.45%）**；LIBERO-10 `467/500`（93.4%）、Goal `488/500`（97.6%）、Object `498/500`（99.6%）、Spatial `476/500`（95.2%） | **baseline 已完成**；本地 causal pair 与 deployment gate 独立记录 |
+| Fast-WAM W0 `LR-REL` LeRobot integration | 同一 released checkpoint、同一 40 tasks × 50 trials；改用 pinned LeRobot evaluator | **1885/2000（94.25%）**；Object `500/500`（100.0%）、Goal `479/500`（95.8%）、LIBERO-10 `462/500`（92.4%）、Spatial `444/500`（88.8%） | **已完成。** 相对 UP-REL 的 −2.2pp 几乎全部集中在 `libero_spatial` task 5（UP 96% vs LR 28%），其余 39 个 task 在 ±8pp 内；该缺口**未解释**，不补填归因 |
+| Fast-WAM W0 `FW-V` 本地训练 checkpoint | 同一 40 tasks × 50 trials；本地从 Wan2.2 预训练权重训练 10 epoch / 21,700 步，`lambda_video=1.0`，video expert 可训；上游 evaluator | **1921/2000（96.05%）**；Object `499/500`（99.8%）、Spatial `486/500`（97.2%）、Goal `483/500`（96.6%）、LIBERO-10 `453/500`（90.6%） | **已完成。** 与 UP-REL 的 −0.4pp 在 n=2000 的二项 σ≈0.44pp 之内，统计上不可区分；相对论文 97.6% 低 1.55pp，缺口未解释。与 `FW-FZ` 的本地差值为 **+8.90pp** |
+| Fast-WAM W0 `FW-FZ` 本地训练 checkpoint | 同一 40 tasks × 50 trials；本地从同一 Wan2.2 初始化训练 10 epoch / 21,700 步，`lambda_video=0`，video expert 冻结；上游 evaluator | **1743/2000（87.15%）**；Object `469/500`（93.8%）、Spatial `468/500`（93.6%）、Goal `440/500`（88.0%）、LIBERO-10 `366/500`（73.2%） | **已完成。** 257 次失败；31/40 tasks 至少有一次失败。相对 `FW-V` 为 **−8.90pp**；LIBERO-10 差值最大，为 **−17.4pp** |
+
+结果明细见 [W0 Fast-WAM 指南](reports/guides/literature/01_w0_fastwam_libero.md) 及
+`outputs/literature/w0_fastwam/upstream_released/summary.json`、
+`outputs/literature/w0_fastwam/lerobot_released_visualfix/summary.json`、
+`outputs/literature/w0_fastwam/eval_fwv_21700_4gpu/summary.json`、
+`outputs/literature/w0_fastwam/eval_fwfz_21700_4gpu/summary.json`。
+
+论文 Table 2 的 `Fast-WAM` vs `Fast-WAM w.o. video co-train`（FW-NV）与本地 `FW-V` vs `FW-FZ`
+的差值如下；所有差值均为 with-video − no-video，`Long` 对应本地 `libero_10`：
+
+| 对照差值 | Spatial | Object | Goal | Long / LIBERO-10 | Average / Overall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 论文：Fast-WAM − FW-NV | **+9.0pp** | **+0.8pp** | **+1.6pp** | **+5.2pp** | **+4.1pp** |
+| 本地：FW-V − FW-FZ | **+3.6pp** | **+6.0pp** | **+8.6pp** | **+17.4pp** | **+8.90pp** |
+
+论文 FW-NV 只移除 video co-training objective；本地 FW-FZ 同时设置 `lambda_video=0` 并冻结
+video expert，因此本地差值是复合机制对照，不能直接视为纯 video co-training 的因果增益。
+论文来源：[Fast-WAM Table 2 / Sec. 3.3](https://arxiv.org/pdf/2603.16666)。
+
+| 阶段 | 目的 | 当前状态 | 入口 |
+| --- | --- | --- | --- |
+| W0 Fast-WAM / LIBERO | released checkpoint、LeRobot integration，以及同初始化的 `FW-V` vs `FW-FZ`（冻结 video expert 的 VLA 形状对照）主对照，`FW-NV`（`lambda_video=0`）作为可选的文献交叉验证 | **四条闭环已完成，FW-V/FW-FZ 对照已完成，deployment gate 待完成。** UP-REL `1929/2000`（96.45%）、LR-REL `1885/2000`（94.25%）、`FW-V` `1921/2000`（96.05%）、`FW-FZ` `1743/2000`（87.15%）；W0 不设 pass/fail 阈值 | [W0 guide](reports/guides/literature/01_w0_fastwam_libero.md) · [W0 plan](plans/2026-08-17-W0-Fast-WAM-LIBERO复现与机制锚点.md) |
+| W1 Light-WAM / LIBERO | full latent 与 2× compressed latent 的能力、效率和显存对照 | **blocked**，等待 W0 mechanism/deployment gate | [WAM route plan](plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) |
+| W2 StackCube tiny aligned comparison | 在同一 action path/budget 下比较 action-only、Fast-WAM-aligned 和 Light-WAM-aligned auxiliary supervision | **blocked**，等待 W0/W1 机制冻结；只允许 development | [WAM route plan](plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) |
+| W3 StackCube one-shot formal | 打开 400-state formal bank，比较 W2 预注册的 checkpoint/claim | **blocked**，不提前访问 formal bank | [WAM route plan](plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) |
+
+旧的 Mini-WAM / latent action-conditioning W0-W3 计划已 dropped，不作为当前路线的备用结果。
+
+## 6. Residual RL 待进行实验
 
 这张表沿用上面的“实验 → budget → 数据/eval → success → 单列原因”格式。M1-R 是 Residual
 训练的前置协议 gate；后续实验都固定使用 Policy Decorator 的 ManiSkill2 0.5.3 / repo-local
@@ -196,7 +251,7 @@ learned-policy 结果。
 上述实验均属于待执行计划，不将 `M1-R` 的 50 条 smoke 写成训练结果。R0/R1/R2/R3 的完整
 依赖关系、进入条件和停止条件见 [Residual RL 母计划](plans/2026-08-11-Mini-WAM与Residual-RL-完整实验总计划.md)。
 
-### 4.4 ManiSkill 当前结论
+## 7. ManiSkill 当前结论
 
 - M0 已证明数据读取、Diffusion 训练、可视化和闭环评测管路可用；PickCube 的 4D/CPU 参照达到
   99.25%，所以后续 StackCube 的低分不是“整个 LeRobot diffusion 管路坏了”。
@@ -219,45 +274,6 @@ learned-policy 结果。
 - 当前可引用的 StackCube learned-policy 数字必须同时带上 backend、数据来源、state-bank/seed
   split、horizon 和 success 口径；表格必须先按比较组分层，再看结果，不能把 CPU official、GPU
   native4d、GPU M1-W 7D、M2-W 和 LeRobot DP 合并成一张无条件排名表。
-
-## 5. WAM 文献锚点与 StackCube 迁移路线
-
-WAM 路线与 ManiSkill learned-policy 结果分开记录。W0/W1 是 LIBERO 上的文献模型复现，W2/W3
-才回到 StackCube tiny 对照；在 W0/W1 的 artifact、机制和 deployment gate 通过前，不创建
-StackCube formal WAM 结果，也不把论文或上游 README 的数字写成本地测量。
-
-### W0 Fast-WAM baseline
-
-W0 的 baseline 是上游 released Fast-WAM checkpoint 的本地正式闭环评测（`UP-REL`），不是本地
-重新训练结果，也不等同于尚未完成的 `FW-V/FW-NV` 机制因果对照。固定 40 个 LIBERO tasks、每个
-task 50 trials，共 2,000 episodes；无缺失或重复 trial。
-
-> **评测口径说明（重要）**：LIBERO 的闭环评测**不是 held-out 泛化测试**。评测的 2,000 个初始
-> 状态来自 LIBERO 原始的 `<task>.pruned_init`（每 task 恰好 50 条），而训练 demonstration 的
-> 起始配置来自同一来源，实测重叠 **85.6%**（训练集 1,712 episodes / 评测 2,000 初始状态）。
-> 剩下 288 个未覆盖的 trial 不是刻意留出的 test split，而是 OpenVLA 在构建 `_no_noops` 数据集
-> 时**重放失败被剔除**的 demonstration（论文 Appendix E.1），评测端不做对应过滤。所以这里的
-> success 衡量"能否从训练见过的初始配置重新执行"，与所有已发表 LIBERO 数字同口径、可比，
-> 但不能读成对新物体摆放的泛化。明细见
-> [`outputs/literature/w0_fastwam/train_eval_overlap.json`](reports/guides/literature/01_w0_fastwam_libero.md)。
-
-| 模型 / 评测变体 | 数据与协议 | 正式闭环结果 | 状态 |
-| --- | --- | ---: | --- |
-| Fast-WAM W0 `UP-REL` released checkpoint | LIBERO-10 / Goal / Object / Spatial；front + wrist RGB、8D proprio、7D action；上游 checkpoint + 上游 evaluator | **1929/2000（96.45%）**；LIBERO-10 `467/500`（93.4%）、Goal `488/500`（97.6%）、Object `498/500`（99.6%）、Spatial `476/500`（95.2%） | **baseline 已完成**；causal pair 和 deployment gate 待完成 |
-| Fast-WAM W0 `LR-REL` LeRobot integration | 同一 released checkpoint、同一 40 tasks × 50 trials；改用 pinned LeRobot evaluator | **1885/2000（94.25%）**；Object `500/500`（100.0%）、Goal `479/500`（95.8%）、LIBERO-10 `462/500`（92.4%）、Spatial `444/500`（88.8%） | **已完成。** 相对 UP-REL 的 −2.2pp 几乎全部集中在 `libero_spatial` task 5（UP 96% vs LR 28%），其余 39 个 task 在 ±8pp 内；该缺口**未解释**，不补填归因 |
-
-结果明细见 [W0 Fast-WAM 指南](reports/guides/literature/01_w0_fastwam_libero.md) 及
-`outputs/literature/w0_fastwam/upstream_released/summary.json`、
-`outputs/literature/w0_fastwam/lerobot_released_visualfix/summary.json`。
-
-| 阶段 | 目的 | 当前状态 | 入口 |
-| --- | --- | --- | --- |
-| W0 Fast-WAM / LIBERO | released checkpoint、LeRobot integration，以及同初始化 `lambda_video=1/0` 因果对照 | **两个 released-checkpoint 闭环已完成，W0 gate 进行中。** UP-REL `1929/2000`（96.45%）、LR-REL `1885/2000`（94.25%）；causal pair 和 deployment evidence 尚未齐备 | [W0 guide](reports/guides/literature/01_w0_fastwam_libero.md) · [W0 plan](plans/2026-08-17-W0-Fast-WAM-LIBERO复现与机制锚点.md) |
-| W1 Light-WAM / LIBERO | full latent 与 2× compressed latent 的能力、效率和显存对照 | **blocked**，等待 W0 mechanism/deployment gate | [WAM route plan](plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) |
-| W2 StackCube tiny aligned comparison | 在同一 action path/budget 下比较 action-only、Fast-WAM-aligned 和 Light-WAM-aligned auxiliary supervision | **blocked**，等待 W0/W1 机制冻结；只允许 development | [WAM route plan](plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) |
-| W3 StackCube one-shot formal | 打开 400-state formal bank，比较 W2 预注册的 checkpoint/claim | **blocked**，不提前访问 formal bank | [WAM route plan](plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) |
-
-旧的 Mini-WAM / latent action-conditioning W0-W3 计划已 dropped，不作为当前路线的备用结果。
 
 ## 证据边界
 

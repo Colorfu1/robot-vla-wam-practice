@@ -1,0 +1,155 @@
+ARG BASE_IMAGE=test-lab-instance-cn-beijing.cr.volces.com/lidar-wwd/practice:latest
+
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+
+# Make torchcodec loadable so LIBERO video decoding stops leaking.
+#
+# Root cause, established from a gc.DEBUG_SAVEALL census of a single-process dataset
+# iteration.  lerobot picks its decode backend with
+# ``importlib.util.find_spec("torchcodec")``, which succeeds here because the Python package
+# is installed -- but ``from torchcodec.decoders import VideoDecoder`` then fails with
+# "Could not load libtorchcodec ... We support versions 4, 5, 6 and 7", because the image
+# only carries FFmpeg 8 (libavutil.so.60) inside the conda env.  ``decode_video_frames``
+# catches that exception and falls back to pyav *from inside the except block*, so every
+# decode leaves an exception whose traceback pins the failed import's frames.  Those frames
+# form reference cycles that also hold the pyav objects and the decoded tensors beside them,
+# so nothing is freed until a full gc pass.  Measured: exactly two tracebacks per sample
+# (one per camera), about 29 MiB retained per sample in one process, and about 5 GiB per step
+# across 64 DataLoader workers.  Four 8-GPU runs died at steps 265, 270, 560 and 598 when
+# the 1788.9 GiB cgroup limit was reached: the OOM killer took a worker, its rank blocked in
+# ``queue.get`` and never enqueued its gradient allreduce, and the other seven spun in
+# DeepSpeed's ``allreduce_and_copy`` until the 600 s NCCL watchdog killed the job.
+#
+# FFmpeg 4.4 from jammy is the least invasive fix that torchcodec accepts.  It adds only
+# FFmpeg 4-era sonames (libavutil.so.56, libavcodec.so.58, ...), which cannot collide with
+# the conda env's FFmpeg 8 (libavutil.so.60), so no conda package is touched, nothing is
+# downgraded, and LD_LIBRARY_PATH is left alone.  Installing FFmpeg 6/7 would have meant
+# either resolving conda-forge into the pinned training env or prepending a foreign prefix to
+# LD_LIBRARY_PATH, both of which risk shadowing libstdc++/zlib for torch.
+#
+# The dataset is AV1 (512x512, yuv420p, 20 fps), so AV1 decoding is not optional; jammy's
+# libavcodec58 carries libdav1d and the verification below proves it on a real file.
+#
+# Secondary benefit: torchcodec seeks accurately.  The pyav path sets
+# ``keyframes_only=True`` because pyav cannot, so it decodes every frame from the preceding
+# key frame to the last requested timestamp -- in a 17k-frame packed file that is a large
+# multiple of the ~33 frames actually wanted.
+RUN apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        update \
+    && apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        install -y --no-install-recommends \
+        libavutil56 \
+        libavcodec58 \
+        libavformat58 \
+        libavdevice58 \
+        libavfilter7 \
+        libswscale5 \
+        libswresample3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Give triton the C compiler it needs at import time.
+#
+# This is a pre-existing latent failure, not a consequence of the FFmpeg layer: the previous
+# image fails identically three times out of three once its compile cache is cold.  On a
+# capability >= 8 device -- H20 is 9.0 -- ``get_accelerator().is_triton_supported()`` returns
+# True, so ``import deepspeed`` reaches
+# ``deepspeed/model_implementations/transformers/ds_transformer.py`` and imports TritonMLP.
+# The ``@triton.autotune`` decorator resolves ``driver.active``, whose CudaUtils constructor
+# compiles ``backends/nvidia/driver.c`` and caches the result under ``~/.triton/cache``.
+# With a warm cache no compiler is needed, which is why the long-lived container worked for
+# days; recreating the container discarded that cache and the failure surfaced as
+# ``RuntimeError: Failed to find C compiler``.
+#
+# It also used to pass by accident: when NVML fails to initialise in a given process,
+# ``torch.cuda.is_available()`` is False, ``is_triton_supported()`` returns False, and the
+# triton import is skipped entirely.  Relying on that coin flip is not acceptable for a
+# 24-hour run.
+#
+# libc6-dev is explicit because it is only a *Recommends* of gcc-11, so
+# ``--no-install-recommends`` omits it and the compile then dies on
+# ``fatal error: stdlib.h: No such file or directory``.
+#
+# This does not change training numerics: TritonMLP and TritonSelfAttention are inference-path
+# classes that ZeRO-1 training never instantiates, so only the import is affected.
+RUN apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        update \
+    && apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        install -y --no-install-recommends \
+        gcc \
+        libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Prove the toolchain can actually build what triton builds. The import itself cannot be
+# tested here because resolving driver.active needs a CUDA device, which a build does not
+# have, so check the part that failed: a compile that includes libc headers.
+RUN printf '#include <stdlib.h>\n#include <stdio.h>\nint main(void){return EXIT_SUCCESS;}\n' > /tmp/cc_probe.c \
+    && gcc -O2 -o /tmp/cc_probe /tmp/cc_probe.c \
+    && /tmp/cc_probe \
+    && rm -f /tmp/cc_probe /tmp/cc_probe.c \
+    && echo "C toolchain usable for triton's import-time driver build"
+
+# Fail the build rather than ship an image where the fallback silently returns.  A working
+# import is the whole point of the layer, and a broken one is invisible at runtime: it only
+# shows up as a warning per decode and an OOM several hundred steps later.
+RUN /opt/conda/envs/fastwam-upstream/bin/python - <<'PY'
+import importlib.util
+import sys
+
+if importlib.util.find_spec("torchcodec") is None:
+    sys.exit("torchcodec is not installed; this layer would have no effect")
+
+from torchcodec.decoders import VideoDecoder  # noqa: F401  - the import is the test
+
+import torchcodec
+
+print(f"torchcodec {getattr(torchcodec, '__version__', '?')} loaded", flush=True)
+PY
+
+# Enable the FW-FZ attribution arm of the W0 causal study.
+#
+# FW-FZ freezes the pretrained video expert and trains only the action expert and
+# proprio_encoder (about 1 B of the 6.02 B), with lambda_video=0. It separates two mechanisms
+# that the published ablation cannot: whether the video objective teaches dynamics, or whether
+# it merely stops the action loss from destroying the Wan pretrained representation -- 6.02 B
+# trainable parameters against 1,712 demonstrations leaves ample room for the latter.
+#
+# The patch is conditional on W0_FREEZE_VIDEO_EXPERT, so unset or "0" reproduces upstream
+# behaviour exactly and this one image serves FW-V, FW-NV and FW-FZ. Both of its edits are
+# required: freezing alone would leave the 5 B frozen parameters in the optimizer, because
+# _apply_dit_only_train_mode runs at line 84 and the optimizer is built at line 89 from
+# list(self.model.dit.parameters()), which ignores requires_grad, so ZeRO-1 would allocate
+# Adam state for them anyway.
+#
+# Applied with `git apply` inside the vendor checkout on purpose: the image then reports its
+# own deviation through `git status`, instead of the deviation being invisible. Expect exactly
+# one modified file after this layer.
+COPY vendor-patches/fastwam-trainer-freeze-video-expert.patch /tmp/w0-freeze.patch
+
+RUN set -eu \
+    && cd /opt/robot-practice/w0-vendor/FastWAM \
+    && git apply --check /tmp/w0-freeze.patch \
+    && git apply /tmp/w0-freeze.patch \
+    && rm -f /tmp/w0-freeze.patch \
+    && grep -q 'W0_FREEZE_VIDEO_EXPERT' src/fastwam/trainer.py \
+    && grep -q 'if p.requires_grad]' src/fastwam/trainer.py \
+    && /opt/conda/envs/fastwam-upstream/bin/python -m py_compile src/fastwam/trainer.py \
+    && test "$(git status --porcelain | wc -l)" -eq 1 \
+    && echo "FW-FZ freeze patch applied: $(git status --porcelain)"
+
+LABEL io.robot-practice.w0-fastwam.runtime-fix="libglu1-mesa,ffmpeg4-for-torchcodec,gcc-for-triton,fw-fz-freeze-patch"

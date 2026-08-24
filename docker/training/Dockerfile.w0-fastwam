@@ -1,0 +1,127 @@
+ARG BASE_IMAGE=robot-practice:latest
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+
+ARG FASTWAM_COMMIT="45d8e1458921d83f8ad6cf9ce993d371208dabd0"
+ARG LIBERO_COMMIT="8f1084e3132a39270c3a13ebe37270a43ece2a01"
+ARG LEROBOT_COMMIT="30da8e687a6dfc617fcd94afc367ac7071c376ce"
+ARG W0_VENDOR_ROOT="/opt/robot-practice/w0-vendor"
+
+ENV W0_VENDOR_ROOT=${W0_VENDOR_ROOT}
+
+# Keep the source used to build the two environments pinned and auditable.  The
+# experiment repository still carries its own checkout for runtime provenance;
+# these image copies are only the build-time editable-install sources.  Shallow
+# sparse clones avoid downloading Git history and unused assets from LIBERO.
+RUN set -euxo pipefail \
+    && mkdir -p "${W0_VENDOR_ROOT}" \
+    && git clone --depth=1 --filter=blob:none --no-tags --sparse \
+        https://github.com/yuantianyuan01/FastWAM.git "${W0_VENDOR_ROOT}/FastWAM" \
+    && git -C "${W0_VENDOR_ROOT}/FastWAM" fetch --depth=1 --filter=blob:none origin "${FASTWAM_COMMIT}" \
+    && git -C "${W0_VENDOR_ROOT}/FastWAM" checkout --detach "${FASTWAM_COMMIT}" \
+    && git -C "${W0_VENDOR_ROOT}/FastWAM" sparse-checkout disable \
+    && git clone --depth=1 --filter=blob:none --no-tags --sparse \
+        https://github.com/Lifelong-Robot-Learning/LIBERO.git "${W0_VENDOR_ROOT}/LIBERO" \
+    && git -C "${W0_VENDOR_ROOT}/LIBERO" fetch --depth=1 --filter=blob:none origin "${LIBERO_COMMIT}" \
+    && git -C "${W0_VENDOR_ROOT}/LIBERO" checkout --detach "${LIBERO_COMMIT}" \
+    && git -C "${W0_VENDOR_ROOT}/LIBERO" sparse-checkout disable \
+    && git clone --depth=1 --filter=blob:none --no-tags --sparse \
+        https://github.com/huggingface/lerobot.git "${W0_VENDOR_ROOT}/lerobot" \
+    && git -C "${W0_VENDOR_ROOT}/lerobot" fetch --depth=1 --filter=blob:none origin "${LEROBOT_COMMIT}" \
+    && git -C "${W0_VENDOR_ROOT}/lerobot" checkout --detach "${LEROBOT_COMMIT}" \
+    && git -C "${W0_VENDOR_ROOT}/lerobot" sparse-checkout disable \
+    && test "$(git -C "${W0_VENDOR_ROOT}/FastWAM" rev-parse HEAD)" = "${FASTWAM_COMMIT}" \
+    && test "$(git -C "${W0_VENDOR_ROOT}/LIBERO" rev-parse HEAD)" = "${LIBERO_COMMIT}" \
+    && test "$(git -C "${W0_VENDOR_ROOT}/lerobot" rev-parse HEAD)" = "${LEROBOT_COMMIT}" \
+    && test -f "${W0_VENDOR_ROOT}/FastWAM/pyproject.toml" \
+    && test -f "${W0_VENDOR_ROOT}/LIBERO/setup.py" \
+    && test -f "${W0_VENDOR_ROOT}/lerobot/pyproject.toml"
+
+# FastWAM has its own torch/numpy ABI contract, so it gets a separate Python
+# environment rather than reusing the M2-W robot-practice environment.
+RUN set -euxo pipefail \
+    && conda create --yes --name fastwam-upstream --clone robot-practice \
+    && conda run --no-capture-output -n fastwam-upstream python -m pip install \
+        --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cu128 \
+        -e "${W0_VENDOR_ROOT}/FastWAM" \
+        -e "${W0_VENDOR_ROOT}/LIBERO" \
+    && conda run --no-capture-output -n fastwam-upstream python -m pip install \
+        --no-cache-dir \
+        mujoco==3.3.2 \
+        easydict==1.9 \
+        opencv-python==4.6.0.66 \
+        robomimic==0.2.0 \
+        robosuite==1.4.0 \
+        bddl==1.0.1 \
+        future==0.18.2 \
+        matplotlib==3.5.3 \
+        cloudpickle==2.1.0 \
+        gym==0.25.2 \
+    && conda run --no-capture-output -n fastwam-upstream python -c \
+        "import fastwam, libero, mujoco, torch; assert mujoco.__version__ == '3.3.2'; print(torch.__version__, mujoco.__version__)"
+
+# `import deepspeed` runs git_version_info.py, which calls is_compatible() on
+# every op builder; FpQuantizerBuilder then calls installed_cuda_version(), which
+# shells out to `$CUDA_HOME/bin/nvcc -V` purely to read a version number. The base
+# image ships a CUDA runtime layout at /usr/local/cuda with no bin/, so torch
+# resolves CUDA_HOME to a prefix that cannot answer the probe and the accelerate
+# launcher dies with FileNotFoundError before training starts. DS_SKIP_CUDA_CHECK
+# does not help: it guards assert_no_cuda_mismatch, a different function.
+#
+# Nothing in the W0 training path is compiled -- ZeRO-1 with offload disabled and
+# no `optimizer` block in ds_zero1_config.json needs neither CPUAdam nor
+# FusedAdam -- so only the version probe has to be satisfied. `cuda-nvcc` alone
+# is therefore enough; the CUDA dev libraries and a host compiler are
+# deliberately not installed, keeping this environment change minimal. Must match
+# the torch CUDA major version (cu128) or FpQuantizerBuilder reports a mismatch.
+RUN set -euxo pipefail \
+    && conda install --yes --name fastwam-upstream \
+        --override-channels --channel nvidia \
+        cuda-nvcc=12.8 \
+    && conda run --no-capture-output -n fastwam-upstream bash -lc 'nvcc -V | tail -2' \
+    && conda run --no-capture-output -n fastwam-upstream python -c \
+        "import deepspeed; print('deepspeed', deepspeed.__version__)"
+
+# LeRobot v0.6.0 requires Python >=3.12 and is intentionally isolated from
+# the installed LeRobot 0.4.x in robot-practice.
+RUN set -euxo pipefail \
+    && conda create --yes --name fastwam-lerobot \
+        --override-channels --channel=conda-forge \
+        python=3.12 pip \
+    && conda install --yes --name fastwam-lerobot \
+        --override-channels --channel=conda-forge \
+        cmake make cxx-compiler
+
+COPY docker/training/egl_probe_stub /tmp/egl_probe_stub
+
+# robomimic 0.2.0 declares egl_probe as an install requirement, but that old
+# probe package is not needed by the W0 training path and does not build with
+# the current compiler toolchain. Install robomimic itself and its runtime
+# dependencies explicitly, leaving the optional probe out of the environment.
+RUN set -euxo pipefail \
+    && conda run --no-capture-output -n fastwam-lerobot python -m pip install \
+        --no-cache-dir \
+        --no-deps \
+        robomimic==0.2.0 \
+        /tmp/egl_probe_stub \
+    && conda run --no-capture-output -n fastwam-lerobot python -m pip install \
+        --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cu128 \
+        -e "${W0_VENDOR_ROOT}/lerobot[fastwam,libero]" \
+        h5py psutil tensorboardX imageio imageio-ffmpeg
+
+RUN set -euxo pipefail \
+    && conda run --no-capture-output -n fastwam-lerobot python -c \
+        "import lerobot, torch; print(lerobot.__version__, torch.__version__)"
+
+LABEL io.robot-practice.w0-fastwam.fastwam-commit="${FASTWAM_COMMIT}" \
+      io.robot-practice.w0-fastwam.libero-commit="${LIBERO_COMMIT}" \
+      io.robot-practice.w0-fastwam.lerobot-commit="${LEROBOT_COMMIT}" \
+      io.robot-practice.w0-fastwam.artifacts="repo-local-only"
+
+WORKDIR /workspace
+CMD ["/bin/bash"]

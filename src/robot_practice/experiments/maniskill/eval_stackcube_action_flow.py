@@ -59,6 +59,23 @@ def _worker_log(worker_index: int, message: str) -> None:
     print(f"[M2-W worker={worker_index} pid={os.getpid()}] {message}", flush=True)
 
 
+def _physical_gpu_label(device: torch.device) -> str | None:
+    """Resolve the physical GPU represented by a process-local CUDA device."""
+
+    configured = os.environ.get("M2_W_PHYSICAL_GPU")
+    if configured:
+        return configured
+    if device.type != "cuda" or device.index is None:
+        return None
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is None:
+        return str(device.index)
+    visible_ids = [item.strip() for item in visible.split(",") if item.strip()]
+    if 0 <= device.index < len(visible_ids):
+        return visible_ids[device.index]
+    return None
+
+
 def _write_worker_progress(
     output_dir: str | Path,
     *,
@@ -87,7 +104,7 @@ def _write_worker_progress(
         "worker_device": worker_device,
         "environment_device": environment_device,
     }
-    physical_device = os.environ.get("M2_W_PHYSICAL_GPU")
+    physical_device = _physical_gpu_label(torch.device(worker_device))
     if physical_device is not None:
         payload["physical_device"] = physical_device
     if error is not None:
@@ -176,6 +193,8 @@ def run_development_rollout(
     n_action_steps: int = 4,
     checkpoint: str | Path | None = None,
     reference: str | None = None,
+    policy: ActionOnlyFlowPolicy | None = None,
+    checkpoint_step: int | None = None,
     max_episodes: int = 200,
     max_steps: int = FORMAL_HORIZON,
     num_envs: int = 64,
@@ -190,9 +209,13 @@ def run_development_rollout(
     caller merges worker rows; no worker ever loads the state-bank test file.
     """
 
-    if not (checkpoint is None) ^ (reference is None):
-        raise ValueError("Provide exactly one of checkpoint or reference")
-    if checkpoint is not None and n_action_steps not in (4, 8):
+    if policy is None and not (checkpoint is None) ^ (reference is None):
+        raise ValueError("Provide exactly one of checkpoint or reference when policy is absent")
+    if policy is not None and reference is not None:
+        raise ValueError("An in-process policy cannot be combined with a reference")
+    if policy is not None and policy.n_action_steps != n_action_steps:
+        raise ValueError("In-process policy n_action_steps does not match rollout request")
+    if (checkpoint is not None or policy is not None) and n_action_steps not in (4, 8):
         raise ValueError("M2-W candidate n_action_steps must be 4 or 8")
     if not smoke and max_steps != FORMAL_HORIZON:
         raise ValueError("M2-W closed-loop horizon is fixed at 500")
@@ -255,12 +278,15 @@ def run_development_rollout(
         worker_device=str(device_obj),
         environment_device=environment_device,
     )
-    policy: ActionOnlyFlowPolicy | None = None
     checkpoint_payload: dict[str, Any] | None = None
     env: Any | None = None
     last_step_index = 0
     try:
-        if checkpoint is not None:
+        if policy is not None:
+            policy.model.eval()
+            checkpoint_payload = {"step": checkpoint_step} if checkpoint_step is not None else {}
+            _worker_log(worker_index, "using in-process policy for checkpoint evaluation")
+        elif checkpoint is not None:
             _worker_log(worker_index, f"policy load begin checkpoint={_portable(checkpoint)}")
             policy, checkpoint_payload = load_action_flow_checkpoint(
                 _rooted(checkpoint), device=device_obj, n_action_steps=n_action_steps
@@ -559,7 +585,7 @@ def run_development_rollout(
         "state_bank_indices": [int(item["index"]) for item in result_rows],
         "flow_solver": "euler",
         "flow_integration_steps": 10,
-        "n_action_steps": n_action_steps if checkpoint is not None else None,
+        "n_action_steps": n_action_steps if checkpoint is not None or policy is not None else None,
         "reference": reference,
         "checkpoint": None if checkpoint is None else _portable(checkpoint),
         "checkpoint_step": None if checkpoint_payload is None else checkpoint_payload.get("step"),
@@ -575,9 +601,11 @@ def run_development_rollout(
             "index": worker_index,
             "count": worker_count,
             "worker_device": str(device_obj),
-            "policy_device": str(device_obj) if checkpoint is not None else None,
+            "policy_device": str(device_obj)
+            if checkpoint is not None or policy is not None
+            else None,
             "environment_device": environment_device,
-            "physical_device": os.environ.get("M2_W_PHYSICAL_GPU"),
+            "physical_device": _physical_gpu_label(device_obj),
         },
     }
     _write_worker_progress(
