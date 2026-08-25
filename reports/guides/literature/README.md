@@ -5,6 +5,7 @@
 [WAM 文献锚点复现与 StackCube 迁移路线](../../../plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md)。
 
 - [W0 Fast-WAM LIBERO 复现与机制锚点](01_w0_fastwam_libero.md)：**UP-REL baseline 与 LR-REL quantitative eval 均已完成，W0 gate 仍进行中**。UP-REL released checkpoint 为 `1929/2000`（96.45%）；LR-REL 为 `1885/2000`（94.25%），残余 2.2pp 几乎全部集中在 `libero_spatial` task 5（UP 96% vs LR 28%）且**原因未解释**。FW-V/FW-NV 因果对照与 deployment evidence 尚未完成
+- [W0 Wan 视频生成能力保持性快速验证](02_w0_wan_video_generation_preservation.md)：VBench-I2V-mini-21 与 W0-Video-40 的配对离线验证命令；当前仅完成实现与单测，尚无正式指标结果
 - W1 Light-WAM：**blocked**，等待 W0 的 artifact、mechanism 和 deployment gate
 - W2/W3 StackCube tiny：**blocked**，等待 W0/W1 机制冻结；W3 formal bank 当前保持关闭
 

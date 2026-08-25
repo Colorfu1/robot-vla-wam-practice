@@ -1492,3 +1492,102 @@ Use one section per run. Record incomplete or failed runs too.
   不要把这条当成 released-checkpoint baseline。**
 - Result artifacts: `outputs/literature/w0_fastwam/eval_fwv_21700_4gpu/{summary.json,run_manifest.json,run.log}`
 - Modes: Formal / Closed-loop（`FW-V` 组；`FW-FZ` 主对照尚未开始训练，因果对照未完成）
+
+## 2026-08-25 — W0-Video-40 生成诊断：`FW-FZ` 未来帧是噪声，管路与步数已排除
+
+- Date: 2026-08-25 06:34（远端 `FW-FZ` 40 条生成）至 16:38（探针与逐帧核查）
+- Task suite: W0-Video-40（四个 LIBERO `_no_noops_lerobot` 各 10 task，每 task 1 条 33 帧窗口）
+- Dataset size: 40 条正式样本；探针用其中 3 条（`libero_spatial_task00`、`libero_object_task00`、
+  `libero_10_task00`）
+- Observation keys: 首帧 front + wrist RGB，各 `224x224` 中心裁剪后横向拼接为 `448x224`
+- Action space: 不适用（`action_conditioned: false`，`action=None`、`proprio=None`）
+- Action horizon: 32（`infer_joint` 必填，动作输出本次不使用）
+- Control frequency: 不适用（离线生成，输出 fps 16）
+- Train loss: 不适用（未训练）
+- Open-loop action error: 未测量
+- Closed-loop success rate: 不适用
+- Latency: 未单独计时；`FW-V` 3 条在 10/20/50 步下各自跑完，步数×5 未带来质量变化
+- Failure cases: `FW-FZ` 的 frame 1..8 为饱和彩条，PSNR 7.4–15.6 dB，且**每帧与 `gt[0]` 最相似**
+  而非与同序号 GT 帧最相似；`libero_10_task00` 最差（7.4–8.2 dB）。frame 0 为 33.8–35.7 dB
+- Conclusion: 逐条排除后，坏的是 checkpoint 而不是管路。
+  （1）**加载**：vendor `FastWAM.load_checkpoint` 用 `mot.load_state_dict(..., strict=False)`，
+  而本仓库加载器又传 `model.skip_dit_load_from_pretrain=true`，键名不匹配会让 DiT 停在随机初始化
+  且无任何输出——已新增 `_assert_checkpoint_actually_loaded` 比对键集并在不匹配时抛错；远端代码
+  md5 与本地一致且三次生成全部 `DONE`，故键集完全匹配，该假设排除。
+  （2）**步数**：同一 `FW-V` checkpoint 在 10/20/50 步下 frame 1 为 25.81/25.48/25.29 dB，
+  差 <0.6 dB 且目视一致，步数更多反而略差；上游 `configs/train.yaml:24 eval_num_inference_steps: 10`
+  够用，协议的 `steps: 10` 不需要改。
+  （3）**管路**：`FW-V` 在同一管路同一 10 步下 frame 1..8 为 21.3–25.8 dB、逐帧时间对齐正确。
+  代码层另已核对：输入归一化与上游 `runtime.py` 逐字相同；`sigma_shift: null` 两侧同取
+  `shift=5.0`（`configs/model/fastwam.yaml` 的 `train_shift`/`infer_shift`）；`text_cfg_scale`
+  在 `infer_joint` 函数体内从未被引用，该路径未实现 CFG；`save_checkpoint` 存整个 `mot`，
+  12.04 GB 与 6.02 B bf16 相符；trainer 存盘前已 `accelerator.unwrap_model`。
+  **机制上 `FW-FZ` 失败不意外，但原因不是 action expert 的干扰**：`_build_mot_attention_mask`
+  （`fastwam.py:386-407`）只填 video→video、action→action、action→首帧 video 三块，
+  `mask[:video_seq_len, video_seq_len:]`（video 查询 action 键）恒为 `False`，故 action expert 对
+  视频生成影响为零（此处修正了本条目初版的错误说法）。真正原因是其 video expert 为未训练过的
+  Wan2.2 权重，却运行在四个同时偏离预训练的设置上：双相机 `224x224` 横向拼接的布局、`448x224`
+  分辨率（每帧仅 `14x28=392` 个 latent token，官方 smoke 用 `1280x720`）、9 帧（原生 81）、
+  以及 `video_attention_mask_mode: first_frame_causal`（DiT 类默认为 `bidirectional`）。
+  现有产物无法分离这四项。
+  **因此 W0-Video-40 的 `FW-V − FW-FZ` 差值接近同义反复**，
+  只能作为「`FW-V` 的视频分支学到了域内动力学」的证据，不能写成 video co-training 的机制结论；
+  真正测「保持性」的是 VBench-I2V-mini-21，那里 `FW-FZ` 等于未受损的 Wan2.2、构成保持度上界。
+- Result artifacts: `outputs/literature/w0_fastwam/video_generation/w0_video_40/fw_fz/`（40 条，
+  `run_config.json` 记 `protocol.kind=fastwam-native`、`steps=10`、checkpoint sha256）；
+  `outputs/literature/w0_fastwam/video_generation/probe3/{fw_v,steps20,steps50}/`（各 3 条）；
+  逐帧核查工具 `scripts/experiments/literature/compare_w0_video_frames.py`
+- Modes: Diagnostic（不是实验结果；`FW-V` 的 40 条正式生成与打分尚未完成）
+
+## 2026-08-25 — W0-Video-40 离线视频预测：`FW-V` vs `FW-FZ` 全量 40 条
+
+- Date: 2026-08-25 17:5x 至 18:03（远端生成与打分）
+- Task suite: W0-Video-40（`libero_spatial` / `libero_object` / `libero_goal` / `libero_10`
+  各 10 task，每 task 1 条 33 帧原始窗口、stride 4 取 9 帧）
+- Dataset size: 40 条样本，两个变体共用同一 manifest（sha256 `a6676f659cc7bc12…`）
+- Observation keys: 首帧 front + wrist 各 `224x224` 中心裁剪后横向拼接为 `448x224`
+- Action space: 不适用（`action_conditioned: false`，`action=None`、`proprio=None`）
+- Action horizon: 32（`infer_joint` 必填，动作输出不参与本指标）
+- Control frequency: 不适用（离线生成，输出 fps 16）
+- Train loss: 不适用
+- Open-loop action error: 未测量
+- Closed-loop success rate: 不适用（闭环结果见 2026-08-23 与 README 的 W0 表）
+- Latency: 未单独计时
+- Failure cases: `FW-FZ` 40/40 全部失败且极其一致——PSNR `6.851–15.483`（sd 1.802），
+  40 条里只有 1 条 >15 dB；SSIM `−0.042–0.593`（sd 0.152），29/40 低于 0.3、**4 条为负**
+  （输出与目标结构反相关，即无关而非更模糊）。四个 suite 的 macro PSNR 落在
+  `9.658–10.289` 之间，跨 suite 极差仅 0.63 dB，说明失败与任务内容无关。
+  `FW-V` 最差三条集中在 `libero_object`（`task00` 17.46、`task02` 17.73、`task03` 17.99）
+- Conclusion: 协议口径（future frame `[1..8]`、拆 front/wrist 后对 frame 与 camera 等权平均）：
+
+  | 变体 | PSNR | SSIM | LPIPS |
+  | --- | ---: | ---: | ---: |
+  | `FW-FZ` | 9.963 | 0.2040 | 0.6822 |
+  | `FW-V` | **24.705** | **0.9231** | **0.0983** |
+  | `FW-V − FW-FZ` | **+14.742** | **+0.7190** | **+0.5839**（FZ−V） |
+
+  per-suite（PSNR，`FW-FZ` → `FW-V`）：`libero_spatial` 10.289→25.874、
+  `libero_goal` 9.734→25.456、`libero_10` 10.172→24.982、`libero_object` 9.658→22.509。
+  `FW-V` 的分布集中：PSNR `17.459–28.236`（sd 2.699）、35/40 条 SSIM >0.85。
+  **可支持的结论**：`FW-V` 的视频分支确实学到了域内动力学，没有塌缩。
+  **不可支持的结论**：不能读成「video co-training 提升了视频生成能力」。`FW-FZ` 的 video expert
+  是未训练过的 Wan2.2 权重，且运行在四个同时偏离预训练的设置上（并排双相机布局、`448x224`
+  即每帧仅 `14x28=392` 个 latent token、9 帧、`first_frame_causal` 而非 `bidirectional`），
+  所以该差值把「学过这个任务」与「跑在有效工作点上」混在一起，按构造接近同义反复。
+  真正测通用生成能力保持性的是 VBench-I2V-mini-21（`FW-FZ` 在那里等于未受损的 Wan2.2）。
+  另需注意样本窗口取自训练 demonstration，属分布内拟合，不是 held-out 泛化。
+  完整性与配对性已核对：两侧各 40/40、每 suite 10 条、样本集合相同、manifest sha256 与 protocol
+  完全一致、`metric_availability.lpips=true`、LPIPS 权重 sha256 `df73285e35b22355…`；
+  checkpoint sha256 `FW-FZ` `e0ad4304a32d58e1…`（12,041,903,107 B）、
+  `FW-V` `ec16f153ae106408…`（12,041,735,545 B）。
+  一个过程教训：先前用 3 条做的诊断给出 `FW-V` macro 21.980 dB，比全量的 24.705 低 2.7 dB，
+  因为那 3 条里含 `libero_object_task00`（全量最差的一条）。小样本诊断可以定方向，不能报数值。
+- Result artifacts:
+  `outputs/literature/w0_fastwam/video_generation/w0_video_40/{fw_fz,fw_v}/metrics.json`、
+  同目录 `run_config.json` 与 `videos/`；逐帧核查图
+  `outputs/literature/w0_fastwam/video_generation/probe3/compare.png`
+- Modes: Offline / paired（分布内，不是 held-out；`--mode=compare` 仍待 VBench 两份 metrics 齐全）
+- 记录定位: **后验描述，不作为 W0 的主结论**。W0 的对外结论仍只用闭环成功率，README 的 W0 表
+  不收录本指标。本条用于说明「`FW-V` 的视频分支确实学到了域内动力学」这一观察，以及说明为什么
+  `FW-V − FW-FZ` 的视频差值不能当作 video co-training 的机制证据。引用时必须带上工作点偏离与
+  分布内两条边界。

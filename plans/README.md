@@ -73,5 +73,6 @@
 | [2026-08-13 M2-W StackCube Action-only Flow 基线与 Headroom](2026-08-13-M2-W-StackCube-Action-only-Flow基线与Headroom.md) | `dropped` | 原 7D 正式路线由实际跑通的 native-4D 100k Action-only Flow 取代；结果见 ManiSkill M2 guide |
 | [2026-08-17 WAM 文献锚点复现与 StackCube 迁移路线](2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) | `todo` | Fast-WAM W0 -> Light-WAM W1 -> StackCube aligned W2 -> one-shot W3 |
 | [2026-08-17 W0 Fast-WAM LIBERO 复现与机制锚点](2026-08-17-W0-Fast-WAM-LIBERO复现与机制锚点.md) | `in-progress` | 官方 checkpoint eval + `lambda_video=1/0` 等预算 causal pair + LeRobot integration |
+| [2026-08-24 W0 Wan视频生成能力保持性快速验证](2026-08-24-W0-Wan视频生成能力保持性快速验证.md) | `in-progress` | VBench-I2V-mini-21 通用生成指标 + W0-Video-40 命令条件生成对比 |
 | [2026-08-17 StackCube WAM 模块接入与 W0-W3 因果验证](2026-08-17-StackCube-WAM模块接入与W0-W3因果验证.md) | `dropped` | StackCube-first 自设计 WAM 路线已被文献锚点路线取代 |
 | [2026-08-17 StackCube W0 Action-Conditioning 机制验证](2026-08-17-StackCube-W0-Action-Conditioning机制验证.md) | `dropped` | 旧 latent D1/N0 intervention 路线不再作为 W0 |

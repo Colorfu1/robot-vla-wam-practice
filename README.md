@@ -222,6 +222,49 @@ LIBERO tasks、每个 task 50 trials，共 2,000 episodes；无缺失或重复 t
 video expert，因此本地差值是复合机制对照，不能直接视为纯 video co-training 的因果增益。
 论文来源：[Fast-WAM Table 2 / Sec. 3.3](https://arxiv.org/pdf/2603.16666)。
 
+### W0 离线视频生成对照（后验记录，不进入上面的闭环表）
+
+W0 的对外结论只用闭环成功率。下面这组是**后验**测量：同一对 checkpoint 在 LIBERO 未来帧上的离线
+重建指标，用来回答「`FW-V` 的视频分支到底有没有学到东西」，不作为 W0 的机制结论或通过依据。协议为
+W0-Video-40：四个 suite 各 10 task、每 task 1 条 33 帧窗口取 9 帧，条件输入是 front + wrist 各
+`224x224` 横向拼接的 `448x224`，指标只算 future frame `[1..8]`，拆两相机后等权平均。两个变体共用同一
+manifest 与 protocol，各 40/40。
+
+| 变体 | PSNR ↑ | SSIM ↑ | LPIPS ↓ |
+| --- | ---: | ---: | ---: |
+| `FW-FZ`（`lambda_video=0`、video expert 冻结） | 9.963 | 0.2040 | 0.6822 |
+| `FW-V`（`lambda_video=1`、video expert 可训） | **24.705** | **0.9231** | **0.0983** |
+| 差值（LPIPS 为 FZ−V，正值均代表 `FW-V` 更好） | **+14.742** | **+0.7190** | **+0.5839** |
+
+![W0-Video-40 双相机拼接逐帧对比](docs/assets/w0_video_generation/w0_video_40_frame_compare.jpg)
+
+每条带三行：GT / `FW-FZ` / `FW-V`，横向 frame 0→8；frame 0 是给定的条件帧，所以三行相同。
+
+**可支持的结论**：`FW-V` 的视频分支确实学到了域内动力学，没有塌缩——24.705 dB 距本管路上限
+（条件帧走一遍 VAE 与 mp4 往返，实测 33.8–35.7 dB）约 10 dB，且分布集中，35/40 条 SSIM >0.85。
+
+**不可支持的结论**：不能读成「video co-training 提升了视频生成能力」。`FW-FZ` 的 video expert 是
+未训练过的 Wan2.2 权重，且运行在四个同时偏离其预训练的设置上（并排双相机布局、`448x224` 即每帧仅
+`14x28=392` 个 latent token、9 帧对原生 81、`first_frame_causal` 对 DiT 类默认 `bidirectional`），
+所以该差值把「学过这个任务」与「跑在有效工作点上」混在一起，按构造接近同义反复。要回答通用生成
+能力的保持性，需要 VBench-I2V-mini-21——那里 `FW-FZ` 等于未受损的 Wan2.2，构成保持度上界；该组尚未
+执行。样本窗口取自训练 demonstration，属分布内拟合，不是 held-out 泛化。
+
+**已排除的解释**：把条件输入换成单个 `224x224` front 视角后（同 3 条样本、拼接组只取 front 半幅
+以同口径比较），`FW-FZ` 从 10.338 dB / SSIM 0.1462 变为 9.975 dB / 0.1859，**基本不变**；而同一个
+布局变化让 `FW-V` 从 26.098 dB 降到 22.011 dB（−4.087 dB）却依然完好。一次真实的分布偏移对训练过的
+expert 只值 4 dB，因此「双相机拼接布局 OOD」不能解释 `FW-FZ` 的崩塌，已从候选原因中排除。
+
+![单相机逐帧对比](docs/assets/w0_video_generation/single_camera_front_compare.jpg)
+
+指标定义与方向、逐条排除过程（采样步数、checkpoint 加载、生成管路均已排除）见
+[W0 视频生成保持性 guide](reports/guides/literature/02_w0_wan_video_generation_preservation.md)；
+实测记录见 [`reports/experiment_log.md`](reports/experiment_log.md) 的 2026-08-25 两条。指标产物在
+`outputs/literature/w0_fastwam/video_generation/w0_video_40/{fw_fz,fw_v}/metrics.json`（gitignored）；
+上面两张图是**已提交**的文档资产，位于
+[`docs/assets/w0_video_generation/`](docs/assets/w0_video_generation)，各约 300 KB，重建命令写在
+guide 里。
+
 | 阶段 | 目的 | 当前状态 | 入口 |
 | --- | --- | --- | --- |
 | W0 Fast-WAM / LIBERO | released checkpoint、LeRobot integration，以及同初始化的 `FW-V` vs `FW-FZ`（冻结 video expert 的 VLA 形状对照）主对照，`FW-NV`（`lambda_video=0`）作为可选的文献交叉验证 | **四条闭环已完成，FW-V/FW-FZ 对照已完成，deployment gate 待完成。** UP-REL `1929/2000`（96.45%）、LR-REL `1885/2000`（94.25%）、`FW-V` `1921/2000`（96.05%）、`FW-FZ` `1743/2000`（87.15%）；W0 不设 pass/fail 阈值 | [W0 guide](reports/guides/literature/01_w0_fastwam_libero.md) · [W0 plan](plans/2026-08-17-W0-Fast-WAM-LIBERO复现与机制锚点.md) |
@@ -284,6 +327,9 @@ learned-policy 结果。
 - WAM literature reference、W0 released-checkpoint baseline 和本地 StackCube W2/W3 结果必须分栏记录；
   W0 的 UP-REL baseline 可以写入实测 success，但不能把它扩展成 causal mechanism 或 deployment
   已通过的结论。
+- W0 的离线视频生成指标（PSNR/SSIM/LPIPS）是后验记录，只支持“`FW-V` 的视频分支学到了域内动力学”
+  这一观察；`FW-V − FW-FZ` 的视频差值是架构对比且按构造接近同义反复，不能写成 video co-training
+  的机制证据，也不进入 W0 的闭环结果表。
 - 计划仍放在 [`plans/`](plans/README.md)，实际结果仍放在 [`reports/`](reports/README.md)；数据、checkpoint、视频、Rerun recording 和日志等生成物不提交到 Git。
 
 项目代码和文档使用 [Apache License 2.0](LICENSE)；第三方软件和数据集说明见
