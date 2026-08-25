@@ -5,6 +5,9 @@
 !docker/training/Dockerfile
 !docker/training/Dockerfile.w0-fastwam-runtime-patch
 !docker/training/Dockerfile.w0-fastwam-torchcodec-fix
+!docker/training/Dockerfile.w0-fastwam-video-eval
+!docker/training/verify_w0_video_eval_deps.py
+!docker/training/warm_w0_video_eval_caches.py
 !docker/training/vendor-patches/
 !docker/training/vendor-patches/*.patch
 !docker/training/conda-linux-64.lock

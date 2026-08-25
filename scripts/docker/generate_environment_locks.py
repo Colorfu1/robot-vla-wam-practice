@@ -30,7 +30,10 @@ SOURCE_ONLY_PACKAGES = {
         "docopt",
         "egl-probe",
         "evdev",
+        "dreamsim",
+        "filterpy",
         "hf-egl-probe",
+        "openai-clip",
         "robomimic",
     )
 }

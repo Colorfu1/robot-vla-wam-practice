@@ -65,9 +65,9 @@ docker build \
 
 ## Thin runtime-fix layers
 
-Two small layers sit on top of the already-built W0 image. They exist so a runtime
+Three small layers sit on top of the already-built W0 image. They exist so a runtime
 library fix does not rebuild the large FastWAM environments and vendor checkouts.
-Both must be reapplied when the W0 image itself is rebuilt, or the fixes vanish
+All of them must be reapplied when the W0 image itself is rebuilt, or the fixes vanish
 silently.
 
 | Dockerfile | What it adds | Why |
@@ -75,6 +75,8 @@ silently.
 | `Dockerfile.w0-fastwam-runtime-patch` | `libglu1-mesa` | robosuite's EGL cleanup path imports libGLU through PyOpenGL |
 | `Dockerfile.w0-fastwam-torchcodec-fix` | FFmpeg 4.4 runtime libraries | makes `torchcodec` loadable, which stops the training DataLoader from exhausting host RAM |
 | `Dockerfile.w0-fastwam-torchcodec-fix` | `gcc` + `libc6-dev` | triton compiles its CUDA driver shim at `import deepspeed`; without a compiler the launcher dies once the cache is cold |
+| `Dockerfile.w0-fastwam-video-eval` | VBench-I2V / LPIPS scoring packages | six of the nine scored dimensions need `decord`, `lpips`, `clip`, `timm`, `open_clip`, `pyiqa` or `dreamsim`, and none is in the base image |
+| `Dockerfile.w0-fastwam-video-eval` | torchvision AlexNet + co-tracker2 weights | pinned VBench has no local-weight path for either, and the remote host has no outbound network |
 
 The torchcodec layer fixes a failure that is invisible at runtime and fatal hours
 later. `lerobot` selects its decode backend with
@@ -158,6 +160,98 @@ docker run --rm -v "${PWD}:/repo:ro" -w /repo \
 ```
 
 Expect `gc freed 0` on every report and `0.0 MiB/sample`.
+
+### The video-generation scoring layer
+
+`Dockerfile.w0-fastwam-video-eval` serves
+`reports/guides/literature/02_w0_wan_video_generation_preservation.md`. Only
+`robot-practice` is modified, because `run_w0_video_generation_eval.sh` dispatches `score`
+to `W0_VIDEO_SCORE_ENV` (default `robot-practice`) and everything added here is on the
+scoring side.
+
+Measured on `w0-fastwam-20260821-fwfz`, both envs already carry `cv2`, `imageio`, `scipy`,
+`skimage`, `einops`, `omegaconf`, `easydict`, `sklearn`, `matplotlib`, `pandas`, `peft` and
+`accelerate`, and are missing `decord`, `lpips`, `clip`, `timm`, `open_clip`, `pyiqa` and
+`dreamsim`.
+
+`--no-deps` is mandatory rather than an optimisation, because the declared requirements
+contradict this image in three ways that would each replace a load-bearing library:
+
+| Source | Declares | Image has |
+| --- | --- | --- |
+| pinned VBench `requirements.txt` | `numpy<2.0.0`, `transformers==4.33.2` | numpy 2.2.6, transformers 4.57.6 |
+| `pyiqa` 0.1.16 | `transformers>=5.0` | transformers 4.57.6 |
+| `pyiqa` (any) | `opencv-python-headless` | opencv-python 5.0.0.93 |
+
+So `pyiqa` is pinned to 0.1.15, the last release whose constraint
+(`transformers<5.0,>=4.36.1`) admits 4.57.6; `timm` to 1.0.12, the cap pinned VBench
+declares (`timm>=0.9,<=1.0.12`); and `open-clip-torch` to 2.24.0, because 3.x requires
+`timm>=1.0.17` and would break that cap. Everything the imports need is already present,
+which is why `--no-deps` is sufficient — and the layer re-verifies that on every build with
+`verify_w0_video_eval_deps.py`, which imports each module, asserts torch/torchvision/numpy/
+transformers/cv2 are unchanged, and decodes a generated file with `decord` to prove the
+wheel's bundled FFmpeg loads.
+
+Only the nine reported dimensions are covered. VBench's other dimensions additionally want
+`detectron2`, `lvis`, `fvcore`, `fairscale`, `boto3` and `pycocoevalcap`; those are
+deliberately absent.
+
+Three evaluator weights are fetched lazily on first use and have no local-weight branch in
+pinned VBench, so on a host without network they are hard failures rather than a slow first
+run. The guide's precheck covers DINO, CLIP, aesthetic, MUSIQ, AMT and RAFT, which do have
+local paths, but not these:
+
+| Weight | Fetched by | Size | Where it lands |
+| --- | --- | ---: | --- |
+| torchvision AlexNet | `lpips.LPIPS(net="alex")` builds `alexnet(pretrained=True)` | 244 MB | `$TORCH_HOME/hub/checkpoints` |
+| co-tracker2 + repo zipball | `camera_motion` calls `torch.hub.load("facebookresearch/co-tracker", "cotracker2")` | 486 MB total | `$TORCH_HOME/hub` |
+| dreamsim ensemble | `i2v_background` calls `dreamsim(pretrained=True)` | 3.2 GB | `./models`, **relative to CWD** |
+
+The first two are baked in, since `$TORCH_HOME/hub` is absolute and needs nothing at run
+time. dreamsim is not: its signature is
+`dreamsim(pretrained=True, device="cuda", cache_dir="./models", ...)` and VBench passes no
+`cache_dir`, so an absolute path inside the image would never be consulted. It is staged on
+shared storage and must appear as `models/` in the directory the scorer runs from. The
+dreamsim *package* is installed, so `import dreamsim` works; only its weights are external.
+
+```bash
+FIX_TAG="w0-fastwam-$(date +%Y%m%d)-videoeval"
+
+docker build \
+  --file docker/training/Dockerfile.w0-fastwam-video-eval \
+  --build-arg "BASE_IMAGE=${IMAGE_REPOSITORY}:latest" \
+  --tag "${IMAGE_REPOSITORY}:${FIX_TAG}" \
+  docker/training
+```
+
+Stage the dreamsim ensemble once on a host with network, then sync it to the repository root
+on shared storage:
+
+```bash
+docker run --rm -v /tmp/w0_stage:/stage -v "${PWD}/docker/training:/probe:ro" \
+  --entrypoint /opt/conda/envs/robot-practice/bin/python \
+  "${IMAGE_REPOSITORY}:${FIX_TAG}" \
+  /probe/warm_w0_video_eval_caches.py --stage=dreamsim --dreamsim-target=/stage/dreamsim_models
+```
+
+Verify the scoring env reproduces the guide's dependency check before pushing:
+
+```bash
+docker run --rm --entrypoint /opt/conda/envs/robot-practice/bin/python \
+  "${IMAGE_REPOSITORY}:${FIX_TAG}" \
+  -c 'import cv2, decord, imageio.v3, lpips, pyiqa; print("VBench/W0/LPIPS evaluator dependencies: OK")'
+```
+
+This layer is safe to publish as `latest` while training runs continue on the same tag: it only
+adds packages to `robot-practice` and warms `$TORCH_HOME/hub`. Measured on both images, the
+`fastwam-upstream` env is unchanged (279 distributions, identical digest over the sorted
+`name==version` list) and the vendor checkout still reports exactly one modified file
+(`M src/fastwam/trainer.py`, the FW-FZ freeze patch). Confirm both before moving `latest`:
+
+```bash
+docker run --rm --entrypoint bash "${IMAGE_REPOSITORY}:${FIX_TAG}" -lc \
+  'git -C /opt/robot-practice/w0-vendor/FastWAM status --porcelain'
+```
 
 ## Verify locally
 

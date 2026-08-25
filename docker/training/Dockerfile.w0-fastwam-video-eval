@@ -1,0 +1,75 @@
+ARG BASE_IMAGE=test-lab-instance-cn-beijing.cr.volces.com/lidar-wwd/practice:w0-fastwam-20260821-fwfz
+
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+
+# Install the VBench-I2V / LPIPS scoring dependencies into the scoring env.
+#
+# reports/guides/literature/02_w0_wan_video_generation_preservation.md scores nine fixed
+# dimensions, and the base image is missing what six of them need.  Measured on
+# w0-fastwam-20260821-fwfz: cv2, imageio, scipy, skimage, einops, omegaconf, easydict,
+# sklearn, matplotlib, pandas, peft and accelerate are present; decord, lpips, clip, timm,
+# open_clip, pyiqa and dreamsim are not, in both robot-practice and fastwam-upstream.
+#
+# Only robot-practice is touched: run_w0_video_generation_eval.sh dispatches
+# ``score`` to W0_VIDEO_SCORE_ENV (default robot-practice) and generate/prepare-w0/
+# check-protocol to W0_VIDEO_MODEL_ENV (default fastwam-upstream), and every dependency here
+# is on the scoring side.
+#
+# --no-deps is mandatory, not an optimisation.  The declared requirements of these packages
+# contradict this image in three ways that would each replace a load-bearing library:
+#   * pinned VBench's requirements.txt asks for numpy<2.0.0 and transformers==4.33.2, against
+#     numpy 2.2.6 and transformers 4.57.6 here;
+#   * pyiqa 0.1.16 asks for transformers>=5.0, so 0.1.15 is pinned instead -- it is the last
+#     release whose constraint (transformers<5.0,>=4.36.1) admits 4.57.6;
+#   * pyiqa also lists opencv-python-headless, which would shadow the image's opencv-python.
+# Everything the imports actually need is already present, which was verified by installing
+# with --no-deps and importing each module; the next layer re-checks that on every build.
+#
+# timm is capped at 1.0.12 because pinned VBench declares timm>=0.9,<=1.0.12, and
+# open-clip-torch is held at 2.24.0 because 3.x requires timm>=1.0.17 and would break that cap.
+#
+# Only the nine reported dimensions are covered.  VBench's other dimensions additionally want
+# detectron2, lvis, fvcore, fairscale, boto3 and pycocoevalcap; those are deliberately absent.
+RUN /opt/conda/envs/robot-practice/bin/python -m pip install \
+        --no-cache-dir \
+        --no-deps \
+        decord==0.6.0 \
+        lpips==0.1.4 \
+        openai-clip==1.0.1 \
+        ftfy==6.3.1 \
+        timm==1.0.12 \
+        pyiqa==0.1.15 \
+        open-clip-torch==2.24.0 \
+        dreamsim==0.2.1
+
+# Fail the build instead of shipping an image whose scoring env imports but cannot decode, or
+# whose torch/numpy/transformers were quietly replaced.  A broken --no-deps install is
+# invisible until the first score run, hours after generation.
+COPY verify_w0_video_eval_deps.py /tmp/verify_w0_video_eval_deps.py
+
+RUN /opt/conda/envs/robot-practice/bin/python /tmp/verify_w0_video_eval_deps.py \
+    && rm -f /tmp/verify_w0_video_eval_deps.py
+
+# Bake only the weights that land at an absolute path.
+#
+# The remote host has no outbound network, and pinned VBench has no local-weight branch for
+# these: camera_motion always calls torch.hub.load("facebookresearch/co-tracker", ...), and
+# lpips.LPIPS(net="alex") always builds torchvision's pretrained AlexNet.  The guide's
+# precheck covers DINO, CLIP, aesthetic, MUSIQ, AMT and RAFT, which do have local paths, but
+# not these two.  Both land in $TORCH_HOME/hub, so baking them needs nothing at run time.
+#
+# i2v_background's dreamsim ensemble is deliberately NOT baked.  Its cache_dir defaults to
+# "./models", relative to the process working directory, so an absolute path inside the image
+# would never be found; and at about 3.2 GB it is four times the rest of this layer for one of
+# nine dimensions.  It is staged on shared storage instead -- see docker/training/README.md.
+# The dreamsim *package* is installed above, so the import works; only its weights are external.
+COPY warm_w0_video_eval_caches.py /tmp/warm_w0_video_eval_caches.py
+
+RUN /opt/conda/envs/robot-practice/bin/python /tmp/warm_w0_video_eval_caches.py --stage=torch-hub \
+    && rm -f /tmp/warm_w0_video_eval_caches.py
+
+LABEL io.robot-practice.w0-fastwam.runtime-fix="libglu1-mesa,ffmpeg4-for-torchcodec,gcc-for-triton,fw-fz-freeze-patch,vbench-i2v-scoring-deps,torchhub-evaluator-weights"

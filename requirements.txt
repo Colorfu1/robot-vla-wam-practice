@@ -14,3 +14,26 @@ python-xlib
 rich
 scikit-learn<2
 pymunk>=6.6,<7
+
+# Offline W0/Wan/VBench video-evaluation runtime.
+#
+# The W0 scoring image installs the evaluator subset below with --no-deps via
+# docker/training/Dockerfile.w0-fastwam-video-eval. gdown is retained here only for
+# optional, local-with-network VBench crop-data preparation; W0-Video-40 does not use it.
+# Pinned VBench declares numpy<2.0.0 / transformers==4.33.2 and pyiqa 0.1.16
+# declares transformers>=5.0, any of which would replace a load-bearing library.
+# Versions below are the ones verified in w0-fastwam-20260825-videoeval.
+# requirements-linux-64.lock has NOT been regenerated for these; resolving pyiqa with its
+# dependencies would also pull opencv-python-headless alongside opencv-python.
+decord==0.6.0
+dreamsim==0.2.1
+easydict==1.13
+ftfy==6.3.1
+gdown==6.1.0
+imageio==2.37.3
+lpips==0.1.4
+omegaconf==2.3.1
+open-clip-torch==2.24.0
+openai-clip==1.0.1
+pyiqa==0.1.15
+timm==1.0.12
