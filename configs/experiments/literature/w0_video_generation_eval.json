@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "experiment_id": "w0_wan_video_generation_preservation",
+  "status": "protocol_frozen",
+  "sources": {
+    "fastwam_config": "configs/experiments/literature/w0_fastwam_reproduction.json",
+    "vbench_repo": "https://github.com/Vchitect/VBench",
+    "vbench_commit": "fd18b3d055cb0fc6f066ca90fe2c3c8cbb698490",
+    "wan22_repo": "https://github.com/Wan-Video/Wan2.2",
+    "wan22_commit": "81e67351b81197330c9533e7f345233e7702b44a"
+  },
+  "tracks": {
+    "vbench_i2v_mini_21": {
+      "prompts": 21,
+      "unique_images": 15,
+      "groups": {
+        "subject": 7,
+        "background": 7,
+        "camera_motion": 7
+      },
+      "dimensions": [
+        "i2v_subject",
+        "subject_consistency",
+        "motion_smoothness",
+        "dynamic_degree",
+        "i2v_background",
+        "background_consistency",
+        "aesthetic_quality",
+        "imaging_quality",
+        "camera_motion"
+      ],
+      "selection_seed": 20260824,
+      "base_seed": 52000,
+      "camera_instructions": [
+        "camera pans left",
+        "camera pans right",
+        "camera tilts up",
+        "camera tilts down",
+        "camera zooms in",
+        "camera zooms out",
+        "camera static"
+      ]
+    },
+    "w0_video_40": {
+      "suites": [
+        "libero_spatial",
+        "libero_object",
+        "libero_goal",
+        "libero_10"
+      ],
+      "tasks_per_suite": 10,
+      "clips": 40,
+      "raw_frames": 33,
+      "video_stride": 4,
+      "video_frames": 9,
+      "base_seed": 42000,
+      "resolution": [
+        224,
+        448
+      ],
+      "fps": 16,
+      "steps": 10,
+      "selection": "one-per-task-motion-p75"
+    }
+  },
+  "protocol": {
+    "action_conditioned": false,
+    "action": null,
+    "proprio": null,
+    "paired_seed_source": "manifest.sample.seed",
+    "official_wan22_smoke_steps": 1,
+    "official_wan22_generation_steps": 50,
+    "native_fastwam": {
+      "width": 448,
+      "height": 224,
+      "frames": 9,
+      "fps": 16,
+      "steps": 10
+    },
+    "official_wan22_candidate": {
+      "width": 1280,
+      "height": 720,
+      "frames": 81,
+      "fps": 16,
+      "steps": 50
+    }
+  },
+  "paths": {
+    "default_output_root": "outputs/literature/w0_fastwam/video_generation",
+    "vbench_cache_root": "pretrained/vbench_i2v",
+    "w0_model_cache_root": "pretrained/w0_fastwam",
+    "w0_dataset_root": "pretrained/w0_fastwam/dataset/data/libero_mujoco3.3.2"
+  }
+}
