@@ -246,9 +246,9 @@ manifest 与 protocol，各 40/40。
 **不可支持的结论**：不能读成「video co-training 提升了视频生成能力」。`FW-FZ` 的 video expert 是
 未训练过的 Wan2.2 权重，且运行在四个同时偏离其预训练的设置上（并排双相机布局、`448x224` 即每帧仅
 `14x28=392` 个 latent token、9 帧对原生 81、`first_frame_causal` 对 DiT 类默认 `bidirectional`），
-所以该差值把「学过这个任务」与「跑在有效工作点上」混在一起，按构造接近同义反复。要回答通用生成
-能力的保持性，需要 VBench-I2V-mini-21——那里 `FW-FZ` 等于未受损的 Wan2.2，构成保持度上界；该组尚未
-执行。样本窗口取自训练 demonstration，属分布内拟合，不是 held-out 泛化。
+所以该差值把「学过这个任务」与「跑在有效工作点上」混在一起，按构造接近同义反复。通用生成能力的
+保持性由下一节的 VBench-I2V 对照回答，**结论与这里的方向相反**。样本窗口取自训练 demonstration，
+属分布内拟合，不是 held-out 泛化。
 
 **已排除的解释**：把条件输入换成单个 `224x224` front 视角后（同 3 条样本、拼接组只取 front 半幅
 以同口径比较），`FW-FZ` 从 10.338 dB / SSIM 0.1462 变为 9.975 dB / 0.1859，**基本不变**；而同一个
@@ -257,6 +257,20 @@ expert 只值 4 dB，因此「双相机拼接布局 OOD」不能解释 `FW-FZ` �
 
 ![单相机逐帧对比](docs/assets/w0_video_generation/single_camera_front_compare.jpg)
 
+**同一批样本换成官方 Wan2.2 代码后结论不变**，所以 FastWAM 的推理管路不是崩溃原因。下面这组用官方
+`WanTI2V.generate` 重跑同样 40 条、同样 `448x224`、同样 9 帧、同一份真值（真值窗口是冻结的
+`raw_frames=33 / stride=4`，与上表逐帧相同），只有生成入口不同：
+
+| 生成入口 | `FW-FZ` PSNR / SSIM / LPIPS | `FW-V` PSNR / SSIM / LPIPS |
+| --- | ---: | ---: |
+| FastWAM `infer_joint`（10 步） | 9.963 / 0.2040 / 0.6822 | 24.705 / 0.9231 / 0.0983 |
+| 官方 `WanTI2V.generate`（50 步 UniPC） | **9.243** / 0.1682 / 0.7175 | **22.822** / 0.9153 / 0.1017 |
+
+各 n=40。`FW-FZ` 换官方代码后仍是 9.243 dB（四个 suite 分别 7.772–10.088 dB，40 条无一超过
+14.13），`FW-V` 略降 1.88 dB（可能来自 10 步→50 步与调度器差异）。逐帧 PSNR 还给出一个比数值更硬的
+判据：`FW-FZ` 的 frame 1..8 **每一帧都最接近条件帧 `gt[0]`** 而不是对应的真值帧，说明它在原地劣化、
+根本没沿时间推进；`FW-V` 的最佳匹配帧随时间前移（frame 6→`gt[7]`、frame 7→`gt[8]`）。
+
 指标定义与方向、逐条排除过程（采样步数、checkpoint 加载、生成管路均已排除）见
 [W0 视频生成保持性 guide](reports/guides/literature/02_w0_wan_video_generation_preservation.md)；
 实测记录见 [`reports/experiment_log.md`](reports/experiment_log.md) 的 2026-08-25 两条。指标产物在
@@ -264,6 +278,77 @@ expert 只值 4 dB，因此「双相机拼接布局 OOD」不能解释 `FW-FZ` �
 上面两张图是**已提交**的文档资产，位于
 [`docs/assets/w0_video_generation/`](docs/assets/w0_video_generation)，各约 300 KB，重建命令写在
 guide 里。
+
+### W0 通用视频生成保持性：VBench-I2V mini-21（分辨率对照）
+
+两个 checkpoint 都严格加载进官方 Wan2.2-TI2V-5B（`strict_load=True`、825 个 video expert 张量），
+用官方 `WanTI2V.generate` 生成：81 帧、50 步、UniPC、shift 5、guide 5、fps 24、SDPA。唯一变化的是
+分辨率——`1248x704`（Wan2.2 `SUPPORTED_SIZES` 内、经 `best_output_size` 精确匹配、零重采样）对
+`448x224`（FastWAM 的分辨率）。21 个 prompt，四条链各 21/21。与官方配置的唯一偏离是 `frame_num`
+81 而非 121，两条链一致。
+
+![四条链的逐帧演化](docs/assets/w0_video_generation/vbench_resolution_quad.jpg)
+
+三个场景，每个四行：`FW-FZ`/`FW-V` 在 `1248x704`，以及二者在 `448x224`；横向是时间轴。frame 0 是
+给定的条件帧，四行相同。
+
+**两个失败原因被分别隔离，各自单变量成立：**
+
+| 组 | 尺寸 | 帧数 | `FW-FZ` | `FW-V` |
+| --- | --- | ---: | --- | --- |
+| A | `1248x704` | 81 | **正常 19/21** | 塌陷 21/21 |
+| D | `448x224` | 81 | **噪声爆炸 17/21** | 塌陷 21/21 |
+| B | `448x224` | **9** | 崩溃 9.24 dB | **正常 22.8 dB** |
+
+`FW-FZ` 只栽在分辨率上：A→D 只改分辨率就从 19/21 正常变成 17/21 彩噪。`FW-V` 只栽在帧数上：D→B 只
+改帧数就从 21/21 塌陷变成正常——它训练时是 `448x224`/9 帧，所以 D 的分辨率对它分布内、帧数分布外。
+两者都被各自的训练窗口锁死，只是锁的维度不同。
+
+逐条统计（`ret` = 后续帧对比度 / 条件帧对比度，21 条/组）：
+
+| 组别 | mean `ret`（范围） | 亮部占比 | 帧间变化 | 判定 |
+| --- | ---: | ---: | ---: | --- |
+| `FW-FZ` @ `1248x704` | 1.02（0.95–1.25） | 0.0079 | 9.27 | **19/21 正常** |
+| `FW-V` @ `1248x704` | **0.25**（0.14–0.37） | 0.0000 | 6.25 | **21/21 塌陷** |
+| `FW-FZ` @ `448x224` | **1.33**（0.94–1.98） | **0.0540** | **24.01** | **17/21 噪声爆炸** |
+| `FW-V` @ `448x224` | 0.29（0.18–0.44） | 0.0000 | 6.72 | **21/21 塌陷** |
+
+九维分数（`1248x704`）：
+
+| dimension | `FW-FZ` | `FW-V` | V−FZ | `448x224` 下 V−FZ |
+| --- | ---: | ---: | ---: | ---: |
+| i2v_background | **0.9923** | 0.8664 | −0.1259 | +0.0250 |
+| i2v_subject | **0.9806** | 0.8066 | −0.1740 | +0.0380 |
+| background_consistency | **0.9523** | 0.7706 | −0.1817 | −0.0063 |
+| subject_consistency | **0.9493** | 0.5215 | **−0.4278** | −0.0343 |
+| imaging_quality | **0.6707** | 0.4915 | −0.1793 | −0.0213 |
+| aesthetic_quality | **0.6451** | 0.3345 | **−0.3106** | −0.0170 |
+| motion_smoothness | 0.9803 | 0.9886 | +0.0083 | +0.0760 |
+| dynamic_degree | 0.2857 | 1.0000 | +0.7143 | 0.0000 |
+| camera_motion | 0.2857 | 0.2857 | 0.0000 | +0.1429 |
+
+最后一列说明在 `448x224` 上两个变体**已无法区分**（连续维度差值全在 ±0.04 内）——因为那里 `FW-FZ`
+也坏了，所以那个工作点不能用来比较任何东西。
+
+**边界**：21 条 = 7 subject + 7 background + 7 camera_motion（同图七指令），所以九维里六个 n=7、
+两个 n=14。`dynamic_degree` 与 `camera_motion` 是二元判定，n=7 下一条视频值 0.1429，不可解读——
+`FW-V` 在 `1248x704` 上 `dynamic_degree` 拿满分 1.0000 而画面是平坦场，正是这一维的病态：RAFT 在
+无纹理溶解场上输出虚高光流。`motion_smoothness` 的 +0.0083 可忽略且模糊天然「平滑」。可支持的结论
+只依赖六个连续维度（差距 0.13–0.43）加上 `ret` 的零重叠分离。
+
+**这项测量改写了 W0-Video-40 差值的解释**：`FW-V` − `FW-FZ` = +14.742 dB 主要是分辨率假象。`FW-FZ`
+在 `448x224` 上崩溃与 LIBERO 域无关、与双相机拼接无关（D 组是自然图像、单幅、无拼接，一样崩），也
+与 FastWAM 代码路径无关（官方代码在同样本同分辨率下同样崩，9.24 dB 对 9.96 dB）。
+
+**准确表述**：`FW-V` 无法在 Wan2.2 的原生帧长下生成，不是「丧失了全部视频生成能力」——它在自己的
+`448x224`/9 帧工作点上正常（22.8 dB）。`FW-FZ` 的能力也只在其预训练分辨率附近成立，不是无条件的。
+
+2026-08-25 那轮跑在 FastWAM 工作点（`448x224`/9 帧/10 步）的九维结果**已作废**：那里两个变体都不在
+有效工作点上。
+
+指标产物 `outputs/literature/w0_fastwam/video_generation/vbench/{native,native-fastwam-point}/{fw_fz,fw_v}/metrics.json`
+（gitignored）；21 场景四宫格视频不入库（GitHub markdown 不能内联播放仓库内 mp4），重建
+命令见 [guide](reports/guides/literature/02_w0_wan_video_generation_preservation.md)。
 
 | 阶段 | 目的 | 当前状态 | 入口 |
 | --- | --- | --- | --- |
@@ -330,6 +415,10 @@ learned-policy 结果。
 - W0 的离线视频生成指标（PSNR/SSIM/LPIPS）是后验记录，只支持“`FW-V` 的视频分支学到了域内动力学”
   这一观察；`FW-V − FW-FZ` 的视频差值是架构对比且按构造接近同义反复，不能写成 video co-training
   的机制证据，也不进入 W0 的闭环结果表。
+- VBench-I2V mini-21 的分辨率对照给出两个各自单变量的结论：`FW-FZ` 只在其预训练分辨率附近可用，
+  `FW-V` 只在其微调帧长下可用。两者都不能写成「无条件保持」或「无条件丧失」。`dynamic_degree`、
+  `camera_motion`、`motion_smoothness` 在该对照上不可用（n=7 二元判定，且塌陷场会骗过光流）。
+  2026-08-25 那轮跑在 FastWAM 工作点的九维结果已作废，不得引用。
 - 计划仍放在 [`plans/`](plans/README.md)，实际结果仍放在 [`reports/`](reports/README.md)；数据、checkpoint、视频、Rerun recording 和日志等生成物不提交到 Git。
 
 项目代码和文档使用 [Apache License 2.0](LICENSE)；第三方软件和数据集说明见
