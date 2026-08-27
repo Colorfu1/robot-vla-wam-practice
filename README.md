@@ -224,62 +224,81 @@ video expert，因此本地差值是复合机制对照，不能直接视为纯 v
 
 ### W0 离线视频生成对照（后验记录，不进入上面的闭环表）
 
-W0 的对外结论只用闭环成功率。下面这组是**后验**测量：同一对 checkpoint 在 LIBERO 未来帧上的离线
-重建指标，用来回答「`FW-V` 的视频分支到底有没有学到东西」，不作为 W0 的机制结论或通过依据。协议为
-W0-Video-40：四个 suite 各 10 task、每 task 1 条 33 帧窗口取 9 帧，条件输入是 front + wrist 各
-`224x224` 横向拼接的 `448x224`，指标只算 future frame `[1..8]`，拆两相机后等权平均。两个变体共用同一
-manifest 与 protocol，各 40/40。
+W0 的对外结论只用闭环成功率。下面是**后验**测量：同一对 checkpoint 在离线重建上的表现，回答两个
+问题——具身微调有没有破坏通用视频生成能力（有），以及那个破坏在指标上长什么样。不作为 W0 的机制
+结论或通过依据。分两节：**本节用 LIBERO 内容**（有逐帧真值，度量 PSNR/SSIM/LPIPS），**下一节用
+VBench 自然图像**（无真值，度量 VBench 九维）；两节独立佐证同一结论。
 
-| 变体 | PSNR ↑ | SSIM ↑ | LPIPS ↓ |
-| --- | ---: | ---: | ---: |
-| `FW-FZ`（`lambda_video=0`、video expert 冻结） | 9.963 | 0.2040 | 0.6822 |
-| `FW-V`（`lambda_video=1`、video expert 可训） | **24.705** | **0.9231** | **0.0983** |
-| 差值（LPIPS 为 FZ−V，正值均代表 `FW-V` 更好） | **+14.742** | **+0.7190** | **+0.5839** |
+一句话结论：**`FW-FZ`（冻结的 Wan2.2）只在其预训练分辨率附近可用，`FW-V`（微调过）只在其训练的
+`448x224`/9 帧工作点可用。两者各自被锁在自己的工作点里，换到对方的工作点都失败。** 所以在 FastWAM
+的 `448x224` 上测出的 `FW-V` −`FW-FZ` = +14.742 dB 主要是分辨率假象，不是「video co-training 提升了
+生成能力」。
 
-![W0-Video-40 双相机拼接逐帧对比](docs/assets/w0_video_generation/w0_video_40_frame_compare.jpg)
+**LIBERO 内容跨分辨率（官方 `WanTI2V.generate`、9 帧、50 步、同一批样本、真值同口径）：**
 
-每条带三行：GT / `FW-FZ` / `FW-V`，横向 frame 0→8；frame 0 是给定的条件帧，所以三行相同。
-
-**可支持的结论**：`FW-V` 的视频分支确实学到了域内动力学，没有塌缩——24.705 dB 距本管路上限
-（条件帧走一遍 VAE 与 mp4 往返，实测 33.8–35.7 dB）约 10 dB，且分布集中，35/40 条 SSIM >0.85。
-
-**不可支持的结论**：不能读成「video co-training 提升了视频生成能力」。`FW-FZ` 的 video expert 是
-未训练过的 Wan2.2 权重，且运行在四个同时偏离其预训练的设置上（并排双相机布局、`448x224` 即每帧仅
-`14x28=392` 个 latent token、9 帧对原生 81、`first_frame_causal` 对 DiT 类默认 `bidirectional`），
-所以该差值把「学过这个任务」与「跑在有效工作点上」混在一起，按构造接近同义反复。通用生成能力的
-保持性由下一节的 VBench-I2V 对照回答，**结论与这里的方向相反**。样本窗口取自训练 demonstration，
-属分布内拟合，不是 held-out 泛化。
-
-**已排除的解释**：把条件输入换成单个 `224x224` front 视角后（同 3 条样本、拼接组只取 front 半幅
-以同口径比较），`FW-FZ` 从 10.338 dB / SSIM 0.1462 变为 9.975 dB / 0.1859，**基本不变**；而同一个
-布局变化让 `FW-V` 从 26.098 dB 降到 22.011 dB（−4.087 dB）却依然完好。一次真实的分布偏移对训练过的
-expert 只值 4 dB，因此「双相机拼接布局 OOD」不能解释 `FW-FZ` 的崩塌，已从候选原因中排除。
-
-![单相机逐帧对比](docs/assets/w0_video_generation/single_camera_front_compare.jpg)
-
-**同一批样本换成官方 Wan2.2 代码后结论不变**，所以 FastWAM 的推理管路不是崩溃原因。下面这组用官方
-`WanTI2V.generate` 重跑同样 40 条、同样 `448x224`、同样 9 帧、同一份真值（真值窗口是冻结的
-`raw_frames=33 / stride=4`，与上表逐帧相同），只有生成入口不同：
-
-| 生成入口 | `FW-FZ` PSNR / SSIM / LPIPS | `FW-V` PSNR / SSIM / LPIPS |
+| 尺寸 | `FW-FZ` PSNR / SSIM / LPIPS | `FW-V` PSNR / SSIM / LPIPS |
 | --- | ---: | ---: |
-| FastWAM `infer_joint`（10 步） | 9.963 / 0.2040 / 0.6822 | 24.705 / 0.9231 / 0.0983 |
-| 官方 `WanTI2V.generate`（50 步 UniPC） | **9.243** / 0.1682 / 0.7175 | **22.822** / 0.9153 / 0.1017 |
+| `448x224`（n=40） | 9.243 / 0.1682 / 0.7175 | **22.822 / 0.9153 / 0.1017** |
+| `1248x704`（n=21） | **15.960 / 0.6167 / 0.3486** | 16.485 / 0.6233 / 0.4892 |
 
-各 n=40。`FW-FZ` 换官方代码后仍是 9.243 dB（四个 suite 分别 7.772–10.088 dB，40 条无一超过
-14.13），`FW-V` 略降 1.88 dB（可能来自 10 步→50 步与调度器差异）。逐帧 PSNR 还给出一个比数值更硬的
-判据：`FW-FZ` 的 frame 1..8 **每一帧都最接近条件帧 `gt[0]`** 而不是对应的真值帧，说明它在原地劣化、
-根本没沿时间推进；`FW-V` 的最佳匹配帧随时间前移（frame 6→`gt[7]`、frame 7→`gt[8]`）。
+![LIBERO 四条链的逐帧演化](docs/assets/w0_video_generation/libero_resolution_quad.jpg)
 
-指标定义与方向、逐条排除过程（采样步数、checkpoint 加载、生成管路均已排除）见
+三个样本，每个四行：`FW-FZ`/`FW-V` 在 `448x224`，二者在 `1248x704`；横向是时间轴，frame 0 是条件帧。
+对角线图案——`FW-FZ` 在 `448x224` 爆成彩条却在 `1248x704` 画出机械臂与物体；`FW-V` 在 `448x224` 跟得住
+场景却在 `1248x704` 化成灰褐糊。
+
+`FW-FZ` 在 `448x224` 崩溃（9.243 dB）与 LIBERO 域、双相机拼接、FastWAM 代码路径都无关：它在
+`1248x704` 的同一 LIBERO 内容上有 15.960 dB（四 suite 全在 14.6–16.9），只是分辨率一换回 `448x224`
+就崩。而在 `1248x704` 上 `FW-V` 的 PSNR/SSIM 反而略高是**指标失效**：`FW-V` 抹平成大面积低频糊、MSE
+代价小，`FW-FZ` 画出清晰但位错的内容、MSE 代价大；LPIPS（0.3486 对 0.4892）、后续帧对比度保持
+（`ret` 1.01 对 0.77）与目视都判 `FW-FZ` 更好。此处以 LPIPS 与目视为准。逐帧判据同向：`FW-FZ` 在
+`448x224` 的每一帧都最接近条件帧 `gt[0]`（原地劣化、没沿时间推进），`FW-V` 的最佳匹配帧随时间前移。
+
+代码路径也已排除——FastWAM `infer_joint`（10 步）与官方 `WanTI2V.generate`（50 步）在同样本同分辨率
+下 `FW-FZ` 都崩（9.963 对 9.243 dB）、`FW-V` 都可用（24.705 对 22.822 dB）。
+
+**双相机拼接布局也已排除**。把条件输入换成单个 `224x224` front 视角（FastWAM 管线、9 帧、同一批
+40 条、真值同相机同尺寸、指标不再分半）：
+
+| 输入布局 | `FW-FZ` PSNR / SSIM / LPIPS | `FW-V` PSNR / SSIM / LPIPS |
+| --- | ---: | ---: |
+| 合并双相机 `448x224`（n=40） | 9.963 / 0.2040 / 0.6822 | **24.705 / 0.9231 / 0.0983** |
+| 单前相机 `224x224`（n=40） | **9.163 / 0.1271 / 0.7238** | 22.632 / 0.9007 / 0.0965 |
+
+去掉接缝对 `FW-FZ` 没有帮助——9.163 dB，比合并还低 0.8 dB，仍从 frame 1 起爆成饱和彩条。`FW-V` 掉
+2.07 dB 但依然完好（22.632 dB / SSIM 0.90，机械臂逐帧下压、物体位置正确）：一次真实的分布偏移对
+训练过的 expert 只值 2 dB，不可能解释 `FW-FZ` 那 13 dB 量级的崩塌。
+
+**零裁切、仅分辨率的对照**。单前视是 `224x224` 正方形，把它放大到 `896x896`（`28x32`、同为正方形、
+`best_output_size` 精确返回同值）是两端零裁切的纯 4× 缩放——上面那组 `448x224`→`1248x704` 的对照里
+比例从 2.0 变成 1.773、要裁掉 11.4% 的宽度，这一组把那个残余偏差也消掉了：
+
+| 尺寸（单前视，官方代码、9 帧、50 步） | `FW-FZ` PSNR / SSIM / LPIPS | `FW-V` PSNR / SSIM / LPIPS |
+| --- | ---: | ---: |
+| `224x224`（n=40） | 9.163 / 0.1271 / 0.7238 | **22.632 / 0.9007 / 0.0965** |
+| `896x896`（n=40） | **19.121 / 0.7814 / 0.2200** | 18.682 / 0.7282 / 0.4348 |
+
+![单前相机下不同分辨率的 FW-FZ 与 FW-V](docs/assets/w0_video_generation/libero_front_camera_resolution_quad.jpg)
+
+三个样本，每个四行：`FW-FZ`/`FW-V` 在 `224x224`，以及二者在 `896x896`；横向是时间轴。`FW-FZ` 从
+9.163 升到 19.121 dB（SSIM 0.13→0.78）且画面在 `896x896` 上完全干净；**`FW-V` 反而从 22.632 降到
+18.682**，`896x896` 下第 2 帧起化成灰糊。而且这是唯一一组三个指标方向一致的对照——`896x896` 上
+`FW-FZ` 在 PSNR、SSIM、LPIPS 上全部胜出，LPIPS 差 0.2148；`1248x704` 那组 PSNR/SSIM 与 LPIPS 互相
+矛盾，需要以 LPIPS 与目视为准。
+
+`1248x704` 上两者绝对值都只约 16 dB / SSIM 0.62 也不是「好」：LIBERO 是 `256x256` 合成图，上采本身带
+插值损失，真值也走同一变换，所以该数字只可互比、不可与 `448x224` 的 22.822 dB 跨分辨率相减。
+
+指标定义与逐条排除过程见
 [W0 视频生成保持性 guide](reports/guides/literature/02_w0_wan_video_generation_preservation.md)；
-实测记录见 [`reports/experiment_log.md`](reports/experiment_log.md) 的 2026-08-25 两条。指标产物在
-`outputs/literature/w0_fastwam/video_generation/w0_video_40/{fw_fz,fw_v}/metrics.json`（gitignored）；
-上面两张图是**已提交**的文档资产，位于
-[`docs/assets/w0_video_generation/`](docs/assets/w0_video_generation)，各约 300 KB，重建命令写在
-guide 里。
+指标产物在 `outputs/literature/w0_fastwam/video_generation/{w0_video_40,libero_wan}/…/metrics.json`
+（gitignored）；上图是**已提交**的文档资产，位于
+[`docs/assets/w0_video_generation/`](docs/assets/w0_video_generation)，重建命令写在 guide 里。
 
-### W0 通用视频生成保持性：VBench-I2V mini-21（分辨率对照）
+### W0 通用视频生成保持性：VBench-I2V mini-21（自然图像，分辨率对照）
+
+上一节用 LIBERO 内容得到「各自锁在自己工作点」的结论；本节用 **VBench-I2V 自然图像**独立复现同一
+结论，且因为自然图像无逐帧真值，改用 VBench 九维打分而非 PSNR/SSIM/LPIPS。
 
 两个 checkpoint 都严格加载进官方 Wan2.2-TI2V-5B（`strict_load=True`、825 个 video expert 张量），
 用官方 `WanTI2V.generate` 生成：81 帧、50 步、UniPC、shift 5、guide 5、fps 24、SDPA。唯一变化的是
