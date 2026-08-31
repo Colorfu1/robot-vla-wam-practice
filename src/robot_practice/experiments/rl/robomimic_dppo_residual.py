@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import json
 import os
 import random
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -28,9 +30,13 @@ def _sha256_module(module: nn.Module) -> str:
     h = hashlib.sha256()
     for name, tensor in module.state_dict().items():
         h.update(name.encode())
-        # Avoid the NumPy ABI at hash time: the Docker image may intentionally
-        # use a NumPy version different from the host running the unit tests.
-        h.update(tensor.detach().cpu().contiguous().view(torch.uint8).tolist().__repr__().encode())
+        # Prefer a compact byte view in Docker; retain a no-NumPy fallback for
+        # the host smoke environment whose optional NumPy ABI may differ.
+        compact = tensor.detach().cpu().contiguous()
+        try:
+            h.update(compact.numpy().tobytes())
+        except Exception:
+            h.update(compact.view(torch.uint8).tolist().__repr__().encode())
     return h.hexdigest()
 
 
@@ -106,9 +112,18 @@ class ResidualActor(nn.Module):
             nn.Linear(256, 256), nn.Tanh(),
             nn.Linear(256, horizon * action_dim),
         )
+        self.log_std = nn.Parameter(torch.full((horizon, action_dim), -2.0))
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.net(features).view(-1, self.horizon, self.action_dim)
+
+    def sample(self, features: torch.Tensor, deterministic: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+        mean = self(features)
+        std = self.log_std.exp().view(1, self.horizon, self.action_dim)
+        noise = torch.zeros_like(mean) if deterministic else torch.randn_like(mean)
+        raw = mean + std * noise
+        log_prob = (-0.5 * (noise.square() + 2 * self.log_std + math.log(2 * math.pi))).sum(dim=(1, 2))
+        return raw, log_prob
 
 
 class ResidualCritic(nn.Module):
@@ -299,6 +314,8 @@ def _run_dummy(phase: str, cfg: Mapping[str, Any], output: Path, smoke: bool, ma
         with (output / "progress.jsonl").open("a") as handle:
             handle.write(json.dumps({"completed": completed, "total": total, "loss": loss.item()}) + "\n")
     base.assert_unchanged()
+    if hasattr(env, "close"):
+        env.close()
     metrics["base_parameter_hash_after"] = base.parameter_hash
     metrics["base_hash_unchanged"] = metrics["base_parameter_hash_before"] == metrics["base_parameter_hash_after"]
     if phase == "train":
@@ -317,6 +334,216 @@ def summarize(root: Path) -> None:
     _write_json(root / "summary.json", {"runs": rows, "count": len(rows)})
 
 
+def _run_official_base_eval(cfg: Mapping[str, Any], output: Path) -> None:
+    """Run the upstream eval entrypoint after preflight has proved assets exist."""
+
+    dppo_root = Path(os.environ.get("DPPO_ROOT", cfg["dppo_root"])).resolve()
+    paths = cfg["paths"]
+    command = [
+        "python", "script/run.py", "--config-name=eval_diffusion_mlp_img",
+        "--config-dir=cfg/robomimic/eval/square", "wandb=null",
+        f"base_policy_path={Path(paths['base_checkpoint']).resolve()}",
+        f"normalization_path={Path(paths['normalization']).resolve()}",
+    ]
+    output.mkdir(parents=True, exist_ok=True)
+    log_path = output / "run.log"
+    env = os.environ.copy()
+    env["DPPO_DATA_DIR"] = str(Path(paths["data_dir"]).resolve())
+    env["DPPO_LOG_DIR"] = str(Path(paths["log_dir"]).resolve())
+    env["PYTHONNOUSERSITE"] = "1"
+    _log(log_path, "START official DPPO frozen-base pixel eval")
+    _log(log_path, "COMMAND " + " ".join(command))
+    with log_path.open("a") as handle:
+        process = subprocess.Popen(
+            command, cwd=dppo_root, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            handle.write(line)
+            print(line, end="", flush=True)
+        return_code = process.wait()
+    if return_code:
+        raise RuntimeError(f"official DPPO eval failed with status {return_code}")
+    result_files = sorted(Path(paths["log_dir"]).rglob("result.npz"), key=lambda p: p.stat().st_mtime)
+    if not result_files:
+        raise FileNotFoundError("upstream eval completed without result.npz")
+    result = np.load(result_files[-1])
+    metrics = {
+        "phase": "base-eval",
+        "official_upstream": True,
+        "requested_env_id": cfg["env_id"],
+        "observation_keys": ["rgb", "state"],
+        "action_dim": cfg["action_dim"],
+        "horizon_steps": cfg["horizon_steps"],
+        "episodes": int(result["num_episode"]),
+        "success_rate": float(result["eval_success_rate"]),
+        "avg_best_reward": float(result["eval_best_reward"]),
+        "base_parameter_hash": hashlib.sha256(Path(paths["base_checkpoint"]).read_bytes()).hexdigest(),
+        "result_path": str(result_files[-1]),
+    }
+    _write_json(output / "metrics.json", metrics)
+    _log(log_path, f"DONE completed={metrics['episodes']} total={metrics['episodes']}")
+
+
+def _make_real_env(cfg: Mapping[str, Any], dppo_root: Path, n_envs: int):
+    """Construct the exact DPPO robomimic image+state wrapper stack."""
+
+    import sys
+
+    sys.path.insert(0, str(dppo_root))
+    from env.gym_utils import make_async
+    from omegaconf import OmegaConf
+
+    shape_meta = {
+        "obs": {"rgb": {"shape": [3, 96, 96]}, "state": {"shape": [9]}},
+        "action": {"shape": [7]},
+    }
+    wrappers = {
+        "robomimic_image": {
+            "normalization_path": str(Path(cfg["paths"]["normalization"]).resolve()),
+            "low_dim_keys": list(cfg["observation"]["low_dim_keys"]),
+            "image_keys": [cfg["observation"]["image_key"]],
+            "shape_meta": shape_meta,
+        },
+        "multi_step": {
+            "n_obs_steps": 1,
+            "n_action_steps": int(cfg["act_steps"]),
+            "max_episode_steps": int(cfg["env"]["max_episode_steps"]),
+            "reset_within_step": True,
+        },
+    }
+    return make_async(
+        id="square", num_envs=n_envs, asynchronous=True, wrappers=OmegaConf.create(wrappers),
+        robomimic_env_cfg_path=str(dppo_root / "cfg/robomimic/env_meta/square-img.json"),
+        use_image_obs=True, render_offscreen=True,
+        reward_shaping=bool(cfg["env"]["reward_shaping"]), shape_meta=shape_meta,
+        max_episode_steps=int(cfg["env"]["max_episode_steps"]), obs_steps=1,
+        act_steps=int(cfg["act_steps"]), action_dim=int(cfg["action_dim"]),
+    )
+
+
+def _load_real_dppo_base(cfg: Mapping[str, Any], dppo_root: Path, device: str):
+    """Hydra-compose the upstream eval model without invoking its downloader."""
+
+    import hydra
+    from hydra.utils import instantiate
+    from omegaconf import OmegaConf
+
+    OmegaConf.register_new_resolver("eval", eval, replace=True)
+    with hydra.initialize_config_dir(version_base=None, config_dir=str(dppo_root / "cfg/robomimic/eval/square")):
+        dppo_cfg = hydra.compose(
+            config_name="eval_diffusion_mlp_img",
+            overrides=[
+                "wandb=null", f"device={device}",
+                f"base_policy_path={Path(cfg['paths']['base_checkpoint']).resolve()}",
+                f"normalization_path={Path(cfg['paths']['normalization']).resolve()}",
+            ],
+        )
+    OmegaConf.resolve(dppo_cfg)
+    model = instantiate(dppo_cfg.model)
+    model.eval()
+    return model
+
+
+def _numpy_obs_to_torch(obs: Mapping[str, Any], device: torch.device) -> dict[str, torch.Tensor]:
+    return {key: torch.as_tensor(value, dtype=torch.float32, device=device) for key, value in obs.items()}
+
+
+def _run_real_residual(cfg: Mapping[str, Any], output: Path, phase: str, residual_mode: str,
+                       max_iterations: int | None, time_stages: bool, seed: int,
+                       residual_root: Path | None = None) -> None:
+    """Run the bounded residual actor/critic on DPPO's vectorized robomimic env."""
+
+    dppo_root = Path(os.environ.get("DPPO_ROOT", cfg["dppo_root"])).resolve()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    n_envs = int(cfg["env"]["n_envs"])
+    iterations = int(max_iterations or cfg["train"]["n_train_itr"])
+    if phase == "eval":
+        iterations = 1
+    feature_dim = int(cfg["observation"]["state_dim"]) + 6
+    horizon, action_dim = int(cfg["horizon_steps"]), int(cfg["action_dim"])
+    base = FrozenDPPOBase(_load_real_dppo_base(cfg, dppo_root, str(device)))
+    actor, critic = ResidualActor(feature_dim, horizon, action_dim).to(device), ResidualCritic(feature_dim).to(device)
+    residual_root = residual_root or (output.parent / "residual")
+    checkpoint = residual_root / "checkpoint.pt"
+    if phase == "eval" and checkpoint.exists():
+        state = torch.load(checkpoint, map_location=device, weights_only=True)
+        actor.load_state_dict(state["actor"])
+        critic.load_state_dict(state["critic"])
+    actor.eval() if phase == "eval" else actor.train()
+    critic.eval() if phase == "eval" else critic.train()
+    optimizer = torch.optim.Adam(list(actor.parameters()) + list(critic.parameters()), lr=float(cfg["train"]["actor_lr"]))
+    bound = torch.tensor(cfg["train"]["residual_bound"], device=device).view(1, 1, -1)
+    env = _make_real_env(cfg, dppo_root, n_envs)
+    if hasattr(env, "seed"):
+        env.seed([seed + i for i in range(n_envs)])
+    obs = env.reset()
+    output.mkdir(parents=True, exist_ok=True)
+    log_path = output / "run.log"
+    metrics: dict[str, Any] = {"phase": phase, "official_upstream": False, "device": str(device),
+                               "n_envs": n_envs, "iterations": iterations,
+                               "base_parameter_hash_before": base.parameter_hash,
+                               "observation_keys": ["rgb", "state"], "action_dim": action_dim,
+                               "horizon_steps": horizon}
+    eval_rewards: list[np.ndarray] = []
+    _log(log_path, f"START real residual phase={phase} n_envs={n_envs} device={device}")
+    started = time.perf_counter()
+    for iteration in range(iterations):
+        features_buf, logprob_buf, reward_buf = [], [], []
+        for step in range(int(cfg["train"]["n_steps"])):
+            cond = _numpy_obs_to_torch(obs, device)
+            features = pixel_state_features(cond)
+            with torch.no_grad():
+                base_action = base(cond).view(-1, horizon, action_dim)
+            if residual_mode == "zero":
+                residual, logprob = torch.zeros_like(base_action), torch.zeros(n_envs, device=device)
+            elif residual_mode == "random-bounded":
+                residual = torch.empty_like(base_action).uniform_(-1, 1) * bound
+                logprob = torch.zeros(n_envs, device=device)
+            else:
+                residual, logprob = actor.sample(features, deterministic=(phase == "eval"))
+            action = compose_bounded_residual(base_action, residual, bound, float(cfg["train"]["residual_scale"]))
+            obs, reward, terminated, truncated, _ = env.step(action[:, : int(cfg["act_steps"])].detach().cpu().numpy())
+            if phase == "eval":
+                eval_rewards.append(np.asarray(reward, dtype=np.float32).reshape(-1))
+            if phase == "train" and residual_mode == "learned":
+                features_buf.append(features.detach())
+                logprob_buf.append(logprob)
+                reward_buf.append(torch.as_tensor(reward, dtype=torch.float32, device=device))
+            if step % 10 == 0:
+                _log(log_path, f"STATUS completed={iteration * int(cfg['train']['n_steps']) + step} total={iterations * int(cfg['train']['n_steps'])}")
+        if phase == "train" and residual_mode == "learned" and reward_buf:
+            features_batch = torch.cat(features_buf)
+            logprob_batch = torch.cat(logprob_buf)
+            rewards = torch.cat(reward_buf)
+            values = critic(features_batch)
+            advantage = rewards - values.detach()
+            loss_critic = (values - rewards).square().mean()
+            loss_actor = -(logprob_batch * advantage).mean()
+            optimizer.zero_grad()
+            (loss_critic + loss_actor).backward()
+            torch.nn.utils.clip_grad_norm_(list(actor.parameters()) + list(critic.parameters()), float(cfg["train"]["grad_clip"]))
+            optimizer.step()
+    base.assert_unchanged()
+    if hasattr(env, "close"):
+        env.close()
+    metrics["base_parameter_hash_after"] = base.parameter_hash
+    metrics["base_hash_unchanged"] = metrics["base_parameter_hash_before"] == metrics["base_parameter_hash_after"]
+    metrics["elapsed_seconds"] = time.perf_counter() - started
+    if eval_rewards:
+        reward_matrix = np.stack(eval_rewards, axis=0)
+        best = reward_matrix.max(axis=0)
+        metrics["episodes"] = int(best.size)
+        metrics["success_rate"] = float(np.mean(best >= float(cfg["evaluation"]["success_threshold"])))
+        metrics["avg_best_reward"] = float(np.mean(best))
+    if phase == "train":
+        torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(), "metrics": metrics}, output / "checkpoint.pt")
+    _write_json(output / "metrics.json", metrics)
+    _log(log_path, f"DONE completed={iterations * int(cfg['train']['n_steps'])} total={iterations * int(cfg['train']['n_steps'])}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", required=True, choices=["preflight", "base-eval", "train", "eval", "summarize"])
@@ -327,6 +554,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-iterations", type=int)
     parser.add_argument("--time-stages", action="store_true")
     parser.add_argument("--residual-mode", choices=["learned", "zero", "random-bounded"], default="learned")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--residual-root", type=Path, default=None)
     args = parser.parse_args(argv)
     if args.phase == "summarize":
         summarize(args.output_root)
@@ -342,8 +571,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("Missing assets (download commands are in the guide): " + ", ".join(missing))
             return 3
         return 0
-    if not args.dummy:
-        raise RuntimeError("real DPPO execution is intentionally gated: run preflight after mounting downloaded assets")
+    if args.phase == "base-eval" and not args.dummy:
+        paths = cfg["paths"]
+        missing = [key for key in ("normalization", "base_checkpoint") if not Path(paths[key]).exists()]
+        if missing:
+            raise FileNotFoundError("missing assets: " + ", ".join(missing))
+        _run_official_base_eval(cfg, args.output_root)
+        return 0
+    if not args.dummy and args.phase in {"train", "eval"}:
+        paths = cfg["paths"]
+        missing = [key for key in ("normalization", "base_checkpoint") if not Path(paths[key]).exists()]
+        if missing:
+            raise FileNotFoundError("missing assets: " + ", ".join(missing))
+        seed = args.seed if args.seed is not None else int(cfg["train"]["seeds"][0])
+        random.seed(seed)
+        torch.manual_seed(seed)
+        _run_real_residual(cfg, args.output_root, args.phase, args.residual_mode, args.max_iterations, args.time_stages, seed, args.residual_root)
+        return 0
     phase = "base-eval" if args.phase == "base-eval" else args.phase
     _run_dummy(phase, cfg, args.output_root, args.smoke, args.max_iterations)
     return 0

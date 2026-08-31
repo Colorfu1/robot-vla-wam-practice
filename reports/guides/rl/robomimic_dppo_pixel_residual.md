@@ -146,14 +146,26 @@ bash scripts/experiments/rl/run_residual_robomimic_dppo.sh \
   --config=configs/experiments/rl/residual_robomimic_dppo_square.yaml \
   --output-root=outputs/rl_residual_robomimic_20260901/timing
 
-bash scripts/experiments/rl/run_residual_robomimic_dppo.sh \
-  --phase=train --config=configs/experiments/rl/residual_robomimic_dppo_square.yaml \
-  --output-root=outputs/rl_residual_robomimic_20260901/residual
+for seed in 1 2 3; do
+  bash scripts/experiments/rl/run_residual_robomimic_dppo.sh \
+    --phase=train --seed="$seed" \
+    --config=configs/experiments/rl/residual_robomimic_dppo_square.yaml \
+    --output-root="outputs/rl_residual_robomimic_20260901/residual/seed_${seed}"
+done
 
-bash scripts/experiments/rl/run_residual_robomimic_dppo.sh \
-  --phase=eval --residual-mode=random-bounded \
-  --config=configs/experiments/rl/residual_robomimic_dppo_square.yaml \
-  --output-root=outputs/rl_residual_robomimic_20260901/random_residual
+for seed in 1 2 3; do
+  bash scripts/experiments/rl/run_residual_robomimic_dppo.sh \
+    --phase=eval --seed="$seed" --residual-root="outputs/rl_residual_robomimic_20260901/residual/seed_${seed}" \
+    --config=configs/experiments/rl/residual_robomimic_dppo_square.yaml \
+    --output-root="outputs/rl_residual_robomimic_20260901/residual_eval/seed_${seed}"
+done
+
+for seed in 1 2 3; do
+  bash scripts/experiments/rl/run_residual_robomimic_dppo.sh \
+    --phase=eval --seed="$seed" --residual-mode=random-bounded \
+    --config=configs/experiments/rl/residual_robomimic_dppo_square.yaml \
+    --output-root="outputs/rl_residual_robomimic_20260901/random_residual/seed_${seed}"
+done
 
 bash scripts/experiments/rl/run_residual_robomimic_dppo.sh \
   --phase=summarize --output-root=outputs/rl_residual_robomimic_20260901
