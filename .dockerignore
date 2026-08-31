@@ -24,5 +24,11 @@
 !docker/training/10_nvidia.json
 !docker/training/Dockerfile.rl-three-stage
 !docker/training/verify_rl_three_stage_env.py
+!docker/training/Dockerfile.robomimic-dppo-pixel
+!docker/training/verify_robomimic_dppo_env.py
+!scripts/
+!scripts/experiments/
+!scripts/experiments/rl/
+!scripts/experiments/rl/run_residual_robomimic_dppo.sh
 !docker/training/rl-three-stage/
 !docker/training/rl-three-stage/*

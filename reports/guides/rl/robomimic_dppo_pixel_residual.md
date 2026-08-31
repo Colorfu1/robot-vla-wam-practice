@@ -15,8 +15,9 @@ docker build \
   -t practice:robomimic-dppo-pixel .
 ```
 
-该层基于 `practice:latest`，新建独立的 `dppo` conda 环境（Python 3.8、DPPO commit
-`cc7234ad7ff39a8f32de3af903606723a16f0648`、robomimic/robosuite 1.4.1）。构建不包含任何训练数据和
+该层基于 `practice:latest`，从基础镜像已有的 `lightwam` 环境克隆出独立的 `dppo` 环境（复用其
+Python 3.10/CUDA Torch，避免重复下载 CUDA wheel；DPPO commit 为
+`cc7234ad7ff39a8f32de3af903606723a16f0648`，robomimic/robosuite 1.4.1）。构建不包含任何训练数据和
 模型文件。
 
 启动容器并挂载当前仓库：
