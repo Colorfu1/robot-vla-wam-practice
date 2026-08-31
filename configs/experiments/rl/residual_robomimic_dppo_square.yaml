@@ -1,0 +1,58 @@
+# Contract for the downstream robomimic Square pixel residual experiment.
+task: square
+env_name: square
+env_id: NutAssemblySquare
+robosuite_version: 1.4.1
+dppo_commit: cc7234ad7ff39a8f32de3af903606723a16f0648
+dppo_root: third_party/dppo/dppo
+
+observation:
+  image_key: agentview_image
+  image_shape: [3, 96, 96]
+  low_dim_keys: [robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos]
+  state_dim: 9
+  allow_object_obs: false
+action_dim: 7
+horizon_steps: 4
+act_steps: 4
+control_freq: 20
+denoising_steps: 100
+use_ddim: true
+ddim_steps: 5
+ft_denoising_steps: 5
+
+paths:
+  data_dir: ${DPPO_DATA_DIR:-datasets/raw/dppo}
+  log_dir: ${DPPO_LOG_DIR:-outputs/rl_residual_robomimic_20260901/dppo_logs}
+  train_dataset: ${paths.data_dir}/robomimic/square-img/train.npz
+  normalization: ${paths.data_dir}/robomimic/square-img/normalization.npz
+  base_checkpoint: ${paths.log_dir}/robomimic-pretrain/square/square_pre_diffusion_mlp_img_ta4_td100/2024-07-30_22-27-34/checkpoint/state_4000.pt
+
+env:
+  n_envs: 50
+  max_episode_steps: 400
+  reward_shaping: true
+  use_image_obs: true
+
+train:
+  seeds: [1, 2, 3]
+  n_train_itr: 301
+  n_steps: 400
+  gamma: 0.99
+  actor_lr: 0.0001
+  critic_lr: 0.001
+  residual_scale: 1.0
+  residual_bound: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5, 1.0]
+  grad_clip: 1.0
+
+evaluation:
+  episodes: 50
+  random_seed_base: 1001
+  success_threshold: 1.0
+
+judgement:
+  base_success_min: 0.10
+  base_success_max: 0.90
+  residual_gain_min: 0.10
+  random_gain_fraction_max: 0.50
+  saturation_fraction_max: 0.20

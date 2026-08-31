@@ -1,0 +1,59 @@
+# DPPO pixel downstream layer.  It never downloads datasets, normalization files,
+# or checkpoints; those are mounted/provided by the user after the image is built.
+ARG BASE_IMAGE=test-lab-instance-cn-beijing.cr.volces.com/lidar-wwd/practice:latest
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+USER root
+
+ARG DPPO_COMMIT=cc7234ad7ff39a8f32de3af903606723a16f0648
+ENV DPPO_ROOT=/opt/robot-practice/dppo \
+    DPPO_DATA_DIR=/workspace/practice/datasets/raw/dppo \
+    DPPO_LOG_DIR=/workspace/practice/outputs/rl_residual_robomimic_20260901/dppo_logs \
+    MUJOCO_GL=egl \
+    PYOPENGL_PLATFORM=egl \
+    SDL_VIDEODRIVER=dummy \
+    PYTHONNOUSERSITE=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+
+LABEL io.robot-practice.robomimic-dppo.commit="${DPPO_COMMIT}" \
+      io.robot-practice.robomimic-dppo.artifacts="environment-only"
+
+RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false update \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false install -y --no-install-recommends \
+        git ca-certificates libegl1 libgl1 libglfw3 libglew2.2 patchelf \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone https://github.com/irom-princeton/dppo.git "${DPPO_ROOT}" \
+    && git -C "${DPPO_ROOT}" checkout --detach "${DPPO_COMMIT}"
+
+# Keep DPPO isolated from robot-practice/lightwam.  d4rl is intentionally omitted:
+# it is not needed for robomimic and pulls the legacy mujoco-py stack.
+RUN /opt/conda/bin/conda create --yes --name dppo python=3.8 pip \
+    && /opt/conda/bin/conda run --no-capture-output -n dppo \
+       python -m pip install --no-cache-dir \
+       "torch==2.4.0" --index-url https://download.pytorch.org/whl/cu121 \
+    && /opt/conda/bin/conda run --no-capture-output -n dppo \
+       python -m pip install --no-cache-dir \
+       av==12.3.0 einops==0.8.0 gdown==5.2.0 gym==0.22.0 \
+       hydra-core==1.3.2 imageio==2.35.1 matplotlib==3.7.5 \
+       omegaconf==2.3.0 pretty_errors==1.2.25 tqdm==4.66.5 \
+       wandb==0.17.7 cython\<3 h5py opencv-python-headless \
+       mujoco==2.3.7 termcolor==2.4.0 \
+       "robomimic @ git+https://github.com/ARISE-Initiative/robomimic.git" \
+       "robosuite @ git+https://github.com/ARISE-Initiative/robosuite.git@v1.4.1" \
+    && /opt/conda/bin/conda run --no-capture-output -n dppo \
+       python -m pip install --no-cache-dir --no-deps -e "${DPPO_ROOT}" \
+    && /opt/conda/bin/conda clean --all --yes
+
+COPY docker/training/verify_robomimic_dppo_env.py /usr/local/lib/robot-practice/verify_robomimic_dppo_env.py
+COPY scripts/experiments/rl/run_residual_robomimic_dppo.sh /usr/local/bin/run_residual_robomimic_dppo.sh
+
+RUN /opt/conda/bin/conda run --no-capture-output -n dppo \
+      python /usr/local/lib/robot-practice/verify_robomimic_dppo_env.py --source="${DPPO_ROOT}" \
+    && chmod +x /usr/local/bin/run_residual_robomimic_dppo.sh
+
+WORKDIR /workspace/practice
+CMD ["/bin/bash"]
