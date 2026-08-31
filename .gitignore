@@ -76,6 +76,8 @@ policies/smolvla_or_pi0/smolvla_base/
 third_party/w0_fastwam/
 third_party/vbench/
 third_party/wan22/
+third_party/lightwam/
+third_party/rlinf/
 pretrained/w0_fastwam/
 pretrained/vbench_i2v/
 

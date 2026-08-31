@@ -9,15 +9,19 @@ USER root
 # Install the VBench-I2V / LPIPS scoring dependencies into the scoring env.
 #
 # reports/guides/literature/02_w0_wan_video_generation_preservation.md scores nine fixed
-# dimensions, and the base image is missing what six of them need.  Measured on
+# mini-21 dimensions and the full VBench-I2V path adds temporal_flickering. The base image is
+# missing what six of the model-backed dimensions need. Measured on
 # w0-fastwam-20260821-fwfz: cv2, imageio, scipy, skimage, einops, omegaconf, easydict,
 # sklearn, matplotlib, pandas, peft and accelerate are present; decord, lpips, clip, timm,
 # open_clip, pyiqa and dreamsim are not, in both robot-practice and fastwam-upstream.
 #
-# Only robot-practice is touched: run_w0_video_generation_eval.sh dispatches
-# ``score`` to W0_VIDEO_SCORE_ENV (default robot-practice) and generate/prepare-w0/
-# check-protocol to W0_VIDEO_MODEL_ENV (default fastwam-upstream), and every dependency here
-# is on the scoring side.
+# The scoring env gets the packages below; the model env gets its own three further down.
+# run_w0_video_generation_eval.sh dispatches ``score`` to W0_VIDEO_SCORE_ENV (default
+# robot-practice) and generate/prepare-w0/check-protocol to W0_VIDEO_MODEL_ENV (default
+# fastwam-upstream), so both envs need work. An earlier version of this layer touched only
+# robot-practice on the assumption that every dependency here is on the scoring side; that was
+# wrong for ``check-protocol``, and the cost was a whole VBench run at the wrong operating
+# point -- see the fastwam-upstream stage below.
 #
 # --no-deps is mandatory, not an optimisation.  The declared requirements of these packages
 # contradict this image in three ways that would each replace a load-bearing library:
@@ -32,8 +36,9 @@ USER root
 # timm is capped at 1.0.12 because pinned VBench declares timm>=0.9,<=1.0.12, and
 # open-clip-torch is held at 2.24.0 because 3.x requires timm>=1.0.17 and would break that cap.
 #
-# Only the nine reported dimensions are covered.  VBench's other dimensions additionally want
-# detectron2, lvis, fvcore, fairscale, boto3 and pycocoevalcap; those are deliberately absent.
+# The evaluator covers the nine mini-21 dimensions plus temporal_flickering for full VBench-I2V.
+# VBench's other dimensions additionally want detectron2, lvis, fvcore, fairscale, boto3 and
+# pycocoevalcap; those are deliberately absent.
 RUN /opt/conda/envs/robot-practice/bin/python -m pip install \
         --no-cache-dir \
         --no-deps \
@@ -65,11 +70,65 @@ RUN /opt/conda/envs/robot-practice/bin/python /tmp/verify_w0_video_eval_deps.py 
 # i2v_background's dreamsim ensemble is deliberately NOT baked.  Its cache_dir defaults to
 # "./models", relative to the process working directory, so an absolute path inside the image
 # would never be found; and at about 3.2 GB it is four times the rest of this layer for one of
-# nine dimensions.  It is staged on shared storage instead -- see docker/training/README.md.
+# ten dimensions.  It is staged on shared storage instead -- see docker/training/README.md.
 # The dreamsim *package* is installed above, so the import works; only its weights are external.
 COPY warm_w0_video_eval_caches.py /tmp/warm_w0_video_eval_caches.py
 
 RUN /opt/conda/envs/robot-practice/bin/python /tmp/warm_w0_video_eval_caches.py --stage=torch-hub \
     && rm -f /tmp/warm_w0_video_eval_caches.py
 
-LABEL io.robot-practice.w0-fastwam.runtime-fix="libglu1-mesa,ffmpeg4-for-torchcodec,gcc-for-triton,fw-fz-freeze-patch,vbench-i2v-scoring-deps,torchhub-evaluator-weights"
+# Let check-protocol reach the official Wan2.2 entry point.
+#
+# ``check-protocol`` decides between two protocols: ``wan22-ti2v-compatible``, which generates
+# through the official ``WanTI2V.generate`` at 1280x720 / 81 frames / 50 steps, and the
+# ``fastwam-native`` fallback at 448x224 / 9 frames / 10 steps. It picks the official one only
+# if every variant's video expert strict-loads into the official model and an 81-frame smoke
+# passes. It runs in W0_VIDEO_MODEL_ENV (fastwam-upstream), not the scoring env.
+#
+# Measured consequence of that env missing these: the strict-load check recorded
+# ``strict_load: false, reason "ModuleNotFoundError: No module named 'ftfy'"`` for one variant,
+# the fallback rule fired, and an entire VBench-I2V run was produced at the FastWAM operating
+# point. That is the operating point the frozen variant was never trained for, so the run could
+# not answer the question it existed for. The failure is silent by design -- the fallback is a
+# planned path -- which is exactly why the dependency belongs in the image.
+#
+# All three are needed and no more, established by importing ``from wan import WanTI2V`` on a
+# GPU and adding one package per failure until it succeeded:
+#   ftfy     third_party/wan22/wan/modules/tokenizers.py imports it unguarded (the vendored
+#            FastWAM copy has a try/except shim, the official repo does not)
+#   decord   wan/__init__.py eagerly imports speech2video.py, which needs it
+#   librosa  same eager import chain; nothing in W0 uses the audio model, but the import runs
+# Everything else the official repo declares is already satisfied here: transformers 4.49.0
+# inside its <=4.51.3 bound, numpy 1.26.4 under its <2 bound, plus diffusers, tokenizers,
+# accelerate, opencv-python, imageio and easydict.
+RUN /opt/conda/envs/fastwam-upstream/bin/python -m pip install \
+        --no-cache-dir \
+        --no-deps \
+        ftfy==6.3.1 \
+        decord==0.6.0 \
+        librosa==0.11.0
+
+# The full ``from wan import WanTI2V`` needs a CUDA device, which a build does not have, so
+# check the part that failed: the module whose unguarded ftfy import broke the protocol choice.
+RUN /opt/conda/envs/fastwam-upstream/bin/python - <<'PY'
+import importlib
+
+for name in ("ftfy", "decord", "librosa"):
+    module = importlib.import_module(name)
+    print(f"import OK   {name} {getattr(module, '__version__', '?')}", flush=True)
+
+import torch
+import transformers
+
+# The official Wan2.2 repo pins transformers<=4.51.3 and numpy<2; --no-deps must not have
+# moved either, or the strict-load path would break in a different way.
+assert torch.__version__ == "2.7.1+cu128", torch.__version__
+assert transformers.__version__ == "4.49.0", transformers.__version__
+import numpy
+
+assert numpy.__version__.startswith("1."), numpy.__version__
+print(f"fastwam-upstream unchanged: torch {torch.__version__}, transformers "
+      f"{transformers.__version__}, numpy {numpy.__version__}", flush=True)
+PY
+
+LABEL io.robot-practice.w0-fastwam.runtime-fix="libglu1-mesa,ffmpeg4-for-torchcodec,gcc-for-triton,fw-fz-freeze-patch,vbench-i2v-scoring-deps,torchhub-evaluator-weights,wan22-official-entrypoint-deps"

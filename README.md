@@ -1,7 +1,8 @@
 # Robot VLA WAM Practice
 
 这是一个以 LeRobot 为工作流层的机器人操作实验仓库。当前 README 总结
-`LIBERO`、`PushT`、`SmolVLA`、`ManiSkill` 四条实验线，以及 WAM 文献复现与迁移路线。
+`LIBERO`、`PushT`、`SmolVLA`、`Residual RL` 四条实验线，以及 WAM 文献复现与迁移路线；
+`ManiSkill` 是这些实验共用的仿真 benchmark，它自身的数据/协议与模型对照结果记在第 4、7 节。
 
 完整实验命令、协议和产物位置见 [`reports/guides/`](reports/guides/README.md)，实际运行记录见
 [`reports/experiment_log.md`](reports/experiment_log.md)。本页不把计划、Smoke 或诊断结果写成
@@ -17,8 +18,8 @@ Formal 结论。
 | LIBERO / ACT | 验证 ACT 的训练、动作 chunk、平滑控制和 LIBERO 闭环能力 | A1-VAE 达到 19/20（95%），A2 + Temporal Ensemble 达到 18/20（90%）；当前证据只覆盖单任务、单 seed |
 | PushT | 研究 Diffusion 的随机闭环行为、采样效率和条件控制 | 完整 DDPM sampling 能产生多个成功闭环 mode；DDIM-5 是当前最佳速度配置，但固定 observation 多峰性、Prototype-ID 和 Route Field 语义控制均未建立 |
 | SmolVLA | 验证 LIBERO 域适配、LoRA、paraphrase 和语言目标服从 | C3 selected `015000` 达到 canonical 88/90、held-out paraphrase 67/90、Prompt Swap 首次达成 30/30；background regression 为 0/210，而 B0 基线为 183/210，当前配置仍有严重 background forgetting |
-| ManiSkill | 验证 PickCube/StackCube 的数据、控制协议、Action-only Flow 和官方 Diffusion Policy 参照 | M0 PickCube 的 4D/CPU 固定 holdout 为 397/400（99.25%）；StackCube 主表按数据来源和 rollout contract 分组记录：官方 4D 默认 57D state 的 DP 在 100k 为 52/100 once、47/100 end；M2-W 50k 为 43/200、43/200；M2 Base + GPU 7D development 选中 step 30k 为 18/100；M2 Base + 投影 4D 的 held-out test 为 21/100。7D 投影 `[0,1,2,6]` 的全量 replay 为 911/987 once、844/987 end；不同组不组成单一排行榜 |
 | WAM 文献复现 | 先在 LIBERO 复现 Fast-WAM/Light-WAM 的公开 artifact 与机制，再迁移到 StackCube tiny 对照 | W0 Fast-WAM 的 released/integration 闭环与本地 `FW-V`/`FW-FZ` 对照均已完成：UP-REL `1929/2000`（96.45%）、LR-REL `1885/2000`（94.25%）、FW-V `1921/2000`（96.05%）、FW-FZ `1743/2000`（87.15%）。该评测不是 held-out 泛化（初始配置与训练重叠 85.6%）；deployment 测量仍未完成，W0 不设 pass/fail 阈值，是否继续 W1/W2/W3 由测量结果判断 |
+| Residual RL | 在 Policy Decorator 的 `PegInsertionSide-v2` 上验证 frozen diffusion base 加 bounded residual SAC 的收益 | 同一 frozen base、同一上游 `evaluate()`：zero-residual 为 `347/500`（69.40%，10 seeds × 50 episodes）；residual SAC 4M steps × 10 seeds 的终值 mean 为 `0.9960`（+30.2pp）。residual 数字来自官方脚本的训练内周期评测，且 `evaluate()` 不 seed reset，因此不是 held-out 泛化，也未做 checkpoint selection |
 
 ## 1. LIBERO：ACT 子任务总结
 
@@ -378,13 +379,52 @@ VBench 自然图像**（无真值，度量 VBench 九维）；两节独立佐证
 
 旧的 Mini-WAM / latent action-conditioning W0-W3 计划已 dropped，不作为当前路线的备用结果。
 
-## 6. Residual RL 待进行实验
+## 6. Residual RL：已完成结果与待进行实验
+
+S1 线固定使用 Policy Decorator 的 pinned checkout：ManiSkill2 0.5.3、repo-local
+`PegInsertionSide-v2` runtime、metadata 为 `PegInsertionSide-v0` 的原生 7D EEF 数据，不复用 M1-W 的
+ManiSkill3 StackCube 数据。下面 6.1 是已落盘的实测结果，6.2 是仍未执行的计划。
+
+### 6.1 S1：frozen diffusion base 与 base + residual SAC
+
+同一个 frozen diffusion base checkpoint（`base_policy_sha256` 前缀 `b5325a02`），同一条上游评测路径。
+`policy_decorator_official_base_eval.py` 通过 `importlib` 导入 pinned 的
+`online.pi_dec_diffusion_maniskill2` 并逐字复用其 `make_env` / `BasePolicy` / `evaluate`，base 行就是同一
+`evaluate()` 在 `residual_scale=0.0` 下的情形；因此两行的 harness、`num_eval_envs=5`、每次 50 episodes、
+`act_horizon=4`、`ddim_steps=4` 完全一致，可以直接相减。
+
+| 变体 | 训练 budget | 数据 / eval | success | 边界 |
+| --- | ---: | --- | ---: | --- |
+| frozen base（zero residual） | —（不训练） | `PegInsertionSide-v2`、`obs_mode=state`、`control_mode=pd_ee_delta_pose`；10 个 policy seed × 50 episodes = 500；5 eval envs；`eval_reset_seed=1000+seed` 后续 autoreset 不再 seed | **347/500（69.40%）**；逐 seed 64%–78% | 正式结果。这是 residual 的对照基线，不是论文数字 |
+| base + residual SAC | **4M env steps × 10 seeds**；16 train envs、`learning_starts=8000`、`prog_explore=30000`、`res_scale=0.1`、`actor_input=obs`、`critic_input=sum`、`utd=0.25`、`batch_size=1024`、`bootstrap_at_done=truncated` | 同一 harness；官方脚本自身的周期评测，`eval_freq=50000` → 每 seed 80 个评测点，每点 50 episodes / 5 eval envs | **4M 步终值 mean 0.9960**（sd 0.0084、min 0.980、max 1.000；8/10 seeds 为 1.000，2 个为 0.980）；10/10 seeds 在训练中至少一次达到 1.000，最早约 1.95M 步 | 数字来自**官方脚本的训练内周期评测**，不是独立后验评测；未做 checkpoint selection，报告最后一步 |
+
+相对 frozen base 为 **+30.2pp**（69.40% → 99.60%），10 个 seed 方向一致。
+
+必须同时读的四条边界：
+
+- **不是 held-out 泛化**。官方 `evaluate()` 里是 `eval_envs.reset()  # don't seed here`，之后靠 autoreset，
+  所以评测状态是环境 RNG 流上的新鲜随机抽样，而不是冻结的 test state bank；训练与评测采样同一个初始状态
+  分布，没有独立 test split。好处是 80 个评测点 × 10 seeds 的结论不依赖某个固定状态子集，代价是它不能读成
+  对新物体摆放的泛化。
+- **success 口径是上游语义**：`collect_episode_info` 取 `final_info` 里的 `info['success']`，即 episode 结束时
+  的成功标志。上游只报一个数，所以本节不拆 `success_once / success_at_end`。
+- **residual 行的评测是训练内 monitor**。按 [S1 指南](reports/guides/rl/three_stage_residual_lightwam_rlinf.md)
+  §2.1 的规定，S1 residual 只报告官方脚本自身的周期评测和最终 checkpoint；它与 base 行同 harness，因此差值
+  可用，但不等于一次独立冻结协议下的评测。
+- **本地串行 evaluator 的数字不并入本表**。同一个 frozen base 在 `policy_decorator_eval.py`
+  （`reset_seed_scheme=contiguous_disjoint_v1`、串行、每 seed 50 个互斥 reset seed）下为 `161/200`
+  （80.50%，4 seeds）。它与上表 69.40% 的差值约 11pp 只反映 harness 差异，按 S1 指南 §2.3 属于本地诊断，
+  不能与上游 `evaluate()` 的结果混列或相减。
+
+产物位置：`outputs/rl_three_stage_20260828/stage1/official_base_eval_paper10/seed_*/metrics.json`（base）、
+`outputs/rl_three_stage_20260828/stage1/paper10_base_then_sac/sac/seed_*/…/events.out.tfevents.*` 的
+`eval/success`（residual），checkpoint 在同目录 `checkpoints/{1000000,2000000,3000000,4000000}.pt`；均
+gitignored。
+
+### 6.2 待进行实验
 
 这张表沿用上面的“实验 → budget → 数据/eval → success → 单列原因”格式。M1-R 是 Residual
-训练的前置协议 gate；后续实验都固定使用 Policy Decorator 的 ManiSkill2 0.5.3 / repo-local
-`PegInsertionSide-v2` runtime 和 metadata 为 `PegInsertionSide-v0` 的原生 7D EEF 数据，不复用
-M1-W 的 ManiSkill3 StackCube 数据。当前所有 success 单元格均为 `N/A`，因为这些实验尚未形成正式
-learned-policy 结果。
+训练的前置协议 gate。表中 success 单元格为 `N/A` 的行尚未形成正式 learned-policy 结果。
 
 | 实验 | 训练 budget | 数据 / eval | success_once / success_at_end | 为什么单列 |
 | --- | ---: | --- | ---: | --- |
@@ -395,7 +435,8 @@ learned-policy 结果。
 | **R2：frozen SmolVLA + residual** | 待子计划冻结 | LIBERO 单任务；frozen SmolVLA/VLA action expert；residual 只读部署时可得的 visual-language embedding + robot state，VLA 参数不更新 | `N/A` | 验证 Policy Decorator-style residual 是否能作为 frozen VLA 的外挂 refinement；不与 ManiSkill2 的 R0 成绩直接横比 |
 | **R3：Residual RL 算法归因** | 按相同真实 interaction budget 冻结 | 在同一 R2/目标 contract 下，对照 Residual RL、Online BC、Weighted BC、Residual BC；各方法允许自然 collection/exploration | `N/A` | 区分“在线新数据有用”和“Residual RL 的 reward/critic/exploration 算法额外有用”；未完成该对照不能声称 Residual RL 优于继续模仿学习 |
 
-上述实验均属于待执行计划，不将 `M1-R` 的 50 条 smoke 写成训练结果。R0/R1/R2/R3 的完整
+6.1 的 S1 结果不替代 R0——R0 的 base 是 M2-R 的 state Flow，且要求冻结 state bank 与
+Zero/Random Residual 对照，6.1 都没有。不将 `M1-R` 的 50 条 smoke 写成训练结果。R0/R1/R2/R3 的完整
 依赖关系、进入条件和停止条件见 [Residual RL 母计划](plans/2026-08-11-Mini-WAM与Residual-RL-完整实验总计划.md)。
 
 ## 7. ManiSkill 当前结论
@@ -438,6 +479,11 @@ learned-policy 结果。
   `FW-V` 只在其微调帧长下可用。两者都不能写成「无条件保持」或「无条件丧失」。`dynamic_degree`、
   `camera_motion`、`motion_smoothness` 在该对照上不可用（n=7 二元判定，且塌陷场会骗过光流）。
   2026-08-25 那轮跑在 FastWAM 工作点的九维结果已作废，不得引用。
+- Residual RL / S1 的 `69.40%` 与 `0.9960` 只在同一条上游 `evaluate()` 路径内可相减。residual 那个数
+  是官方脚本的训练内周期评测，不是独立后验评测；`evaluate()` 用 `eval_envs.reset()` 且不 seed，所以
+  两行都不是 held-out 泛化，没有冻结 test state bank。同一 frozen base 在本地串行 evaluator
+  （`contiguous_disjoint_v1`）下为 `161/200`（80.50%），属于本地诊断，不与上游数字混列或相减。
+  S1 的结果不替代 R0：R0 要求 M2-R 的 state Flow base、冻结 state bank 与 Zero/Random Residual 对照。
 - 计划仍放在 [`plans/`](plans/README.md)，实际结果仍放在 [`reports/`](reports/README.md)；数据、checkpoint、视频、Rerun recording 和日志等生成物不提交到 Git。
 
 项目代码和文档使用 [Apache License 2.0](LICENSE)；第三方软件和数据集说明见

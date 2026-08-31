@@ -1591,3 +1591,80 @@ Use one section per run. Record incomplete or failed runs too.
   不收录本指标。本条用于说明「`FW-V` 的视频分支确实学到了域内动力学」这一观察，以及说明为什么
   `FW-V − FW-FZ` 的视频差值不能当作 video co-training 的机制证据。引用时必须带上工作点偏离与
   分布内两条边界。
+- **后续修正（2026-08-27）**：本条推测的四个候选偏离，已由 2026-08-27 的跨分辨率对照定量隔离，
+  结论是**只有分辨率**。`FW-FZ` 在同样本、官方代码、9 帧下把分辨率换成 `1248x704` 即得 15.960 dB，
+  可见它对 LIBERO 内容并非无能；「学到了域内动力学」这一读法也随之收紧——在正常分辨率下 `FW-FZ`
+  按 LPIPS 与目视反而更好。引用本条数字时请一并读 2026-08-27 那条。
+
+## 2026-08-27 — W0 视频生成失败原因的四组单变量隔离：只有分辨率
+
+- Date: 2026-08-26 15:xx 至 2026-08-27 15:xx（远端生成与打分，四组 + 两个补充格）
+- Task suite: 两个数据源。LIBERO：W0-Video-40 的冻结选样（四 suite 各 10 task，33 帧窗口 stride 4
+  取 9 帧，manifest sha256 `a6676f659cc7bc12…`）。自然图像：VBench-I2V mini-21（7 subject +
+  7 background + 7 camera_motion，21 张互不重复的条件图）
+- Dataset size: LIBERO 40 条（`1248x704` 那格为 mini-21 子集 21 条）；VBench 21 条。每格两个变体
+- Observation keys: LIBERO 为 front + wrist 各 `224x224` 横向拼接 `448x224`，单相机格为单个 front
+  `224x224`；VBench 为其 `16-9` 裁切图，按协议尺寸 `_center_crop_resize`
+- Action space / horizon: 不适用（`action_conditioned: false`）
+- Control frequency: 不适用（离线生成；官方档位输出 fps 24，FastWAM 档位 fps 16）
+- Train loss / Open-loop action error: 不适用
+- Closed-loop success rate: 不适用（闭环见 2026-08-23 与 README 的 W0 表）
+- Latency: 官方 `1248x704` / 81 帧 / 50 步，H20 单卡每条约 350 s（`generate_seconds` 474→430 s
+  含一次 32.6 GB 模型加载；`--no-offload-model` 省 9.3%）。DiT 占阶段时间 90%（313 s / 100 次
+  前向），自注意力 49.8 ms/次 × 30 层 × 100 = 149 s，即约占总时间一半，已达 H20 BF16 峰值的 60%
+- Failure cases: `FW-FZ` 在 `448x224` 上 40/40 失败（PSNR 7.772–10.088 per-suite，40 条无一
+  超过 14.13），失败形态为饱和彩噪且每一帧都最接近条件帧 `gt[0]`（原地劣化，未沿时间推进）。
+  `FW-V` 在 81 帧下 21/21 塌陷为平坦场（`ret` 0.14–0.37，亮部占比逐条 0.0000）
+- Conclusion: 四组各只动一个变量，两个失败原因被分别隔离：
+
+  | 组 | 数据 | 代码 | 尺寸 / 帧 | `FW-FZ` | `FW-V` |
+  | --- | --- | --- | --- | --- | --- |
+  | A | VBench 21 | 官方 | `1248x704` / 81 | 正常 19/21 | 塌陷 21/21 |
+  | B | LIBERO 40 | 官方 | `448x224` / 9 | 9.243 dB | 22.822 dB |
+  | C | LIBERO 40 | FastWAM | `448x224` / 9 | 9.963 dB | 24.705 dB |
+  | D | VBench 21 | 官方 | `448x224` / 81 | 噪声爆炸 17/21 | 塌陷 21/21 |
+
+  **`FW-FZ` 只栽在分辨率上**：A→D 只改分辨率，从 19/21 正常变 17/21 彩噪；LIBERO 侧同向，
+  同样本同代码同 9 帧下 `448x224` 的 9.243 dB 换成 `1248x704` 即 15.960 dB / SSIM 0.6167
+  （四 suite 14.6–16.9）。**`FW-V` 只栽在帧数上**：D→B 只改帧数，从 21/21 塌陷变 22.822 dB 正常
+  ——它训练于 `448x224`/9 帧，D 的分辨率对它分布内、帧数分布外。
+
+  三个候选原因被定量排除：**代码路径**（B 对 C，`FW-FZ` 9.243 对 9.963 dB、`FW-V` 22.822 对
+  24.705 dB，量级无差异）；**LIBERO 域**（`FW-FZ` 在 `1248x704` 的 LIBERO 上 15.960 dB，并非无能）；
+  **双相机拼接布局**（单前相机 `224x224`、n=40：`FW-FZ` 9.163 dB 比合并的 9.963 还低 0.8，
+  `FW-V` 22.632 dB 仅掉 2.07 dB 仍完好——真实分布偏移只值 2 dB，无法解释 13 dB 量级崩塌。
+  此结论替代 2026-08-25 那轮 n=3 的同类诊断）。
+
+  **因此 W0-Video-40 的 `+14.742 dB` 主要是分辨率假象**，衡量的是「谁被微调到能在 `448x224`
+  上出图」，而非谁更懂 LIBERO 动力学。
+
+  **指标口径的一处失效必须记录**：`1248x704` 的 LIBERO 上 PSNR/SSIM 判 `FW-V` 略高
+  （16.485 / 0.6233 对 15.960 / 0.6167），而 LPIPS（0.3486 对 0.4892）、后续帧对比度保持
+  `ret`（1.01 对 0.77）与目视都判 `FW-FZ` 明显更好。原因是 `FW-V` 保住大面积低频布局只抹掉小物体
+  （MSE 代价小），`FW-FZ` 清晰但位错（MSE 代价大）。此处以 LPIPS 与目视为准，不引用 PSNR/SSIM。
+
+  **VBench 九维的可用性**：`1248x704` 下六个连续维度全部偏向 `FW-FZ`（差 0.13–0.43，最大
+  `subject_consistency` 0.9493 对 0.5215）；`dynamic_degree`、`camera_motion`、`motion_smoothness`
+  三个偏向 `FW-V` 的维度是伪信号——`FW-V` 实测帧间变化更小（6.25 对 9.27）却在 `dynamic_degree`
+  拿满分 1.0000 而画面是平坦场，光流在无纹理溶解场上虚高；后两者为 n=7 二元判定与模糊天然平滑。
+  21 条的构成是 7+7+7，六个维度 n=7、两个 n=14。**未跑 vbench-full**：`ret` 分布零重叠
+  （0.95–1.25 对 0.14–0.37），n 从 21 增到 1118 不改变方向，全量约 21 h 的成本不换取新信息。
+
+  协议修正两处（影响 2026-08-26 之前那轮，故其九维结果作废）：官方尺寸应为 `1248x704` 而非
+  `1280x720`（`WanTI2V.generate` 不把 `size` 传给 `i2v`，输出由 `best_output_size(图像比例,
+  max_area)` 决定；`1280x720` 会生成 `1280x704` 再被上采）；`fps` 应为 24 而非 16。唯一保留的
+  偏离是 `frame_num` 81 而非官方 121，两条链一致，已记入 `protocol.json.official_reference`。
+  注意力 backend 两组同为 `torch-sdpa`，与二者训练时一致（FastWAM 的 `flash_attention` 内部即
+  `scaled_dot_product_attention`），实测 SDPA 已在用 FlashAttention-2 kernel（`auto` 与 `FLASH`
+  同为 49.8 ms），故未安装 `flash_attn`。
+- Result artifacts:
+  `outputs/literature/w0_fastwam/video_generation/vbench/{native,native-fastwam-point}/{fw_fz,fw_v}/metrics.json`（A、D）、
+  `outputs/literature/w0_fastwam/video_generation/libero_wan/fastwam-resolution-only/both/all40/{fw_fz,fw_v}/metrics.json`（B）、
+  `outputs/literature/w0_fastwam/video_generation/libero_wan/wan22-official/both/mini21/{fw_fz,fw_v}/metrics.json`（LIBERO `1248x704`）、
+  `outputs/literature/w0_fastwam/video_generation/w0_video_40/{fw_fz,fw_v,fw_fz_front,fw_v_front}/metrics.json`（C 与单相机）；
+  已提交文档图 `docs/assets/w0_video_generation/{libero_resolution_quad,libero_front_only,vbench_resolution_quad}.jpg`
+- Modes: Offline / paired（LIBERO 侧样本窗口取自训练 demonstration，属分布内拟合，不是 held-out）
+- 记录定位: **后验描述，不作为 W0 的主结论**，README 的 W0 闭环表不收录本指标。本条取代
+  2026-08-25 两条对失败原因的推测部分；那两条的数字仍然有效，但「`FW-V` 学到了域内动力学」
+  这一读法已被本条收紧。可支持的表述是：`FW-FZ` 只在其预训练分辨率附近可用，`FW-V` 只在其微调
+  帧长下可用，两者都不能写成「无条件保持」或「无条件丧失」。

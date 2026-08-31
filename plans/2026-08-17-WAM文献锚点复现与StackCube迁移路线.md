@@ -2,13 +2,14 @@
 
 ## 状态
 
-- 状态：`todo`
+- 状态：`dropped`
 - 范围：用 Fast-WAM 和 Light-WAM 的官方 LIBERO paper/code/checkpoint/eval 先建立
   WAM 文献锚点，再把已复现的方法原则迁移到 StackCube tiny Flow。
 - 当前只解锁：W0 Fast-WAM LIBERO reproduction/mechanism anchor。
 - 不包含：Mini-WAM、Residual RL、W4 imagination RL、RoboTwin/真机正式复现或
   未经 W2 development 冻结的 400-state StackCube formal test。
-- 最后更新：2026-08-17
+- 最后更新：2026-08-28；研究顺序已改为 Policy Decorator ManiSkill 复现 -> Light-WAM
+  RoboTwin residual RL -> RLinf RoboTwin，旧 LIBERO/StackCube 迁移母路线不再执行。
 
 ## 目标
 

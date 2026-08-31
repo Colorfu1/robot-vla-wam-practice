@@ -65,14 +65,16 @@
 | [2026-08-06 Mini-WAM与残差RL三阶段实验计划](2026-08-06-Mini-WAM与残差RL三阶段实验计划.md) | `dropped` | 已由 2026-08-11 完整母计划取代，不再执行 |
 | [2026-08-06 M0接通ManiSkill端到端探针](2026-08-06-M0接通ManiSkill端到端探针.md) | `done` | PickCube-v1 端到端探针已完成；结果与后续路由见 `reports/` |
 | [2026-08-10 对齐论文的PickCube四维基线](2026-08-10-对齐论文的PickCube四维基线.md) | `done` | motionplanning + 4D + CPU + horizon 100 的论文参照已完成；结果见 `reports/` |
-| [2026-08-11 WAM 与 Residual-RL 完整实验总计划](2026-08-11-Mini-WAM与Residual-RL-完整实验总计划.md) | `in-progress` | WAM 部分已转向 Fast-WAM -> Light-WAM -> StackCube 文献锚点路线；Residual 线保持独立 |
+| [2026-08-11 WAM 与 Residual-RL 完整实验总计划](2026-08-11-Mini-WAM与Residual-RL-完整实验总计划.md) | `dropped` | 已由 2026-08-28 Residual RL -> Light-WAM -> RLinf 三阶段计划替代 |
 | [2026-08-11 M1三任务数据与控制协议预检](2026-08-11-M1三任务数据与控制协议预检.md) | `dropped` | 三任务同栈路线终止；StackCube 由新 M1-W 接替，Peg/Plug 不进入 MS3 正式数据线 |
 | [2026-08-11 PegInsertionSide M1 继续诊断](2026-08-11-PegInsertionSide-M1-继续诊断计划.md) | `done` | P1 exact replay、P2 controller contract、P3 精密接触分叉诊断完成，作为分线证据保留 |
 | [2026-08-12 M1 WAM 数据与控制协议预检](2026-08-12-M1-WAM数据与控制协议预检.md) | `done` | StackCube baseline/repair/final live RGB、D_core、LeRobot、state banks 与 frozen protocol 全部通过 |
 | [2026-08-13 M1-R PolicyDecorator MS2/v2 协议预检](2026-08-13-M1-R-PolicyDecorator-MS2v2协议预检.md) | `blocked` | 用户暂缓；待切换 `maniskill2-pidec` 环境后继续 full replay、D_core 与 state banks |
 | [2026-08-13 M2-W StackCube Action-only Flow 基线与 Headroom](2026-08-13-M2-W-StackCube-Action-only-Flow基线与Headroom.md) | `dropped` | 原 7D 正式路线由实际跑通的 native-4D 100k Action-only Flow 取代；结果见 ManiSkill M2 guide |
-| [2026-08-17 WAM 文献锚点复现与 StackCube 迁移路线](2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) | `todo` | Fast-WAM W0 -> Light-WAM W1 -> StackCube aligned W2 -> one-shot W3 |
+| [2026-08-17 WAM 文献锚点复现与 StackCube 迁移路线](2026-08-17-WAM文献锚点复现与StackCube迁移路线.md) | `dropped` | 旧 LIBERO/StackCube 母路线由 2026-08-28 三阶段计划替代 |
 | [2026-08-17 W0 Fast-WAM LIBERO 复现与机制锚点](2026-08-17-W0-Fast-WAM-LIBERO复现与机制锚点.md) | `in-progress` | 官方 checkpoint eval + `lambda_video=1/0` 等预算 causal pair + LeRobot integration |
 | [2026-08-24 W0 Wan视频生成能力保持性快速验证](2026-08-24-W0-Wan视频生成能力保持性快速验证.md) | `in-progress` | VBench-I2V-mini-21 通用生成指标 + W0-Video-40 命令条件生成对比 |
+| [2026-08-27 RoboTwin本机渲染与闭环吞吐探针](2026-08-27-RoboTwin本机渲染与闭环吞吐探针.md) | `done` | 本机完成三相机取图与 24-action 环境吞吐探针；正式机器仍需重测 |
+| [2026-08-28 Residual RL 到 Light-WAM 与 RLinf 三阶段验证](2026-08-28-Residual-RL到Light-WAM与RLinf三阶段验证.md) | `todo` | ManiSkill Policy Decorator 对照 -> Light-WAM residual RL -> RLinf RoboTwin GRPO/PPO |
 | [2026-08-17 StackCube WAM 模块接入与 W0-W3 因果验证](2026-08-17-StackCube-WAM模块接入与W0-W3因果验证.md) | `dropped` | StackCube-first 自设计 WAM 路线已被文献锚点路线取代 |
 | [2026-08-17 StackCube W0 Action-Conditioning 机制验证](2026-08-17-StackCube-W0-Action-Conditioning机制验证.md) | `dropped` | 旧 latent D1/N0 intervention 路线不再作为 W0 |

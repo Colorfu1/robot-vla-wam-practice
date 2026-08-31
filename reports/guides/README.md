@@ -11,6 +11,7 @@
 - [ManiSkill（M0 已完成，M1-W StackCube GPU 协议已冻结，M2-W 已实现）](maniskill/README.md)：PickCube-v1 的 RL 7D/GPU 诊断线、
   4D/CPU 论文参照，以及 StackCube 的 GPU 数据、state-bank、Action-only Flow、闭环 rollout 和 Rerun 可视化入口
 - [文献模型复现](literature/README.md)：W0 Fast-WAM LIBERO artifact、LeRobot integration 与 `lambda_video=1/0` 因果锚点
+- [RL 三阶段验证](rl/README.md)：Policy Decorator / ManiSkill2、Light-WAM residual SAC 与 RLinf GRPO/PPO
 
 每份指南均应提供可直接复制的命令。实际结果统一登记到
 [实验运行记录](../experiment_log.md)。

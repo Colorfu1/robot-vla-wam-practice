@@ -1,0 +1,93 @@
+schema_version: 1
+protocol_id: three_stage_residual_lightwam_rlinf_v1
+status: todo
+revisions:
+  policy_decorator_commit: 92ba9ba442587ae5989c286355ace2200a0537fb
+  lightwam_commit: b2785f66e13fd9987e94ae1ecc1c441d5059c9ae
+  wan_revision: 37ec512624d61f7aa208f7ea8140a131f93afc9a
+  robotwin_data_revision: aac262c35d02cc71b2f6ef670bd65fd9f2bb2547
+  lightwam_cache_revision: 995bd27d4848cf5b0afefb4d33657ae127205076
+  lightwam_checkpoint_revision: 7cc8593fb95423a9cfbb93f82c95c2fa7d5357bd
+  rlinf_commit: 7ad72d1160858971293fec4d2cca232642320574
+  rlinf_robotwin_commit: 0008ae6800df9f75fc8de7098bacb01735fd8fd2
+stages:
+  s1:
+    execution_mode: smoke_only
+    formal_residual_training: false
+    conda_environment: maniskill2-pidec
+    formal_env_id: PegInsertionSide-v2
+    dataset_env_id: PegInsertionSide-v0
+    dummy_env_id: PegInsertionSide-v0
+    registration_module: envs.maniskill_fixed
+    control_mode: pd_ee_delta_pose
+    action_dim: 7
+    observation_dim: 50
+    observation_mode: state
+    render_mode: rgb_array
+    max_episode_steps: 200
+    control_frequency_hz: 20
+    temporal:
+      n_obs_steps: 2
+      prediction_horizon: 16
+      decision_steps: 4
+      execution_steps: 4
+    train:
+      algorithm: residual_sac
+      formal_training: false
+      total_timesteps: 4000000
+      num_envs: 16
+      # Policy Decorator paper curves average ten independent training seeds.
+      seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+      smoke_steps: 4
+  s2:
+    train_environment: lightwam
+    eval_environment: lightwam-robotwin-eval
+    task: move_stapler_pad
+    action_dim: 14
+    action_representation: physical_qpos_target
+    action_horizon: 4
+    residual_shape: [4, 12]
+    gripper_channels: 2
+    train_low_level_actions: 1000000
+    seeds: [1, 2, 3]
+    formal_gpu_count: 4
+    splits:
+      train_seed_family: 0
+      development_seed: 41
+      test_seed: 42
+  s3:
+    task: place_empty_cup
+    task_config: demo_randomized
+    action_dim: 14
+    action_horizon: 25
+    observation: head_rgb_224_center_crop
+    max_episode_steps: 200
+    fixed_eval_envs: 128
+    formal_gpu_count: 8
+    algorithms: [sft, grpo, ppo]
+residual_contract:
+  action_std_source: datasets/raw/lightwam/robotwin2.0-fastwam/dataset_stats.json
+  action_std_key: action.std
+  arm_channels: 12
+  gripper_channels: 2
+  scale: 0.1
+  q_min_source: simulator_joint_limits
+  q_max_source: simulator_joint_limits
+  gripper_policy: base_passthrough
+  actor_input: frozen_adapted_feature_plus_normalized_qpos
+  critic_input: observation_plus_final_physical_qpos_target
+  gamma: 0.97
+  utd_ratio: 0.25
+  batch_size: 1024
+  actor_learning_rate: 0.0001
+  critic_learning_rate: 0.0001
+  tau: 0.01
+  progressive_exploration_actions: 30000
+splits:
+  train: [train_seed_family_0]
+  development: [seed_41]
+  test: [seed_42]
+dummy_smoke:
+  downloads_data_or_model: false
+  max_gpu_count: 1
+  formal_results: false

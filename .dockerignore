@@ -22,3 +22,7 @@
 !docker/training/nccl_probe.py
 !docker/training/nvidia_icd.json
 !docker/training/10_nvidia.json
+!docker/training/Dockerfile.rl-three-stage
+!docker/training/verify_rl_three_stage_env.py
+!docker/training/rl-three-stage/
+!docker/training/rl-three-stage/*

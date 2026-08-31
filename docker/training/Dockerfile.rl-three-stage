@@ -1,0 +1,209 @@
+# Keep the build base immutable: the output is published as practice:latest, so using that
+# moving tag here would make a subsequent rebuild recursively use the already-expanded image.
+ARG BASE_IMAGE=test-lab-instance-cn-beijing.cr.volces.com/lidar-wwd/practice@sha256:09bba81cdc20fbb9971e4c2bd2d8fa9a4b48dea55a806c272a684aef98df730f
+
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+
+ARG LIGHTWAM_COMMIT="b2785f66e13fd9987e94ae1ecc1c441d5059c9ae"
+ARG LIGHTWAM_ROBOTWIN_ENV_URL="https://raw.githubusercontent.com/L1ziang/Light-WAM/${LIGHTWAM_COMMIT}/scripts/robotwin_env.full.yml"
+ARG LIGHTWAM_ROBOTWIN_ENV_SHA256="290b2b7999a7ead0357edf8d02c35a5e372705f0448807a934eaf4f0eaa003c0"
+ARG CUROBO_COMMIT="d64c4b005459db10c5dd867d8b30a87d5bda9bdb"
+ARG PYTORCH_CU128_INDEX="https://download.pytorch.org/whl/cu128"
+
+ENV RL_THREE_STAGE_IMAGE=1 \
+    MANISKILL2_ENV=maniskill2-pidec \
+    LIGHTWAM_ENV=lightwam \
+    LIGHTWAM_EVAL_ENV=lightwam-robotwin-eval \
+    LIGHTWAM_PEG_ENV=lightwam-peg \
+    MS2_ASSET_DIR=/opt/robot-practice/maniskill2-assets \
+    MUJOCO_GL=egl \
+    PYOPENGL_PLATFORM=egl \
+    SDL_VIDEODRIVER=dummy \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+
+LABEL io.robot-practice.rl-three-stage.lightwam-commit="${LIGHTWAM_COMMIT}" \
+      io.robot-practice.rl-three-stage.robotwin-env-sha256="${LIGHTWAM_ROBOTWIN_ENV_SHA256}" \
+      io.robot-practice.rl-three-stage.curobo-commit="${CUROBO_COMMIT}" \
+      io.robot-practice.rl-three-stage.pytorch-cu128-index="${PYTORCH_CU128_INDEX}" \
+      io.robot-practice.rl-three-stage.artifacts="environment-only"
+
+# The base image has the CUDA userspace and the W0/FastWAM environments, but it deliberately
+# omits the command-line/runtime pieces used by the three-stage guide. Docker here is only the
+# client: S3 still needs the host Docker socket and the separately maintained RLinf image.
+RUN apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        update \
+    && apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        install -y --no-install-recommends \
+        bzip2 \
+        build-essential \
+        docker.io \
+        ffmpeg \
+        git-lfs \
+        libavcodec-dev \
+        libavformat-dev \
+        libavutil-dev \
+        libegl1-mesa-dev \
+        libglfw3 \
+        libglew2.2 \
+        libswresample-dev \
+        libswscale-dev \
+        pkg-config \
+        rsync \
+        tmux \
+        xvfb \
+        xz-utils \
+        zstd \
+    && git lfs install --system \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/robot-practice/maniskill2-assets \
+    && command -v docker \
+    && command -v git-lfs \
+    && command -v rsync \
+    && command -v tmux \
+    && command -v Xvfb \
+    && docker --version
+
+# Keep the Policy Decorator environment separate from ManiSkill3 and the Light-WAM stack.
+# This is the one intentionally large dependency download: it preserves the reference
+# PyTorch 2.1.2 / CUDA 12.1 contract rather than silently reusing the newer base environment.
+COPY docker/training/rl-three-stage/policy-decorator.environment.yml \
+    /tmp/policy-decorator.environment.yml
+
+RUN set -euxo pipefail \
+    && /opt/conda/bin/conda env create --yes \
+        --file /tmp/policy-decorator.environment.yml \
+    && /opt/conda/bin/conda run --no-capture-output -n maniskill2-pidec \
+        python -m pip check \
+    && rm -f /tmp/policy-decorator.environment.yml \
+    && /opt/conda/bin/conda clean --all --yes
+
+# Add the CUDA 12.8 compiler only after the S1 layer. The base image already has the CUDA
+# runtime, while this package is needed to compile CuRobo and is independent of S1.
+RUN apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        update \
+    && apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Proxy=false \
+        -o Acquire::https::Proxy=false \
+        install -y --no-install-recommends cuda-nvcc-12-8 \
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v nvcc \
+    && nvcc --version
+
+ENV CUDA_HOME=/usr/local/cuda-12.8 \
+    CUDACXX=/usr/local/cuda-12.8/bin/nvcc
+
+# The upstream eval lock contains nvidia-curobo==0.7.8, but that release is not published on
+# public PyPI. Its build-system also asks pip's isolated build environment to resolve the
+# CUDA-suffixed Torch pin from public PyPI, where that variant is unavailable. Create the
+# pinned environment first, then build CuRobo against the already-installed Torch without build
+# isolation. The YAML itself is hash-checked before removing that one package line.
+RUN set -euxo pipefail \
+    && curl --fail --location --retry 5 --retry-all-errors \
+        --connect-timeout 20 --max-time 120 \
+        "${LIGHTWAM_ROBOTWIN_ENV_URL}" \
+        --output /tmp/lightwam-robotwin-env.yml \
+    && echo "${LIGHTWAM_ROBOTWIN_ENV_SHA256}  /tmp/lightwam-robotwin-env.yml" \
+        | sha256sum --check --strict \
+    && sed -i \
+        '/^[[:space:]]*-[[:space:]]*nvidia-curobo==0.7.8[[:space:]]*$/d' \
+        /tmp/lightwam-robotwin-env.yml \
+    && PIP_INDEX_URL=https://pypi.org/simple \
+       PIP_EXTRA_INDEX_URL="${PYTORCH_CU128_INDEX}" \
+       /opt/conda/bin/conda env create --yes \
+        --name lightwam-robotwin-eval \
+        --file /tmp/lightwam-robotwin-env.yml \
+    && rm -f /tmp/lightwam-robotwin-env.yml \
+    && /opt/conda/bin/conda clean --all --yes
+
+# Keep the expensive lock installation cached independently from the source build. This makes
+# a compiler/source failure retryable without re-resolving and redownloading the full lock.
+RUN set -euxo pipefail \
+    && TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0" \
+       /opt/conda/bin/conda run --no-capture-output -n lightwam-robotwin-eval \
+        python -m pip install --no-cache-dir --no-deps --no-build-isolation \
+        "git+https://github.com/NVlabs/curobo.git@${CUROBO_COMMIT}" \
+    && /opt/conda/bin/conda clean --all --yes
+
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0"
+
+# Training and evaluation intentionally have distinct names, but use the same fully resolved
+# Light-WAM/RoboTwin runtime. The clone reuses the already downloaded torch/cu128 stack and
+# avoids a second copy of the large binary wheels in the Docker build.
+RUN set -euxo pipefail \
+    && /opt/conda/bin/conda create --yes \
+        --name lightwam \
+        --clone lightwam-robotwin-eval \
+    && /opt/conda/bin/conda run --no-capture-output -n lightwam \
+        python -m pip install --no-cache-dir -U pip \
+    && /opt/conda/bin/conda clean --all --yes
+
+# The PegInsertionSide adapter needs ManiSkill2/SAPIEN 2 in the same Python process as
+# the official Light-WAM model. Keep the original Light-WAM and Policy Decorator envs
+# untouched: this third env reuses the official Torch/CUDA layers and only changes the
+# simulator ABI that the Peg checkout requires. ManiSkill2 0.5.3 declares NumPy<1.24,
+# so this environment intentionally does not carry the RobotWin-only CuRobo/zarr image
+# stack. The official Light-WAM model path used by the Peg adapter does not import those
+# packages; the untouched lightwam/lightwam-robotwin-eval environments retain them for
+# RobotWin evaluation. No dataset, checkpoint, or Wan model is downloaded here.
+RUN set -euxo pipefail \
+    && /opt/conda/bin/conda create --yes \
+        --name lightwam-peg \
+        --clone lightwam-robotwin-eval \
+    && /opt/conda/bin/conda run --no-capture-output -n lightwam-peg \
+        python -m pip install --no-cache-dir \
+        "numpy==1.23.5" \
+        "sapien==2.2.2" \
+        "mani-skill2==0.5.3" \
+        "gymnasium==0.29.1" \
+        "stable-baselines3==2.2.1" \
+        "gdown==6.1.0" \
+    && /opt/conda/bin/conda run --no-capture-output -n lightwam-peg \
+        python -m pip uninstall --yes \
+        nvidia-curobo \
+        numpy-quaternion \
+        scikit-image \
+        zarr \
+        warp-lang \
+    && /opt/conda/bin/conda run --no-capture-output -n lightwam-peg \
+        python -m pip check \
+    && /opt/conda/bin/conda clean --all --yes
+
+COPY docker/training/verify_rl_three_stage_env.py \
+    /usr/local/lib/robot-practice/verify_rl_three_stage_env.py
+
+# diffusers 0.27.2 still imports cached_download, which was removed from newer
+# huggingface-hub releases. Keep the S1 reference pair compatible with Torch 2.1.2.
+RUN set -euxo pipefail \
+    && /opt/conda/bin/conda run --no-capture-output -n maniskill2-pidec \
+        python -m pip install --no-cache-dir \
+        "huggingface-hub==0.25.2" \
+        "setuptools==80.9.0" \
+    && /opt/conda/bin/conda run --no-capture-output -n maniskill2-pidec \
+        python -m pip check \
+    && /opt/conda/bin/conda run --no-capture-output -n maniskill2-pidec \
+        python /usr/local/lib/robot-practice/verify_rl_three_stage_env.py --stage=s1 \
+    && /opt/conda/bin/conda run --no-capture-output -n lightwam \
+        python /usr/local/lib/robot-practice/verify_rl_three_stage_env.py --stage=s2 \
+    && /opt/conda/bin/conda run --no-capture-output -n lightwam-robotwin-eval \
+        python /usr/local/lib/robot-practice/verify_rl_three_stage_env.py --stage=s2 \
+    && /opt/conda/bin/conda run --no-capture-output -n lightwam-peg \
+        python /usr/local/lib/robot-practice/verify_rl_three_stage_env.py --stage=s2-peg
+
+WORKDIR /workspace
+CMD ["/bin/bash"]

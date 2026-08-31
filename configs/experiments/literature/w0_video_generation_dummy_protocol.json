@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "wan22-ti2v-compatible",
+  "generator": "deterministic-input-shift-dummy",
+  "sampler": "deterministic",
+  "width": 320,
+  "height": 180,
+  "frames": 16,
+  "fps": 16,
+  "steps": 1,
+  "action_conditioned": false,
+  "action": null,
+  "proprio": null,
+  "input_crop_ratio": "16-9",
+  "smoke_only": true
+}

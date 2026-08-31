@@ -14,9 +14,11 @@ for argument in "$@"; do
 Usage:
   run_w0_video_generation_eval.sh --mode=prepare-vbench ...
   run_w0_video_generation_eval.sh --mode=prepare-w0 ...
+  run_w0_video_generation_eval.sh --mode=prepare-libero-wan ...
   run_w0_video_generation_eval.sh --mode=check-protocol ...
   run_w0_video_generation_eval.sh --mode=generate ... [--num-gpus=N]
   run_w0_video_generation_eval.sh --mode=score ... [--num-gpus=N]
+  run_w0_video_generation_eval.sh --mode=smoke-vbench ... [--num-gpus=N]
   run_w0_video_generation_eval.sh --mode=compare ...
 
 Environment selection:
@@ -27,7 +29,8 @@ Environment selection:
 
 This wrapper does not clone, install, download, or modify model/data artifacts.
 All remaining arguments are forwarded to the repository-local evaluator. For W0-Video-40,
---num-gpus=N launches one isolated worker per visible GPU and merges the fixed-manifest shards.
+LIBERO-Wan, and both VBench-I2V datasets, --num-gpus=N launches one isolated worker per
+visible GPU and merges the fixed-manifest shards.
 EOF
       exit 0
       ;;
@@ -41,8 +44,8 @@ fi
 
 case "${mode}" in
   prepare-vbench) env_name="${W0_VIDEO_PREP_ENV:-robot-practice}" ;;
-  prepare-w0|generate|check-protocol) env_name="${W0_VIDEO_MODEL_ENV:-fastwam-upstream}" ;;
-  score) env_name="${W0_VIDEO_SCORE_ENV:-robot-practice}" ;;
+  prepare-w0|prepare-libero-wan|generate|check-protocol) env_name="${W0_VIDEO_MODEL_ENV:-fastwam-upstream}" ;;
+  score|smoke-vbench) env_name="${W0_VIDEO_SCORE_ENV:-robot-practice}" ;;
   compare) env_name="${W0_VIDEO_COMPARE_ENV:-robot-practice}" ;;
   *) echo "error: unsupported --mode=${mode}" >&2; exit 2 ;;
 esac

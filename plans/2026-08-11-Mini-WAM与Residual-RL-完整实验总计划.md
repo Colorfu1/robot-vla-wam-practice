@@ -1,12 +1,10 @@
 # 2026-08-11 WAM 与 Residual RL 完整实验总计划
 
 - 日期：2026-08-11
-- 状态：`in-progress`（M0/M1-W `done`；M2-W native-4D base 已完成验证；WAM 主线
-  已改为 Fast-WAM -> Light-WAM -> StackCube literature-aligned transfer，当前只执行 W0）
-- 最后更新：2026-08-17；WAM 与 Residual 保持独立依赖链。M1-R 暂待切换 `maniskill2-pidec`
-  环境后恢复。WAM 保留 ManiSkill3，R0/R1
-  改在 Policy Decorator 的 ManiSkill2 0.5.3 + repo-local `PegInsertionSide-v2` 上执行，
-  R2/R3 仍进入 LIBERO。
+- 状态：`dropped`（2026-08-28 已由
+  [Residual RL 到 Light-WAM 与 RLinf 三阶段验证](2026-08-28-Residual-RL到Light-WAM与RLinf三阶段验证.md)
+  替代；保留本文件仅作历史路线记录）
+- 最后更新：2026-08-28
 - 类型：综述性母计划；不直接作为实验执行单。
 - 作用：把阶段零、WAM 文献锚点与 StackCube 迁移、W4、Residual RL 和最终
   LIBERO 迁移整理为一份综述性母路线。
