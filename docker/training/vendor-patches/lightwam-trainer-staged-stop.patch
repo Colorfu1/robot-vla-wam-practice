@@ -1,0 +1,130 @@
+diff --git a/src/lightwam/trainer.py b/src/lightwam/trainer.py
+index 314c9ad..5c7015f 100644
+--- a/src/lightwam/trainer.py
++++ b/src/lightwam/trainer.py
+@@ -48,6 +48,10 @@ class Wan22Trainer:
+             raise ValueError(f"`warmup_ratio` must be >= 0, got {self.warmup_ratio}.")
+         max_steps = cfg.max_steps
+         self.max_steps = int(max_steps) if max_steps is not None else None
++        stop_after_steps = cfg.get("stop_after_steps", None)
++        self.stop_after_steps = (
++            int(stop_after_steps) if stop_after_steps is not None else None
++        )
+         self.log_every = int(cfg.log_every)
+         self.save_every = int(cfg.save_every)
+         self.eval_every = int(cfg.eval_every)
+@@ -204,15 +208,28 @@ class Wan22Trainer:
+         self.train_loader = self._build_loader(self.train_dataset, worker_init_fn=worker_init_fn)
+         total_train_steps = self._estimate_total_train_steps()
+         self.max_steps = total_train_steps
++        if self.stop_after_steps is None:
++            self.stop_after_steps = total_train_steps
++        if self.stop_after_steps <= 0:
++            raise ValueError(
++                f"`stop_after_steps` must be positive, got {self.stop_after_steps}."
++            )
++        if self.stop_after_steps > total_train_steps:
++            raise ValueError(
++                "`stop_after_steps` cannot exceed the scheduler training horizon: "
++                f"{self.stop_after_steps} > {total_train_steps}."
++            )
+         warmup_steps = (
+             self.warmup_steps
+             if self.warmup_steps is not None
+             else int(total_train_steps * self.warmup_ratio)
+         )
+         logger.info(
+-            "Scheduler: type=%s total_train_steps=%d warmup_steps=%d warmup_ratio=%.4f",
++            "Scheduler: type=%s total_train_steps=%d stop_after_steps=%d "
++            "warmup_steps=%d warmup_ratio=%.4f",
+             cfg.lr_scheduler_type,
+             total_train_steps,
++            self.stop_after_steps,
+             int(warmup_steps),
+             self.warmup_ratio,
+         )
+@@ -959,7 +976,7 @@ class Wan22Trainer:
+         elapsed = max(time.perf_counter() - self.run_start_time, 1e-6)
+         done_steps = max(self.global_step - self.run_start_step, 1)
+         steps_per_sec = done_steps / elapsed
+-        remaining_steps = max(self.max_steps - self.global_step, 0)
++        remaining_steps = max(self.stop_after_steps - self.global_step, 0)
+         eta_seconds = int(remaining_steps / max(steps_per_sec, 1e-9))
+         eta_h, eta_rem = divmod(eta_seconds, 3600)
+         eta_m, eta_s = divmod(eta_rem, 60)
+@@ -1420,7 +1437,18 @@ class Wan22Trainer:
+         if self.max_steps is None:
+             raise ValueError("`max_steps` must be set before entering the while-step training loop.")
+ 
+-        logger.info("Starting training with max_steps=%d.", self.max_steps)
++        logger.info(
++            "Starting training with scheduler_max_steps=%d stop_after_steps=%d.",
++            self.max_steps,
++            self.stop_after_steps,
++        )
++        if self.global_step >= self.stop_after_steps:
++            logger.info(
++                "[done] stop target already reached step=%d stop_after_steps=%d.",
++                self.global_step,
++                self.stop_after_steps,
++            )
++            return
+         data_iter = iter(self.train_loader)
+         self.run_start_step = self.global_step
+         self.run_start_time = time.perf_counter()
+@@ -1435,7 +1463,7 @@ class Wan22Trainer:
+                     self.benchmark_measure_steps,
+                 )
+ 
+-        while self.global_step < self.max_steps:
++        while self.global_step < self.stop_after_steps:
+             try:
+                 data_wait_start = self._timing_start()
+                 sample = next(data_iter)
+@@ -1518,7 +1546,7 @@ class Wan22Trainer:
+                         description = "[train] epoch=%d step=%d/%d loss=%.4f " % (
+                             self.epoch,
+                             self.global_step,
+-                            self.max_steps,
++                            self.stop_after_steps,
+                             global_loss,
+                         )
+                         if global_loss_metrics:
+@@ -1601,8 +1629,10 @@ class Wan22Trainer:
+                                 eval_payload["eval/action_l1"] = float(metrics["action_l1"])
+                             self._wandb_log(eval_payload)
+ 
++                    checkpoint_info = None
+                     if self.save_every > 0 and self.global_step % self.save_every == 0:
+                         ckpt_info = self.save_checkpoint()
++                        checkpoint_info = ckpt_info
+                         if self.accelerator.is_main_process:
+                             logger.info(
+                                 "[ckpt] step=%d weights=%s state=%s",
+@@ -1611,12 +1641,23 @@ class Wan22Trainer:
+                                 ckpt_info["state_path"],
+                             )
+ 
+-                    if self.global_step >= self.max_steps:
+-                        ckpt_info = self.save_checkpoint()
++                    if self.global_step >= self.stop_after_steps:
++                        if checkpoint_info is None:
++                            ckpt_info = self.save_checkpoint()
++                        else:
++                            ckpt_info = checkpoint_info
++                        stop_reason = (
++                            "max_steps"
++                            if self.stop_after_steps == self.max_steps
++                            else "stop_after_steps"
++                        )
+                         if self.accelerator.is_main_process:
+                             logger.info(
+-                                "[done] max_steps reached step=%d weights=%s state=%s",
++                                "[done] %s reached step=%d scheduler_max_steps=%d "
++                                "weights=%s state=%s",
++                                stop_reason,
+                                 self.global_step,
++                                self.max_steps,
+                                 ckpt_info["weights_path"],
+                                 ckpt_info["state_path"],
+                             )

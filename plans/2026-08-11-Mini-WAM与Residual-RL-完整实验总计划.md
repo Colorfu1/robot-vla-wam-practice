@@ -2,7 +2,7 @@
 
 - 日期：2026-08-11
 - 状态：`dropped`（2026-08-28 已由
-  [Residual RL 到 Light-WAM 与 RLinf 三阶段验证](2026-08-28-Residual-RL到Light-WAM与RLinf三阶段验证.md)
+  [Policy Decorator 在 ManiSkill2 的 Residual RL 复现](2026-08-28-PolicyDecorator-ManiSkill2-Residual-RL复现.md)
   替代；保留本文件仅作历史路线记录）
 - 最后更新：2026-08-28
 - 类型：综述性母计划；不直接作为实验执行单。

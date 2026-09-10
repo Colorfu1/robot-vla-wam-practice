@@ -1,9 +1,9 @@
 # Vendor patches
 
 The runtime image checks out FastWAM, LIBERO and lerobot at the commits pinned in
-`Dockerfile.w0-fastwam`. Only `fastwam-trainer-freeze-video-expert.patch` is intended to be
-applied; the other two are kept for reference and are **not** applied. Verify what the image
-actually has with:
+`Dockerfile.w0-fastwam`. `fastwam-trainer-freeze-video-expert.patch` and
+`fastwam-memory-efficient-loading.patch` are intended to be applied; the other two are kept
+for reference and are **not** applied. Verify what the image actually has with:
 
 ```bash
 docker run --rm --entrypoint bash <image> -lc \
@@ -57,12 +57,48 @@ budget check would compare against the wrong group. The manifest records
 Keep `mot_checkpoint_mixed_attn=false`: gradient checkpointing on a frozen branch warns and
 does nothing useful when neither inputs nor parameters require grad.
 
+## `fastwam-memory-efficient-loading.patch`
+
+This patch constructs the large Wan2.2 video DiT, VAE, and ActionDiT directly on the requested
+CUDA device in the requested dtype, then streams safetensors into model parameters one tensor at
+a time. It avoids the roughly 18.6 GiB fp32 CPU construction of the 5B Video DiT, the old merged
+CPU state dict, and a full GPU shard staging allocation. The optional text encoder remains on the
+legacy CPU staging path and is disabled in W0 FastWAM.
+
+The FastWAM and ActionDiT `.pt` checkpoint readers use CPU `mmap` with `weights_only=True`, so
+checkpoint storage is not eagerly paged into a second large anonymous CPU allocation. The final
+parameters are still copied into the existing target-device model, and the model/checkpoint
+format is unchanged.
+
 ## `lerobot-local-wan-loader.patch`
 
 Adds `_load_local_wan_text_encoder` and friends to
 `src/lerobot/policies/fastwam/wan/components.py`, driven by `W0_FASTWAM_SOURCE_ROOT`. The
 image loads the released policy without it — LR-REL's `1885/2000` was produced by the clean
 checkout — so it is unused.
+
+## Local training and evaluation patches
+
+`lightwam-trainer-staged-stop.patch` records the local trainer changes against
+Light-WAM commit `b2785f66e13fd9987e94ae1ecc1c441d5059c9ae`. It separates the
+absolute stopping step from the learning-rate schedule horizon and saves weights
+and full training state at the stopping step.
+
+`dppo-eval-target.patch` records the evaluation config target correction against
+DPPO commit `cc7234ad7ff39a8f32de3af903606723a16f0648`. The DPPO Dockerfile already
+performs this correction; the patch also makes the local checkout changes portable.
+
+From the practice repository root, apply only to a matching clean vendor revision:
+
+```bash
+git -C third_party/lightwam/Light-WAM apply --check ../../../docker/training/vendor-patches/lightwam-trainer-staged-stop.patch
+git -C third_party/lightwam/Light-WAM apply ../../../docker/training/vendor-patches/lightwam-trainer-staged-stop.patch
+git -C third_party/dppo/dppo apply --check ../../../docker/training/vendor-patches/dppo-eval-target.patch
+git -C third_party/dppo/dppo apply ../../../docker/training/vendor-patches/dppo-eval-target.patch
+```
+
+For an already patched checkout, `git apply --reverse --check` verifies that the
+patch is present. These commands do not download vendor sources or model assets.
 
 ## If a patch ever becomes necessary
 

@@ -11,6 +11,7 @@ matplotlib
 Pillow
 python-dotenv
 python-xlib
+rerun-sdk==0.26.2
 rich
 scikit-learn<2
 pymunk>=6.6,<7

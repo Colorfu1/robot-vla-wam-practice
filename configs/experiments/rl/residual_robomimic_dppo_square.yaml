@@ -19,30 +19,42 @@ control_freq: 20
 denoising_steps: 100
 use_ddim: true
 ddim_steps: 5
-ft_denoising_steps: 5
+# state_4000.pt is the supervised pretrain checkpoint, not a DPPO-finetuned checkpoint.
+ft_denoising_steps: 0
 
 paths:
   data_dir: ${DPPO_DATA_DIR:-datasets/raw/dppo}
   log_dir: ${DPPO_LOG_DIR:-outputs/rl_residual_robomimic_20260901/dppo_logs}
-  train_dataset: ${paths.data_dir}/robomimic/square-img/train.npz
-  normalization: ${paths.data_dir}/robomimic/square-img/normalization.npz
-  base_checkpoint: ${paths.log_dir}/robomimic-pretrain/square/square_pre_diffusion_mlp_img_ta4_td100/2024-07-30_22-27-34/checkpoint/state_4000.pt
+  anchor:
+    normalization: ${paths.data_dir}/robomimic/square-img/normalization.npz
+    base_checkpoint: ${paths.log_dir}/robomimic-pretrain/square/square_pre_diffusion_mlp_img_ta4_td100/2024-07-30_22-27-34/checkpoint/state_4000.pt
 
 env:
   n_envs: 50
   max_episode_steps: 400
-  reward_shaping: true
+  reward_shaping: false
   use_image_obs: true
 
 train:
   seeds: [1, 2, 3]
   n_train_itr: 301
   n_steps: 400
-  gamma: 0.99
+  gamma: 0.999
+  gae_lambda: 0.95
+  update_epochs: 4
+  batch_size: 512
+  clip_coef: 0.20
+  value_clip_coef: 0.20
+  vf_coef: 0.50
+  ent_coef: 0.0
+  target_kl: 0.03
+  critic_warmup_iterations: 2
   actor_lr: 0.0001
   critic_lr: 0.001
-  residual_scale: 1.0
-  residual_bound: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5, 1.0]
+  initial_log_std: -1.0
+  image_feature_hw: 12
+  # Normalized policy space, not robosuite controller units.
+  residual_bound: [0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
   grad_clip: 1.0
 
 evaluation:

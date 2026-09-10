@@ -13,7 +13,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "${script_dir}/../../.." && pwd -P)"
 reference_root="${repo_root}/datasets/raw/policy_decorator/reference_repo"
 expected_policy_decorator_commit="92ba9ba442587ae5989c286355ace2200a0537fb"
-expected_image="${RL_THREE_STAGE_IMAGE:-test-lab-instance-cn-beijing.cr.volces.com/lidar-wwd/practice:latest}"
+expected_image="${RL_THREE_STAGE_IMAGE:-practice:latest}"
 
 failures=0
 warn() {
@@ -80,10 +80,11 @@ if env_exists robot-practice; then
   if conda run --no-capture-output -n robot-practice python -c '
 import importlib.metadata as metadata
 import importlib.util
+import shutil
 import sys
 
 print("python:", sys.executable)
-for name in ("torch", "mani-skill", "gymnasium", "stable-baselines3", "diffusers"):
+for name in ("torch", "mani-skill", "gymnasium", "stable-baselines3", "diffusers", "rerun-sdk"):
     try:
         print(name + ":", metadata.version(name))
     except metadata.PackageNotFoundError:
@@ -98,6 +99,8 @@ try:
         print("gpu0:", torch.cuda.get_device_name(0))
 except Exception as exc:
     print("torch_error:", type(exc).__name__, str(exc))
+print("rerun_cli:", shutil.which("rerun") or "MISSING")
+print("ffmpeg:", shutil.which("ffmpeg") or "MISSING")
 '; then
     true
   else
@@ -206,57 +209,40 @@ else
   warn "skipping dummy smoke because PegInsertionSide-v2 registration did not pass"
 fi
 
-echo "== Light-WAM Peg environment probe =="
-s2_peg_env_ready=0
-if env_exists lightwam-peg; then
-  if conda run --no-capture-output -n lightwam-peg python \
-      docker/training/verify_rl_three_stage_env.py --stage=s2-peg; then
-    s2_peg_env_ready=1
-  else
-    fail "lightwam-peg package/runtime probe failed"
-  fi
-else
-  fail "lightwam-peg conda environment is missing"
-fi
-
-echo "== Light-WAM Peg environment registration probe =="
-peg_registration_ready=0
-if [[ "${s2_peg_env_ready}" == 1 && -f "${reference_root}/envs/maniskill_fixed.py" ]]; then
+echo "== one-episode S1 Rerun visualization smoke =="
+if [[ "${registration_ready}" == 1 && "${s1_env_ready}" == 1 ]] && env_exists robot-practice; then
+  visualization_smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/s1-visualization-probe.XXXXXX")"
+  echo "visualization_smoke_root=${visualization_smoke_root}"
   if env PYTHONNOUSERSITE=1 \
-      PYTHONPATH="${repo_root}/src:${reference_root}" \
-      conda run --no-capture-output -n lightwam-peg python -c '
-import gymnasium as gym
-import mani_skill2.envs
-import envs.maniskill_fixed
-
-spec = gym.spec("PegInsertionSide-v2")
-print("registered:", spec.id)
-print("max_episode_steps:", spec.max_episode_steps)
-'; then
-    peg_registration_ready=1
+      PYTHONPATH="${repo_root}/src" \
+      conda run --no-capture-output -n maniskill2-pidec \
+      python -m robot_practice.experiments.rl.policy_decorator_eval \
+      --dummy \
+      --reference-root="${reference_root}" \
+      --env-id=PegInsertionSide-v2 \
+      --arm=base \
+      --seeds=1 \
+      --episodes-per-seed=1 \
+      --act-horizon=4 \
+      --dummy-steps=1 \
+      --record-rollout-dir="${visualization_smoke_root}/raw" \
+      --record-episodes=1 \
+      --output-dir="${visualization_smoke_root}/eval" && \
+    PYTHON_BIN=/opt/conda/envs/robot-practice/bin/python \
+      bash scripts/experiments/rl/visualize_policy_decorator_peg.sh \
+      --rollout-dir="${visualization_smoke_root}/raw" \
+      --output-dir="${visualization_smoke_root}/rrd" \
+      --episode-ids=0; then
+    test -s "${visualization_smoke_root}/raw/episode_0000.npz"
+    s1_visual_rrd="$(find "${visualization_smoke_root}/rrd" -maxdepth 1 \
+      -type f -name '*.rrd' -size +0c -print -quit)"
+    test -n "${s1_visual_rrd}"
+    echo "S1_RERUN_VISUALIZATION_SMOKE=PASS"
   else
-    fail "Light-WAM Peg registration probe failed"
+    fail "one-episode S1 Rerun visualization smoke failed"
   fi
 else
-  warn "skipping Light-WAM Peg registration probe because lightwam-peg is unavailable"
-fi
-
-echo "== one-episode Light-WAM Peg dummy smoke =="
-if [[ "${s2_peg_env_ready}" == 1 ]]; then
-  peg_smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/lightwam-peg-probe.XXXXXX")"
-  echo "peg_smoke_root=${peg_smoke_root}"
-  if PYTHON_BIN=/opt/conda/envs/lightwam-peg/bin/python \
-      bash scripts/experiments/rl/run_lightwam_peg_residual.sh \
-      --phase=evaluate --dummy --arm=base --device=cpu \
-      --eval-seeds=1 --episodes-per-seed=1 --max-steps=4 \
-      --output-dir="${peg_smoke_root}/base"; then
-    test -s "${peg_smoke_root}/base/metrics.json"
-    echo "LIGHTWAM_PEG_DUMMY_SMOKE=PASS"
-  else
-    fail "one-episode Light-WAM Peg dummy smoke failed"
-  fi
-else
-  warn "skipping Light-WAM Peg dummy smoke because lightwam-peg is unavailable"
+  warn "skipping S1 Rerun visualization smoke because S1 or robot-practice is unavailable"
 fi
 
 if (( failures > 0 )); then

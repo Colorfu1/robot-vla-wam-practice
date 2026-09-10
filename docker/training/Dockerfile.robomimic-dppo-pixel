@@ -1,15 +1,29 @@
 # DPPO pixel downstream layer.  It never downloads datasets, normalization files,
 # or checkpoints; those are mounted/provided by the user after the image is built.
-ARG BASE_IMAGE=test-lab-instance-cn-beijing.cr.volces.com/lidar-wwd/practice:latest
+ARG BASE_IMAGE=practice:latest
 FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 USER root
 
+# Build-time-only proxy. Pass with --build-arg when the host has no transparent
+# TUN routing (e.g. TUN is off and a local HTTP proxy must be used instead).
+# These ARGs are consumed by apt/git/pip in the RUN steps below and are NOT
+# baked into the final image: the ENV block further down clears them again for
+# the runtime container.
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=localhost,127.0.0.1
+
 ARG DPPO_COMMIT=cc7234ad7ff39a8f32de3af903606723a16f0648
+ARG ROBOMIMIC_COMMIT=4690f3ecfa658e1848b2e3fcf8dc2db350f9ffb9
+ARG ROBOSUITE_COMMIT=c848ca848020d0c4ccdd10c5056bd06f2a195ba2
+# DPPO_ROOT points at the in-image clone and is absolute on purpose. The data
+# and log roots are deliberately NOT set here: the config resolves them to
+# repository-relative defaults (datasets/raw/dppo, outputs/.../dppo_logs), so
+# every command runs against the current working directory instead of a
+# hard-coded mount point. Export DPPO_DATA_DIR / DPPO_LOG_DIR only to override.
 ENV DPPO_ROOT=/opt/robot-practice/dppo \
-    DPPO_DATA_DIR=/workspace/practice/datasets/raw/dppo \
-    DPPO_LOG_DIR=/workspace/practice/outputs/rl_residual_robomimic_20260901/dppo_logs \
     MUJOCO_GL=egl \
     PYOPENGL_PLATFORM=egl \
     SDL_VIDEODRIVER=dummy \
@@ -18,35 +32,67 @@ ENV DPPO_ROOT=/opt/robot-practice/dppo \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 
 LABEL io.robot-practice.robomimic-dppo.commit="${DPPO_COMMIT}" \
+      io.robot-practice.robomimic.commit="${ROBOMIMIC_COMMIT}" \
+      io.robot-practice.robosuite.commit="${ROBOSUITE_COMMIT}" \
       io.robot-practice.robomimic-dppo.artifacts="environment-only"
 
-RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Proxy=false \
-        -o Acquire::https::Proxy=false update \
-    && apt-get -o Acquire::Retries=5 -o Acquire::http::Proxy=false \
-        -o Acquire::https::Proxy=false install -y --no-install-recommends \
+# apt/git/pip below inherit HTTP_PROXY/HTTPS_PROXY/NO_PROXY from the ARGs above
+# when --build-arg is supplied; otherwise they are empty and requests go out
+# untouched (e.g. under a transparent TUN).
+
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         git ca-certificates libegl1 libgl1 libglfw3 libglew2.2 patchelf \
     && rm -rf /var/lib/apt/lists/* \
     && git clone https://github.com/irom-princeton/dppo.git "${DPPO_ROOT}" \
-    && git -C "${DPPO_ROOT}" checkout --detach "${DPPO_COMMIT}"
+    && git -C "${DPPO_ROOT}" checkout --detach "${DPPO_COMMIT}" \
+    && grep -rl 'model\.diffusion\.diffusion_eval_ft' "${DPPO_ROOT}/cfg" \
+       | xargs -r sed -i 's/model\.diffusion\.diffusion_eval_ft/model.diffusion.diffusion_eval/g' \
+    && ! grep -rq 'diffusion_eval_ft' "${DPPO_ROOT}/cfg"
 
-# Keep DPPO isolated from robot-practice/lightwam while reusing the base image's
-# already-installed CUDA/Torch stack. d4rl is intentionally omitted: it is not
-# needed for robomimic and pulls the legacy mujoco-py stack.
-RUN /opt/conda/bin/conda create --yes --name dppo --clone lightwam \
-    && /opt/conda/bin/conda install --yes --name dppo pip=26.2.1 \
+# Upstream commit cc7234a renamed model/diffusion/diffusion_eval_ft.py to
+# diffusion_eval.py (and DiffusionEvalFT to DiffusionEval, see upstream commit
+# fc42865) but never updated the eval configs' `_target_` paths, so every
+# stock eval config still points at the pre-rename module and fails with
+# "Error locating target 'model.diffusion.diffusion_eval_ft.DiffusionEval'".
+# The sed above fixes all 26 affected cfg/**/eval_*.yaml files in place.
+
+# robomimic declares egl_probe as an install requirement, but that package's
+# CMake helper predates policies the current toolchain enforces (fails with
+# "Compatibility with CMake < 3.5 has been removed") and is not needed by this
+# training path. Use the repository's minimal stub instead of building it.
+COPY docker/training/egl_probe_stub /tmp/egl_probe_stub
+
+# Build DPPO in a fresh environment. Do not clone or import packages from any
+# policy-specific environment in the base image. d4rl is intentionally omitted.
+# The base image's global .condarc points "defaults" at repo.anaconda.com, which
+# this network's DNS resolves to 0.0.0.0 (sinkholed). Use the Tsinghua mirror
+# for this one conda solve instead of touching the global .condarc; pip installs
+# below are unaffected since they go straight to PyPI/download.pytorch.org.
+RUN /opt/conda/bin/conda create --yes --name dppo \
+        -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main \
+        -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r \
+        --override-channels \
+        python=3.10 pip=24.0 \
     && /opt/conda/bin/conda run --no-capture-output -n dppo \
        python -m pip install --no-cache-dir \
-       av==12.3.0 einops==0.8.0 gdown==5.2.0 gym==0.22.0 \
+       --index-url https://download.pytorch.org/whl/cu121 \
+       torch==2.4.0 torchvision==0.19.0 \
+    && /opt/conda/bin/conda run --no-capture-output -n dppo \
+       python -m pip install --no-cache-dir \
+       numpy==1.24.4 av==12.3.0 einops==0.8.0 gdown==5.2.0 gym==0.22.0 \
        hydra-core==1.3.2 imageio==2.35.1 matplotlib==3.7.5 \
        omegaconf==2.3.0 pretty_errors==1.2.25 tqdm==4.66.5 \
-       wandb==0.17.7 cython\<3 h5py opencv-python-headless \
+       wandb==0.17.7 cython\<3 h5py opencv-python-headless==4.10.0.84 \
        mujoco==2.3.7 termcolor==2.4.0 numba pynput tensorboard tensorboardX \
+       psutil imageio-ffmpeg scipy==1.10.1 Pillow==10.4.0 \
        transformers==4.41.2 diffusers==0.11.1 huggingface_hub==0.23.4 \
        gym_notices \
     && /opt/conda/bin/conda run --no-capture-output -n dppo \
        python -m pip install --no-cache-dir --no-deps \
-       "robomimic @ git+https://github.com/ARISE-Initiative/robomimic.git" \
-       "robosuite @ git+https://github.com/ARISE-Initiative/robosuite.git@v1.4.1" \
+       "robomimic @ git+https://github.com/ARISE-Initiative/robomimic.git@${ROBOMIMIC_COMMIT}" \
+       "robosuite @ git+https://github.com/ARISE-Initiative/robosuite.git@${ROBOSUITE_COMMIT}" \
+       /tmp/egl_probe_stub \
     && /opt/conda/bin/conda run --no-capture-output -n dppo \
        python -m pip install --no-cache-dir --no-deps -e "${DPPO_ROOT}" \
     && /opt/conda/bin/conda clean --all --yes
@@ -58,5 +104,19 @@ RUN /opt/conda/bin/conda run --no-capture-output -n dppo \
       python /usr/local/lib/robot-practice/verify_robomimic_dppo_env.py --source="${DPPO_ROOT}" \
     && chmod +x /usr/local/bin/run_residual_robomimic_dppo.sh
 
-WORKDIR /workspace/practice
+# Clear the proxy for the runtime container. Everything above this line ran
+# with the build-time proxy (if --build-arg was supplied); everything after
+# is the final image, and its containers should not inherit that proxy.
+ENV HTTP_PROXY="" \
+    HTTPS_PROXY="" \
+    ALL_PROXY="" \
+    http_proxy="" \
+    https_proxy="" \
+    all_proxy="" \
+    NO_PROXY="*" \
+    no_proxy="*"
+
+# No WORKDIR: the caller decides the working directory (docker run -w, or a cd
+# inside a platform-started worker), and all documented commands are relative to
+# it. Hard-coding one here would break runs from a shared-storage checkout.
 CMD ["/bin/bash"]

@@ -12,6 +12,7 @@ time_stages=0
 residual_mode="learned"
 seed=""
 residual_root=""
+manifest=""
 
 while (($#)); do
   case "$1" in
@@ -25,6 +26,7 @@ while (($#)); do
     --residual-mode=*) residual_mode="${1#*=}" ;;
     --seed=*) seed="${1#*=}" ;;
     --residual-root=*) residual_root="${1#*=}" ;;
+    --manifest=*) manifest="${1#*=}" ;;
     -h|--help)
       sed -n '1,80p' "$0"
       exit 0
@@ -46,6 +48,7 @@ args=("--phase=$phase" "--config=$config" "--output-root=$output_root" "--residu
 [[ -n "$max_iterations" ]] && args+=("--max-iterations=$max_iterations")
 [[ -n "$seed" ]] && args+=("--seed=$seed")
 [[ -n "$residual_root" ]] && args+=("--residual-root=$residual_root")
+[[ -n "$manifest" ]] && args+=("--manifest=$manifest")
 
 if command -v conda >/dev/null 2>&1 && conda env list | awk '{print $1}' | grep -qx dppo; then
   exec conda run --no-capture-output -n dppo python -m robot_practice.experiments.rl.robomimic_dppo_residual "${args[@]}"

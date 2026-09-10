@@ -1,0 +1,281 @@
+diff --git a/src/fastwam/models/wan22/action_dit.py b/src/fastwam/models/wan22/action_dit.py
+index f6716e6..0f1dcaf 100644
+--- a/src/fastwam/models/wan22/action_dit.py
++++ b/src/fastwam/models/wan22/action_dit.py
+@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
+ from fastwam.utils.logging_config import get_logger
+ 
+ from .helpers.gradient import gradient_checkpoint_forward
++from .helpers.io import construct_module_on_device, load_checkpoint_cpu
+ from .wan_video_dit import (
+     DiTBlock,
+     sinusoidal_embedding_1d,
+@@ -119,15 +120,27 @@ class ActionDiT(nn.Module):
+     ) -> "ActionDiT":
+         if action_dit_config is None:
+             raise ValueError("`action_dit_config` is required for ActionDiT.from_pretrained().")
++
++        def construct_action_expert() -> "ActionDiT":
++            target_device = torch.device(device)
++            if target_device.type == "cuda" and torch.cuda.is_available():
++                return construct_module_on_device(
++                    cls,
++                    dict(action_dit_config),
++                    device=target_device,
++                    torch_dtype=torch_dtype,
++                )
++            return cls(**action_dit_config).to(device=target_device, dtype=torch_dtype)
++
+         if skip_dit_load_from_pretrain:
+             logger.info(
+                 "Skipping ActionDiT pretrained load (`skip_dit_load_from_pretrain=True`); "
+                 "initializing action expert randomly and expecting checkpoint override."
+             )
+-            return cls(**action_dit_config).to(device=device, dtype=torch_dtype)
++            return construct_action_expert()
+         if not action_dit_pretrained_path:
+             logger.info("No `action_dit_pretrained_path` provided, initializing ActionDiT with random weights.")
+-            return cls(**action_dit_config).to(device=device, dtype=torch_dtype)
++            return construct_action_expert()
+         from pathlib import Path
+         p = Path(action_dit_pretrained_path)
+         if not p.is_absolute():
+@@ -139,11 +152,11 @@ class ActionDiT(nn.Module):
+             )
+ 
+         action_cfg = dict(action_dit_config)
+-        action_expert = cls(**action_cfg).to(device=device, dtype=torch_dtype)
++        action_expert = construct_action_expert()
+         action_state = action_expert.state_dict()
+         expected_backbone_keys = cls.backbone_key_set(action_state.keys())
+ 
+-        payload = torch.load(action_dit_pretrained_path, map_location="cpu")
++        payload = load_checkpoint_cpu(action_dit_pretrained_path)
+         if not isinstance(payload, dict):
+             raise ValueError(
+                 f"Invalid action backbone payload type from {action_dit_pretrained_path}: {type(payload)}"
+diff --git a/src/fastwam/models/wan22/fastwam.py b/src/fastwam/models/wan22/fastwam.py
+index 106beb3..8510668 100644
+--- a/src/fastwam/models/wan22/fastwam.py
++++ b/src/fastwam/models/wan22/fastwam.py
+@@ -9,6 +9,7 @@ from fastwam.utils.logging_config import get_logger
+ 
+ from .action_dit import ActionDiT
+ from .helpers.loader import load_wan22_ti2v_5b_components
++from .helpers.io import load_checkpoint_cpu
+ from .mot import MoT
+ from .schedulers.scheduler_continuous import WanContinuousFlowMatchScheduler
+ 
+@@ -1098,7 +1099,7 @@ class FastWAM(torch.nn.Module):
+         torch.save(payload, path)
+ 
+     def load_checkpoint(self, path, optimizer=None):
+-        payload = torch.load(path, map_location="cpu")
++        payload = load_checkpoint_cpu(path)
+         if "mot" in payload:
+             self.mot.load_state_dict(payload["mot"], strict=False)
+         elif "dit" in payload:
+diff --git a/src/fastwam/models/wan22/helpers/io.py b/src/fastwam/models/wan22/helpers/io.py
+index 26d65d0..067569f 100644
+--- a/src/fastwam/models/wan22/helpers/io.py
++++ b/src/fastwam/models/wan22/helpers/io.py
+@@ -2,12 +2,15 @@ import glob
+ import hashlib
+ import os
+ from dataclasses import dataclass
+-from typing import Dict, Optional, Union
++from typing import Any, Callable, Dict, Optional, TypeVar, Union
+ 
+ import torch
+ from safetensors import safe_open
+ 
+ 
++ModuleT = TypeVar("ModuleT", bound=torch.nn.Module)
++
++
+ @dataclass
+ class ModelConfig:
+     path: Union[str, list[str], None] = None
+@@ -114,6 +117,32 @@ class ModelConfig:
+             self.path = self.path[0]
+ 
+ 
++def construct_module_on_device(
++    model_class: type[ModuleT],
++    model_kwargs: dict[str, Any],
++    *,
++    device: str | torch.device,
++    torch_dtype: torch.dtype,
++) -> ModuleT:
++    """Construct a module on its target device without an intermediate CPU fp32 copy."""
++    target_device = torch.device(device)
++    previous_dtype = torch.get_default_dtype()
++    try:
++        # ``Module(...).to(device, dtype)`` first materializes all parameters on
++        # CPU in the process-wide default dtype. For Wan2.2-TI2V-5B that hidden
++        # staging allocation alone is about 18.6 GiB. The device context also
++        # covers plain tensor attributes such as RoPE caches and VAE scales.
++        torch.set_default_dtype(torch_dtype)
++        with target_device:
++            model = model_class(**model_kwargs)
++    finally:
++        torch.set_default_dtype(previous_dtype)
++
++    # Normalize any parameters or registered buffers whose constructors used an
++    # explicit device/dtype. This is normally a no-op for the FastWAM modules.
++    return model.to(device=target_device, dtype=torch_dtype)
++
++
+ def load_state_dict(file_path, torch_dtype=None, device="cpu"):
+     if isinstance(file_path, list):
+         state_dict = {}
+@@ -125,6 +154,51 @@ def load_state_dict(file_path, torch_dtype=None, device="cpu"):
+     return load_state_dict_from_bin(file_path, torch_dtype=torch_dtype, device=device)
+ 
+ 
++def load_checkpoint_cpu(file_path):
++    """Load a trusted torch checkpoint without eagerly paging all tensor data in."""
++    try:
++        return torch.load(file_path, map_location="cpu", weights_only=True, mmap=True)
++    except (RuntimeError, TypeError):
++        # Keep compatibility with older torch versions and legacy checkpoints
++        # that do not support memory mapping.
++        pass
++    try:
++        return torch.load(file_path, map_location="cpu", weights_only=True)
++    except TypeError:
++        return torch.load(file_path, map_location="cpu")
++
++
++def load_safetensors_into_model(
++    model: torch.nn.Module,
++    file_path,
++    *,
++    device: str | torch.device,
++    torch_dtype: torch.dtype,
++    state_dict_converter: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]]
++    | None = None,
++) -> int:
++    """Copy one safetensors tensor at a time into an already materialized model."""
++    target_state = model.state_dict()
++    copied = 0
++    with safe_open(os.fspath(file_path), framework="pt", device=str(device)) as checkpoint:
++        for source_key in checkpoint.keys():
++            value = checkpoint.get_tensor(source_key)
++            if value.dtype != torch_dtype and (value.is_floating_point() or value.is_complex()):
++                value = value.to(dtype=torch_dtype)
++            item = {source_key: value}
++            if state_dict_converter is not None:
++                item = state_dict_converter(item)
++            with torch.no_grad():
++                for target_key, source_value in item.items():
++                    target_value = target_state.get(target_key)
++                    if target_value is None:
++                        continue
++                    target_value.copy_(source_value)
++                    copied += 1
++            del item, value
++    return copied
++
++
+ def load_state_dict_from_safetensors(file_path, torch_dtype=None, device="cpu"):
+     state_dict = {}
+     with safe_open(file_path, framework="pt", device=str(device)) as f:
+diff --git a/src/fastwam/models/wan22/helpers/loader.py b/src/fastwam/models/wan22/helpers/loader.py
+index 99d92ff..27176d5 100644
+--- a/src/fastwam/models/wan22/helpers/loader.py
++++ b/src/fastwam/models/wan22/helpers/loader.py
+@@ -5,7 +5,13 @@ from typing import Any
+ import torch
+ import time
+ 
+-from .io import ModelConfig, hash_model_file, load_state_dict
++from .io import (
++    ModelConfig,
++    construct_module_on_device,
++    hash_model_file,
++    load_safetensors_into_model,
++    load_state_dict,
++)
+ from .state_dict_converters import (
+     wan_video_vae_state_dict_converter,
+ )
+@@ -112,6 +118,64 @@ def _load_registered_model(
+         model_kwargs.update(model_kwargs_override)
+     state_dict_converter = matched_config.get("state_dict_converter")
+ 
++    # Loading every DiT shard on CPU first creates a large overlap between the
++    # fp32 model, the converted CPU state dict, and the copy being moved to the
++    # target device. Construct the model directly on the requested device and
++    # load the video DiT and VAE one shard at a time there. Keep the optional
++    # text encoder on its legacy path because FastWAM debug uses cached text.
++    target_device = torch.device(device)
++    direct_device_load = (
++        target_device.type == "cuda"
++        and torch.cuda.is_available()
++        and model_name != "wan_video_text_encoder"
++    )
++    if direct_device_load:
++        model = construct_module_on_device(
++            model_class,
++            model_kwargs,
++            device=target_device,
++            torch_dtype=torch_dtype,
++        )
++        paths = path if isinstance(path, list) else [path]
++        logger.info(
++            "Loading %s directly on %s (%d shard%s, dtype=%s).",
++            model_name,
++            target_device,
++            len(paths),
++            "" if len(paths) == 1 else "s",
++            torch_dtype,
++        )
++        for shard_index, shard_path in enumerate(paths, start=1):
++            logger.info(
++                "Loading %s shard %d/%d: %s", model_name, shard_index, len(paths), shard_path
++            )
++            if str(shard_path).endswith(".safetensors"):
++                copied = load_safetensors_into_model(
++                    model,
++                    shard_path,
++                    device=target_device,
++                    torch_dtype=torch_dtype,
++                    state_dict_converter=state_dict_converter,
++                )
++                logger.info(
++                    "Loaded %s shard %d/%d tensor-by-tensor (copied=%d).",
++                    model_name,
++                    shard_index,
++                    len(paths),
++                    copied,
++                )
++                continue
++            state_dict = load_state_dict(
++                shard_path,
++                torch_dtype=torch_dtype,
++                device=device,
++            )
++            if state_dict_converter is not None:
++                state_dict = state_dict_converter(state_dict)
++            model.load_state_dict(state_dict, strict=False)
++            del state_dict
++        return model
++
+     model = model_class(**model_kwargs)
+     state_dict = load_state_dict(path, torch_dtype=torch_dtype, device="cpu")
+     if state_dict_converter is not None:
+@@ -172,7 +236,12 @@ def load_wan22_ti2v_5b_components(
+             "Skipping pretrained video DiT load (`skip_dit_load_from_pretrain=True`); "
+             "initializing video expert randomly and expecting checkpoint override."
+         )
+-        dit: WanVideoDiT = WanVideoDiT(**validated_dit_config).to(device=device, dtype=torch_dtype)
++        dit: WanVideoDiT = construct_module_on_device(
++            WanVideoDiT,
++            validated_dit_config,
++            device=device,
++            torch_dtype=torch_dtype,
++        )
+         dit_path = SKIPPED_PRETRAIN_SENTINEL
+     else:
+         dit_model_config.download_if_necessary()

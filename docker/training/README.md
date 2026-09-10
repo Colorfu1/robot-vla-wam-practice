@@ -254,24 +254,26 @@ docker run --rm --entrypoint bash "${IMAGE_REPOSITORY}:${FIX_TAG}" -lc \
   'git -C /opt/robot-practice/w0-vendor/FastWAM status --porcelain'
 ```
 
-## Residual RL / Light-WAM / RLinf environment layer
+## Residual RL environment layer
 
 `Dockerfile.rl-three-stage` is an environment-only layer for
-`reports/guides/rl/three_stage_residual_lightwam_rlinf.md`. It is based on the immutable W0 image
+`reports/guides/rl/policy_decorator_maniskill2_residual_rl.md`. It is based on the immutable W0 image
 digest recorded in the Dockerfile (the output may be published as `practice:latest`) and adds no
 repository source, dataset, checkpoint, model weight, or Hugging Face cache. It provides:
 
 - isolated `maniskill2-pidec` with the Policy Decorator PyTorch 2.1.2 / CUDA 12.1 contract;
-- `lightwam` and `lightwam-robotwin-eval` from the pinned Light-WAM RoboTwin environment;
-- `lightwam-peg`, a combined Light-WAM + ManiSkill2/SAPIEN 2.2.2 runtime for the
-  `PegInsertionSide-v2` residual adapter;
-- the curobo v0.7.8 source build required by that environment;
 - Docker CLI, compiler/FFmpeg development libraries, `git-lfs`, `rsync`, `tmux`, and `xvfb`.
+
+The Dockerfile still provisions `lightwam`, `lightwam-robotwin-eval`, `lightwam-peg` and the
+curobo source build. Those environments are **no longer used** — the Light-WAM/RoboTwin and RLinf
+routes were dropped on 2026-09-01. The Dockerfile is intentionally left unchanged because the
+recorded base digest is the one the existing S1 results were produced with; remove those layers
+only together with a deliberate image rebuild and a new digest.
 
 Build it with an immutable tag first:
 
 ```bash
-IMAGE_REPOSITORY='test-lab-instance-cn-beijing.cr.volces.com/lidar-wwd/practice'
+IMAGE_REPOSITORY='practice'
 RL_TAG="rl-three-stage-$(date +%Y%m%d)"
 
 docker build --progress=plain \
@@ -281,10 +283,8 @@ docker build --progress=plain \
   .
 ```
 
-The S1 PyTorch/CUDA stack is intentionally downloaded during this build. The Light-WAM
-evaluation YAML is fetched at its pinned commit and hash-checked; its public PyPI
-`nvidia-curobo==0.7.8` entry is replaced with the immutable NVIDIA source commit because that
-wheel is not present on public PyPI. No data or checkpoint download happens during the build.
+The S1 PyTorch/CUDA stack is intentionally downloaded during this build. No data or checkpoint
+download happens during the build.
 
 Run a worker with the repository mounted at the path used by the guide:
 
@@ -296,12 +296,10 @@ docker run --rm -it --gpus all --shm-size 32g --network host \
   "${IMAGE_REPOSITORY}:${RL_TAG}" bash
 ```
 
-The Docker socket is needed only if the guide's S3 `docker run` commands are launched from
-inside this worker. It exposes the host daemon, but bind-mount source paths are still resolved
-by that daemon on the host; use host-visible absolute paths, or launch the S3 command on the host
-directly. NVIDIA Container Toolkit, the host's GPU count, and the separate
-`rlinf/rlinf:agentic-rlinf0.4-robotwin` image remain host/platform prerequisites. Do not tag this
-layer as `latest` or push it until the local verification and the remote GPU smoke pass.
+The Docker socket mount is a leftover from the dropped RLinf route and is not needed for the
+current guide. NVIDIA Container Toolkit and the host's GPU count remain host/platform
+prerequisites. Do not tag this layer as `latest` or push it until the local verification and the
+remote GPU smoke pass.
 
 ## Verify locally
 

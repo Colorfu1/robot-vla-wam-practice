@@ -475,6 +475,60 @@ def _sampling_seed(policy_seed: int, reset_seed: int, chunk_index: int) -> int:
     )
 
 
+def _parse_record_episode_ids(value: str | None) -> tuple[int, ...] | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        episode_ids = tuple(int(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise ValueError("--record-episode-ids must be a comma-separated integer list") from exc
+    if not episode_ids:
+        raise ValueError("--record-episode-ids must contain at least one integer")
+    if len(set(episode_ids)) != len(episode_ids):
+        raise ValueError("--record-episode-ids must not contain duplicates")
+    if any(episode_id < 0 for episode_id in episode_ids):
+        raise ValueError("--record-episode-ids must contain non-negative episode IDs")
+    return episode_ids
+
+
+def _make_rollout_recorder(
+    arguments: argparse.Namespace,
+    *,
+    metadata: dict[str, Any],
+) -> Any | None:
+    if not arguments.record_rollout_dir:
+        return None
+    if arguments.record_episodes <= 0:
+        raise ValueError("--record-episodes must be positive")
+    from .policy_decorator_peg_visualization import PolicyDecoratorPegRolloutRecorder
+
+    return PolicyDecoratorPegRolloutRecorder(
+        output_dir=arguments.record_rollout_dir,
+        max_episodes=int(arguments.record_episodes),
+        fps=float(arguments.record_fps),
+        episode_ids=_parse_record_episode_ids(arguments.record_episode_ids),
+        metadata=metadata,
+    )
+
+
+def _render_s1_frame(environment: Any) -> np.ndarray:
+    frame = np.asarray(environment.render())
+    if frame.ndim != 3 or frame.shape[-1] != 3:
+        raise RuntimeError(f"S1 RGB render contract failed: shape={frame.shape}")
+    if frame.dtype != np.uint8:
+        if not np.issubdtype(frame.dtype, np.integer):
+            raise RuntimeError(f"S1 RGB render contract requires integer pixels: {frame.dtype}")
+        frame = np.clip(frame, 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(frame)
+
+
+def _reward_scalar(value: Any) -> float:
+    array = np.asarray(value, dtype=np.float32).reshape(-1)
+    if array.size != 1 or not np.isfinite(array[0]):
+        raise RuntimeError(f"S1 reward must be one finite scalar, got {value!r}")
+    return float(array[0])
+
+
 def run_formal_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
     import torch
 
@@ -540,6 +594,23 @@ def run_formal_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
                 float(arguments.res_scale) if arguments.res_scale is not None else res_scale
             )
 
+    recorder = _make_rollout_recorder(
+        arguments,
+        metadata={
+            "requested_env_id": arguments.env_id,
+            "runtime_env_id": runtime_env_id,
+            "arm": arguments.arm,
+            "ddim_steps": int(arguments.ddim_steps),
+            "act_horizon": int(arguments.act_horizon),
+            "base_checkpoint_sha256": _file_sha256(checkpoint_path),
+            "residual_checkpoint_step": (
+                int(arguments.checkpoint_step) if arguments.arm == "residual" else None
+            ),
+            "residual_checkpoint_sha256": residual_checkpoint_hashes,
+            "residual_actor_input": residual_actor_inputs,
+            "residual_scales": residual_scales,
+        },
+    )
     started = time.perf_counter()
     written_manifest_rows: list[dict[str, Any]] = []
     episode_rows: list[dict[str, Any]] = []
@@ -559,10 +630,14 @@ def run_formal_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
                     "S1 state contract expected shape "
                     f"{(state_dim,)}, got {observation_array.shape}"
                 )
+            capture_episode = recorder is not None and recorder.should_capture(index)
+            if render_shape is None or capture_episode:
+                frame = _render_s1_frame(environment)
+            else:
+                frame = None
             if render_shape is None:
-                frame = np.asarray(environment.render())
-                if frame.ndim != 3 or frame.shape[-1] != 3:
-                    raise RuntimeError(f"S1 RGB render contract failed: shape={frame.shape}")
+                if frame is None:  # pragma: no cover - guarded above
+                    raise RuntimeError("S1 render validation did not produce a frame")
                 render_shape = list(frame.shape)
             actual_state_id = _state_id(observation_array)
             expected_state_id = input_row.get("reset_state_id")
@@ -584,6 +659,16 @@ def run_formal_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
             }
             written_manifest_rows.append(row)
             _append_jsonl(manifest_path, row)
+            if capture_episode:
+                if frame is None:  # pragma: no cover - guarded above
+                    raise RuntimeError("S1 rollout capture did not produce the reset frame")
+                recorder.start_episode(
+                    episode_id=index,
+                    reset_seed=reset_seed,
+                    state=observation_array,
+                    frame=frame,
+                    metadata=row,
+                )
             history = [observation_array.copy() for _ in range(int(base_args.obs_horizon))]
             episode_started = time.perf_counter()
             success_once = False
@@ -591,66 +676,105 @@ def run_formal_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
             executed_steps = 0
             terminated = False
             truncated = False
+            episode_return = 0.0
             while executed_steps < EPISODE_LIMIT:
                 obs_seq = np.stack(history, axis=0)[None, ...]
+                decision_step = executed_steps // max(1, int(arguments.act_horizon))
                 sampling_seed = _sampling_seed(
                     policy_seed,
                     reset_seed,
-                    executed_steps // max(1, arguments.act_horizon),
+                    decision_step,
                 )
                 torch.manual_seed(sampling_seed)
                 if torch.cuda.is_available():
                     torch.cuda.manual_seed_all(sampling_seed)
                 obs_tensor = torch.from_numpy(obs_seq).to(device)
                 with torch.no_grad():
-                    base_action_seq = base_policy.get_eval_action(obs_tensor)
+                    base_action_tensor = base_policy.get_eval_action(obs_tensor)
+                    residual_tensor = torch.zeros_like(base_action_tensor)
+                    composed_action_tensor = base_action_tensor
                     if arguments.arm == "residual":
                         actor = residual_actors[policy_seed]
                         actor_input = obs_tensor[:, -1]
                         if residual_actor_inputs[policy_seed] == "obs_base_action":
                             actor_input = torch.cat(
-                                [actor_input, base_action_seq.flatten(start_dim=1)], dim=1
+                                [actor_input, base_action_tensor.flatten(start_dim=1)], dim=1
                             )
-                        residual = actor.get_eval_action(actor_input).reshape(
+                        residual_tensor = actor.get_eval_action(actor_input).reshape(
                             -1, int(base_args.act_horizon), ACTION_DIM
                         )
-                        base_action_seq = base_action_seq + residual_scales[policy_seed] * residual
-                action_seq = base_action_seq.detach().cpu().numpy()[0]
+                        composed_action_tensor = base_action_tensor + (
+                            residual_scales[policy_seed] * residual_tensor
+                        )
+                base_action_seq = base_action_tensor.detach().cpu().numpy()[0]
+                residual_unit_seq = residual_tensor.detach().cpu().numpy()[0]
+                residual_delta_seq = (
+                    residual_scales.get(policy_seed, 0.0) * residual_unit_seq
+                )
+                composed_action_seq = composed_action_tensor.detach().cpu().numpy()[0]
                 action_seq = np.clip(
-                    action_seq,
+                    composed_action_seq,
                     np.asarray(environment.action_space.low),
                     np.asarray(environment.action_space.high),
                 )
-                for action in action_seq:
+                for action_index, action in enumerate(action_seq):
                     observation, _reward, terminated, truncated, _info = environment.step(action)
                     observation_array = np.asarray(observation, dtype=np.float32)
                     history.append(observation_array)
                     history = history[-int(base_args.obs_horizon) :]
                     executed_steps += 1
+                    reward = _reward_scalar(_reward)
+                    episode_return += reward
                     success = _success(environment)
                     if success and not success_once:
                         success_once = True
                         first_success_step = executed_steps
+                    if capture_episode:
+                        recorder.record_step(
+                            state=observation_array,
+                            frame=_render_s1_frame(environment),
+                            base_action=base_action_seq[action_index],
+                            residual_unit=residual_unit_seq[action_index],
+                            residual_delta=residual_delta_seq[action_index],
+                            composed_action=action_seq[action_index],
+                            reward=reward,
+                            success=success,
+                            success_once=success_once,
+                            terminated=terminated,
+                            truncated=truncated,
+                            decision_step=decision_step,
+                            horizon_index=action_index,
+                        )
                     if terminated or truncated or executed_steps >= EPISODE_LIMIT:
                         break
                 if terminated or truncated:
                     break
-            episode_rows.append(
-                {
-                    **row,
-                    "success": bool(success_once),
-                    "first_success_step": first_success_step,
-                    "executed_action_count": executed_steps,
-                    "policy_chunk_count": math.ceil(
+            episode = {
+                **row,
+                "success": bool(success_once),
+                "first_success_step": first_success_step,
+                "executed_action_count": executed_steps,
+                "policy_chunk_count": math.ceil(
+                    executed_steps / max(1, int(arguments.act_horizon))
+                ),
+                "terminated": bool(terminated),
+                "truncated": bool(truncated),
+                "return": episode_return,
+                "latency_s": time.perf_counter() - episode_started,
+                "arm": arguments.arm,
+                "model_kind": f"policy_decorator_{arguments.arm}",
+            }
+            episode_rows.append(episode)
+            if capture_episode:
+                recorder.finish_episode(
+                    success=success_once,
+                    first_success_step=first_success_step,
+                    return_total=episode_return,
+                    steps=executed_steps,
+                    decision_steps=math.ceil(
                         executed_steps / max(1, int(arguments.act_horizon))
                     ),
-                    "terminated": bool(terminated),
-                    "truncated": bool(truncated),
-                    "latency_s": time.perf_counter() - episode_started,
-                    "arm": arguments.arm,
-                    "model_kind": f"policy_decorator_{arguments.arm}",
-                }
-            )
+                )
             _append_jsonl(episodes_path, episode_rows[-1])
             completed = len(episode_rows)
             line = f"STATUS completed={completed} total={len(manifest_rows)}"
@@ -664,6 +788,7 @@ def run_formal_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
     finally:
         environment.close()
 
+    rollout_manifest = None if recorder is None else recorder.finalize()
     validate_manifest(written_manifest_rows, source="formal manifest")
     validate_manifest(episode_rows, source="formal episodes")
     done_line = f"DONE completed={len(episode_rows)} total={len(manifest_rows)}"
@@ -705,6 +830,15 @@ def run_formal_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
         "residual_checkpoint_sha256": residual_checkpoint_hashes,
         "residual_actor_input": residual_actor_inputs,
         "residual_scales": residual_scales,
+        "rollout_recording": (
+            None
+            if recorder is None
+            else {
+                "raw_dir": str(Path(arguments.record_rollout_dir).expanduser()),
+                "episodes": len(rollout_manifest["episodes"]),
+                "fps": float(arguments.record_fps),
+            }
+        ),
     }
     _write_json(output_dir / "metrics.json", metrics)
     _write_json(
@@ -727,6 +861,10 @@ def run_formal_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
             "residual_checkpoint_sha256": residual_checkpoint_hashes,
             "residual_actor_input": residual_actor_inputs,
             "residual_scales": residual_scales,
+            "record_rollout_dir": bool(arguments.record_rollout_dir),
+            "record_episodes": int(arguments.record_episodes),
+            "record_episode_ids": _parse_record_episode_ids(arguments.record_episode_ids),
+            "record_fps": float(arguments.record_fps),
         },
     )
     return metrics
@@ -759,10 +897,22 @@ def run_dummy_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
     total = len(seeds) * arguments.episodes_per_seed
     started = time.perf_counter()
     render_shape: list[int] | None = None
+    recorder = _make_rollout_recorder(
+        arguments,
+        metadata={
+            "requested_env_id": arguments.env_id,
+            "runtime_env_id": runtime_env_id,
+            "arm": arguments.arm,
+            "ddim_steps": int(arguments.ddim_steps),
+            "act_horizon": int(arguments.act_horizon),
+            "model_kind": "dummy_zero_policy",
+        },
+    )
     try:
         for seed_index, seed in enumerate(seeds):
             for episode_index in range(arguments.episodes_per_seed):
-                ordinal = len(episode_rows) + 1
+                episode_id = len(episode_rows)
+                ordinal = episode_id + 1
                 reset_seed = (
                     RESET_SEED_BASE
                     + 1
@@ -776,10 +926,14 @@ def run_dummy_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
                         "S1 state contract expected shape "
                         f"{(STATE_DIM,)}, got {observation_array.shape}"
                     )
+                capture_episode = recorder is not None and recorder.should_capture(episode_id)
+                if render_shape is None or capture_episode:
+                    frame = _render_s1_frame(environment)
+                else:
+                    frame = None
                 if render_shape is None:
-                    frame = np.asarray(environment.render())
-                    if frame.ndim != 3 or frame.shape[-1] != 3:
-                        raise RuntimeError(f"S1 RGB render contract failed: shape={frame.shape}")
+                    if frame is None:  # pragma: no cover - guarded above
+                        raise RuntimeError("S1 render validation did not produce a frame")
                     render_shape = list(frame.shape)
                 episode_key = f"s1-{seed}-{episode_index}"
                 manifest = {
@@ -796,22 +950,52 @@ def run_dummy_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
                 }
                 manifest_rows.append(manifest)
                 _append_jsonl(manifest_path, manifest)
+                if capture_episode:
+                    if frame is None:  # pragma: no cover - guarded above
+                        raise RuntimeError("S1 rollout capture did not produce the reset frame")
+                    recorder.start_episode(
+                        episode_id=episode_id,
+                        reset_seed=reset_seed,
+                        state=observation_array,
+                        frame=frame,
+                        metadata=manifest,
+                    )
                 episode_started = time.perf_counter()
                 success_once = False
                 first_success_step: int | None = None
                 executed_steps = 0
                 terminated = False
                 truncated = False
+                episode_return = 0.0
                 for step in range(arguments.dummy_steps):
                     # The dummy base is deliberately deterministic and neutral;
                     # the environment, controller, and observation path remain real.
                     action = np.zeros(ACTION_DIM, dtype=np.float32)
-                    _, _reward, terminated, truncated, _info = environment.step(action)
+                    observation, _reward, terminated, truncated, _info = environment.step(action)
+                    observation_array = np.asarray(observation, dtype=np.float32)
+                    reward = _reward_scalar(_reward)
+                    episode_return += reward
                     success = _success(environment)
                     if success and not success_once:
                         success_once = True
                         first_success_step = step + 1
                     executed_steps = step + 1
+                    if capture_episode:
+                        recorder.record_step(
+                            state=observation_array,
+                            frame=_render_s1_frame(environment),
+                            base_action=action,
+                            residual_unit=np.zeros(ACTION_DIM, dtype=np.float32),
+                            residual_delta=np.zeros(ACTION_DIM, dtype=np.float32),
+                            composed_action=action,
+                            reward=reward,
+                            success=success,
+                            success_once=success_once,
+                            terminated=terminated,
+                            truncated=truncated,
+                            decision_step=step // max(1, int(arguments.act_horizon)),
+                            horizon_index=step % max(1, int(arguments.act_horizon)),
+                        )
                     if terminated or truncated:
                         break
                 episode = {
@@ -822,11 +1006,22 @@ def run_dummy_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
                     "policy_chunk_count": math.ceil(executed_steps / max(1, arguments.act_horizon)),
                     "terminated": bool(terminated),
                     "truncated": bool(truncated),
+                    "return": episode_return,
                     "latency_s": time.perf_counter() - episode_started,
                     "arm": arguments.arm,
                     "model_kind": "dummy_zero_policy",
                 }
                 episode_rows.append(episode)
+                if capture_episode:
+                    recorder.finish_episode(
+                        success=success_once,
+                        first_success_step=first_success_step,
+                        return_total=episode_return,
+                        steps=executed_steps,
+                        decision_steps=math.ceil(
+                            executed_steps / max(1, int(arguments.act_horizon))
+                        ),
+                    )
                 _append_jsonl(episodes_path, episode)
                 line = f"STATUS completed={ordinal} total={total}"
                 print(line, flush=True)
@@ -839,6 +1034,7 @@ def run_dummy_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
     finally:
         environment.close()
 
+    rollout_manifest = None if recorder is None else recorder.finalize()
     validate_manifest(manifest_rows)
     done_line = f"DONE completed={total} total={total}"
     print(done_line, flush=True)
@@ -864,6 +1060,15 @@ def run_dummy_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
         "unique_reset_seeds": len({row["reset_seed"] for row in manifest_rows}),
         "reset_seed_scheme": RESET_SEED_SCHEME,
         "sampling_seed_scheme": SAMPLING_SEED_SCHEME,
+        "rollout_recording": (
+            None
+            if recorder is None
+            else {
+                "raw_dir": str(Path(arguments.record_rollout_dir).expanduser()),
+                "episodes": len(rollout_manifest["episodes"]),
+                "fps": float(arguments.record_fps),
+            }
+        ),
     }
     _write_json(output_dir / "metrics.json", metrics)
     _write_json(
@@ -879,6 +1084,10 @@ def run_dummy_evaluation(arguments: argparse.Namespace) -> dict[str, Any]:
             "act_horizon": arguments.act_horizon,
             "reset_seed_scheme": RESET_SEED_SCHEME,
             "sampling_seed_scheme": SAMPLING_SEED_SCHEME,
+            "record_rollout_dir": bool(arguments.record_rollout_dir),
+            "record_episodes": int(arguments.record_episodes),
+            "record_episode_ids": _parse_record_episode_ids(arguments.record_episode_ids),
+            "record_fps": float(arguments.record_fps),
         },
     )
     return metrics
@@ -903,6 +1112,21 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--dummy", action="store_true")
     parser.add_argument("--dummy-steps", type=int, default=4)
+    parser.add_argument(
+        "--record-rollout-dir",
+        help="write selected closed-loop episodes as dependency-free raw RGB/state bundles",
+    )
+    parser.add_argument(
+        "--record-episodes",
+        type=int,
+        default=1,
+        help="maximum number of episodes to record when --record-episode-ids is omitted",
+    )
+    parser.add_argument(
+        "--record-episode-ids",
+        help="comma-separated global 0-based episode IDs to record",
+    )
+    parser.add_argument("--record-fps", type=float, default=20.0)
     return parser
 
 

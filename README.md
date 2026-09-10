@@ -327,7 +327,7 @@ ManiSkill3 StackCube 数据。下面 6.1 是已落盘的实测结果，6.2 是�
   对新物体摆放的泛化。
 - **success 口径是上游语义**：`collect_episode_info` 取 `final_info` 里的 `info['success']`，即 episode 结束时
   的成功标志。上游只报一个数，所以本节不拆 `success_once / success_at_end`。
-- **residual 行的评测是训练内 monitor**。按 [S1 指南](reports/guides/rl/three_stage_residual_lightwam_rlinf.md)
+- **residual 行的评测是训练内 monitor**。按 [Policy Decorator 复现指南](reports/guides/rl/policy_decorator_maniskill2_residual_rl.md)
   §2.1 的规定，S1 residual 只报告官方脚本自身的周期评测和最终 checkpoint；它与 base 行同 harness，因此差值
   可用，但不等于一次独立冻结协议下的评测。
 - **本地串行 evaluator 的数字不并入本表**。同一个 frozen base 在 `policy_decorator_eval.py`

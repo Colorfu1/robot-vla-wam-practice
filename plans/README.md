@@ -75,6 +75,9 @@
 | [2026-08-17 W0 Fast-WAM LIBERO 复现与机制锚点](2026-08-17-W0-Fast-WAM-LIBERO复现与机制锚点.md) | `in-progress` | 官方 checkpoint eval + `lambda_video=1/0` 等预算 causal pair + LeRobot integration |
 | [2026-08-24 W0 Wan视频生成能力保持性快速验证](2026-08-24-W0-Wan视频生成能力保持性快速验证.md) | `in-progress` | VBench-I2V-mini-21 通用生成指标 + W0-Video-40 命令条件生成对比 |
 | [2026-08-27 RoboTwin本机渲染与闭环吞吐探针](2026-08-27-RoboTwin本机渲染与闭环吞吐探针.md) | `done` | 本机完成三相机取图与 24-action 环境吞吐探针；正式机器仍需重测 |
-| [2026-08-28 Residual RL 到 Light-WAM 与 RLinf 三阶段验证](2026-08-28-Residual-RL到Light-WAM与RLinf三阶段验证.md) | `todo` | ManiSkill Policy Decorator 对照 -> Light-WAM residual RL -> RLinf RoboTwin GRPO/PPO |
+| [2026-08-28 Policy Decorator 在 ManiSkill2 的 Residual RL 复现](2026-08-28-PolicyDecorator-ManiSkill2-Residual-RL复现.md) | `done` | `PegInsertionSide-v2` frozen base vs bounded residual SAC，同一上游 `evaluate()` 路径 |
 | [2026-08-17 StackCube WAM 模块接入与 W0-W3 因果验证](2026-08-17-StackCube-WAM模块接入与W0-W3因果验证.md) | `dropped` | StackCube-first 自设计 WAM 路线已被文献锚点路线取代 |
 | [2026-08-17 StackCube W0 Action-Conditioning 机制验证](2026-08-17-StackCube-W0-Action-Conditioning机制验证.md) | `dropped` | 旧 latent D1/N0 intervention 路线不再作为 W0 |
+| [2026-09-01 Residual RL 下游改接 robomimic + DPPO pixel](2026-09-01-Residual-RL下游改接robomimic-DPPO-pixel.md) | `in-progress` | 在 robomimic `square`（NutAssemblySquare）pixel 工作点做 frozen base vs bounded residual，含 Zero/Random 与 reward 形态对照 |
+| [2026-09-01 robomimic + DPPO pixel 接线修复](2026-09-01-robomimic-DPPO-pixel接线修复.md) | `done` | 修 reset seed / 动作量纲 / 奖励口径 / optimizer / 数据路径五处接线，并补锁定测试 |
+| [2026-09-01 Residual RL 迁移到 RLinf：冻结 VLA base 加轻量操纵](2026-09-01-Residual-RL迁移到RLinf.md) | `blocked` | 等 robomimic+DPPO 一轮出结论后，用 RLinf 公开的成对 π₀ SFT/RL checkpoint 做冻结 base + DSRL 轻量操纵对照 |

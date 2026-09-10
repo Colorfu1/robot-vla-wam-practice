@@ -1,0 +1,338 @@
+diff --git a/cfg/d3il/eval/avoid_m1/eval_diffusion_mlp.yaml b/cfg/d3il/eval/avoid_m1/eval_diffusion_mlp.yaml
+index 5a25ea0..0ddc4bf 100644
+--- a/cfg/d3il/eval/avoid_m1/eval_diffusion_mlp.yaml
++++ b/cfg/d3il/eval/avoid_m1/eval_diffusion_mlp.yaml
+@@ -48,7 +48,7 @@ env:
+       reset_within_step: False
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/furniture/eval/lamp_low/eval_diffusion_mlp.yaml b/cfg/furniture/eval/lamp_low/eval_diffusion_mlp.yaml
+index 1fb9f4d..d876a8f 100644
+--- a/cfg/furniture/eval/lamp_low/eval_diffusion_mlp.yaml
++++ b/cfg/furniture/eval/lamp_low/eval_diffusion_mlp.yaml
+@@ -42,7 +42,7 @@ env:
+     sparse_reward: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/furniture/eval/lamp_low/eval_diffusion_unet.yaml b/cfg/furniture/eval/lamp_low/eval_diffusion_unet.yaml
+index 588f628..87769be 100644
+--- a/cfg/furniture/eval/lamp_low/eval_diffusion_unet.yaml
++++ b/cfg/furniture/eval/lamp_low/eval_diffusion_unet.yaml
+@@ -42,7 +42,7 @@ env:
+     sparse_reward: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/furniture/eval/one_leg_low/eval_diffusion_mlp.yaml b/cfg/furniture/eval/one_leg_low/eval_diffusion_mlp.yaml
+index ca02796..90daefc 100644
+--- a/cfg/furniture/eval/one_leg_low/eval_diffusion_mlp.yaml
++++ b/cfg/furniture/eval/one_leg_low/eval_diffusion_mlp.yaml
+@@ -42,7 +42,7 @@ env:
+     sparse_reward: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/furniture/eval/one_leg_low/eval_diffusion_unet.yaml b/cfg/furniture/eval/one_leg_low/eval_diffusion_unet.yaml
+index 6358719..8b053c8 100644
+--- a/cfg/furniture/eval/one_leg_low/eval_diffusion_unet.yaml
++++ b/cfg/furniture/eval/one_leg_low/eval_diffusion_unet.yaml
+@@ -42,7 +42,7 @@ env:
+     sparse_reward: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/furniture/eval/round_table_low/eval_diffusion_mlp.yaml b/cfg/furniture/eval/round_table_low/eval_diffusion_mlp.yaml
+index 71999f3..54e69e1 100644
+--- a/cfg/furniture/eval/round_table_low/eval_diffusion_mlp.yaml
++++ b/cfg/furniture/eval/round_table_low/eval_diffusion_mlp.yaml
+@@ -42,7 +42,7 @@ env:
+     sparse_reward: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/furniture/eval/round_table_low/eval_diffusion_unet.yaml b/cfg/furniture/eval/round_table_low/eval_diffusion_unet.yaml
+index a51a17c..bcbcbfd 100644
+--- a/cfg/furniture/eval/round_table_low/eval_diffusion_unet.yaml
++++ b/cfg/furniture/eval/round_table_low/eval_diffusion_unet.yaml
+@@ -42,7 +42,7 @@ env:
+     sparse_reward: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/gym/eval/halfcheetah-v2/eval_diffusion_mlp.yaml b/cfg/gym/eval/halfcheetah-v2/eval_diffusion_mlp.yaml
+index 64fb556..d22708b 100644
+--- a/cfg/gym/eval/halfcheetah-v2/eval_diffusion_mlp.yaml
++++ b/cfg/gym/eval/halfcheetah-v2/eval_diffusion_mlp.yaml
+@@ -41,7 +41,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/gym/eval/hopper-v2/eval_diffusion_mlp.yaml b/cfg/gym/eval/hopper-v2/eval_diffusion_mlp.yaml
+index 473e578..4604466 100644
+--- a/cfg/gym/eval/hopper-v2/eval_diffusion_mlp.yaml
++++ b/cfg/gym/eval/hopper-v2/eval_diffusion_mlp.yaml
+@@ -41,7 +41,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/gym/eval/walker2d-v2/eval_diffusion_mlp.yaml b/cfg/gym/eval/walker2d-v2/eval_diffusion_mlp.yaml
+index 7e4456c..4f04b65 100644
+--- a/cfg/gym/eval/walker2d-v2/eval_diffusion_mlp.yaml
++++ b/cfg/gym/eval/walker2d-v2/eval_diffusion_mlp.yaml
+@@ -41,7 +41,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/can/eval_diffusion_mlp.yaml b/cfg/robomimic/eval/can/eval_diffusion_mlp.yaml
+index 6dbc371..4861d96 100644
+--- a/cfg/robomimic/eval/can/eval_diffusion_mlp.yaml
++++ b/cfg/robomimic/eval/can/eval_diffusion_mlp.yaml
+@@ -45,7 +45,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/can/eval_diffusion_mlp_img.yaml b/cfg/robomimic/eval/can/eval_diffusion_mlp_img.yaml
+index cbe82d6..873c075 100644
+--- a/cfg/robomimic/eval/can/eval_diffusion_mlp_img.yaml
++++ b/cfg/robomimic/eval/can/eval_diffusion_mlp_img.yaml
+@@ -59,7 +59,7 @@ shape_meta:
+     shape: [7]
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/can/eval_diffusion_unet.yaml b/cfg/robomimic/eval/can/eval_diffusion_unet.yaml
+index 767ca26..6c485f2 100644
+--- a/cfg/robomimic/eval/can/eval_diffusion_unet.yaml
++++ b/cfg/robomimic/eval/can/eval_diffusion_unet.yaml
+@@ -45,7 +45,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/can/eval_diffusion_unet_img.yaml b/cfg/robomimic/eval/can/eval_diffusion_unet_img.yaml
+index 81302a5..2986fd9 100644
+--- a/cfg/robomimic/eval/can/eval_diffusion_unet_img.yaml
++++ b/cfg/robomimic/eval/can/eval_diffusion_unet_img.yaml
+@@ -59,7 +59,7 @@ shape_meta:
+     shape: [7]
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/lift/eval_diffusion_mlp.yaml b/cfg/robomimic/eval/lift/eval_diffusion_mlp.yaml
+index 0258706..749adaa 100644
+--- a/cfg/robomimic/eval/lift/eval_diffusion_mlp.yaml
++++ b/cfg/robomimic/eval/lift/eval_diffusion_mlp.yaml
+@@ -45,7 +45,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/lift/eval_diffusion_mlp_img.yaml b/cfg/robomimic/eval/lift/eval_diffusion_mlp_img.yaml
+index 4558c2c..1b723c4 100644
+--- a/cfg/robomimic/eval/lift/eval_diffusion_mlp_img.yaml
++++ b/cfg/robomimic/eval/lift/eval_diffusion_mlp_img.yaml
+@@ -59,7 +59,7 @@ shape_meta:
+     shape: [7]
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/lift/eval_diffusion_unet.yaml b/cfg/robomimic/eval/lift/eval_diffusion_unet.yaml
+index 7055f5d..f998270 100644
+--- a/cfg/robomimic/eval/lift/eval_diffusion_unet.yaml
++++ b/cfg/robomimic/eval/lift/eval_diffusion_unet.yaml
+@@ -45,7 +45,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/lift/eval_diffusion_unet_img.yaml b/cfg/robomimic/eval/lift/eval_diffusion_unet_img.yaml
+index c174522..36714c2 100644
+--- a/cfg/robomimic/eval/lift/eval_diffusion_unet_img.yaml
++++ b/cfg/robomimic/eval/lift/eval_diffusion_unet_img.yaml
+@@ -59,7 +59,7 @@ shape_meta:
+     shape: [7]
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/square/eval_diffusion_mlp.yaml b/cfg/robomimic/eval/square/eval_diffusion_mlp.yaml
+index 4e77744..19c8270 100644
+--- a/cfg/robomimic/eval/square/eval_diffusion_mlp.yaml
++++ b/cfg/robomimic/eval/square/eval_diffusion_mlp.yaml
+@@ -45,7 +45,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/square/eval_diffusion_mlp_img.yaml b/cfg/robomimic/eval/square/eval_diffusion_mlp_img.yaml
+index c747abf..3784ccc 100644
+--- a/cfg/robomimic/eval/square/eval_diffusion_mlp_img.yaml
++++ b/cfg/robomimic/eval/square/eval_diffusion_mlp_img.yaml
+@@ -59,7 +59,7 @@ shape_meta:
+     shape: [7]
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/square/eval_diffusion_unet.yaml b/cfg/robomimic/eval/square/eval_diffusion_unet.yaml
+index b419f37..8dbe4c1 100644
+--- a/cfg/robomimic/eval/square/eval_diffusion_unet.yaml
++++ b/cfg/robomimic/eval/square/eval_diffusion_unet.yaml
+@@ -45,7 +45,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/square/eval_diffusion_unet_img.yaml b/cfg/robomimic/eval/square/eval_diffusion_unet_img.yaml
+index ea2c5a2..d0d7ebf 100644
+--- a/cfg/robomimic/eval/square/eval_diffusion_unet_img.yaml
++++ b/cfg/robomimic/eval/square/eval_diffusion_unet_img.yaml
+@@ -59,7 +59,7 @@ shape_meta:
+     shape: [7]
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/transport/eval_diffusion_mlp.yaml b/cfg/robomimic/eval/transport/eval_diffusion_mlp.yaml
+index c43aa7a..a541ce2 100644
+--- a/cfg/robomimic/eval/transport/eval_diffusion_mlp.yaml
++++ b/cfg/robomimic/eval/transport/eval_diffusion_mlp.yaml
+@@ -48,7 +48,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/transport/eval_diffusion_mlp_img.yaml b/cfg/robomimic/eval/transport/eval_diffusion_mlp_img.yaml
+index 2c2e13b..265a855 100644
+--- a/cfg/robomimic/eval/transport/eval_diffusion_mlp_img.yaml
++++ b/cfg/robomimic/eval/transport/eval_diffusion_mlp_img.yaml
+@@ -63,7 +63,7 @@ shape_meta:
+     shape: [14]
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/transport/eval_diffusion_unet.yaml b/cfg/robomimic/eval/transport/eval_diffusion_unet.yaml
+index 1df31aa..441c1e2 100644
+--- a/cfg/robomimic/eval/transport/eval_diffusion_unet.yaml
++++ b/cfg/robomimic/eval/transport/eval_diffusion_unet.yaml
+@@ -48,7 +48,7 @@ env:
+       reset_within_step: True
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0
+diff --git a/cfg/robomimic/eval/transport/eval_diffusion_unet_img.yaml b/cfg/robomimic/eval/transport/eval_diffusion_unet_img.yaml
+index a100f02..ca75788 100644
+--- a/cfg/robomimic/eval/transport/eval_diffusion_unet_img.yaml
++++ b/cfg/robomimic/eval/transport/eval_diffusion_unet_img.yaml
+@@ -63,7 +63,7 @@ shape_meta:
+     shape: [14]
+ 
+ model:
+-  _target_: model.diffusion.diffusion_eval_ft.DiffusionEval
++  _target_: model.diffusion.diffusion_eval.DiffusionEval
+   ft_denoising_steps: ${ft_denoising_steps}
+   predict_epsilon: True
+   denoised_clip_value: 1.0

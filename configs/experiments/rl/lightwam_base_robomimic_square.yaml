@@ -1,0 +1,114 @@
+# Standalone Light-WAM base-policy route for the existing robomimic Square NPZ.
+#
+# This file deliberately does not import the DPPO model or the residual/PPO
+# branch.  It only defines the data/observation adapter and the official
+# Light-WAM model config used by the local launcher.
+
+schema_version: 1
+experiment_id: lightwam_base_robomimic_square_v1
+
+task:
+  suite: robomimic
+  env_id: NutAssemblySquare
+  task_name: square
+
+observation:
+  camera: agentview_image
+  cameras: [agentview_image]
+  image_shape: [3, 96, 96]
+  state_dim: 9
+  note: "single agentview RGB frame plus the 9D robomimic proprio state"
+
+action:
+  dim: 7
+  horizon: 4
+  control_frequency_hz: 20
+  normalized_range: [-1.0, 1.0]
+
+data:
+  npz: datasets/raw/dppo/robomimic/square-img/train.npz
+
+# The official DPPO paper checkpoint was produced with the v0.6 Square pixel
+# recipe. Its checkpoint counter is an epoch counter, not an optimizer-step
+# counter. The released recipe therefore performs 4,000 dataset epochs with an
+# effective batch of 256.
+dppo_reference:
+  source: third_party/dppo/dppo@v0.6
+  config: cfg/robomimic/pretrain/square/pre_diffusion_mlp_img.yaml
+  epochs: 4000
+  dataset_windows: 26914
+  batch_size: 256
+  optimizer_steps_per_epoch: 106
+  optimizer_steps: 424000
+
+# Light-WAM needs five frames for four actions and therefore has one fewer
+# window per trajectory than DPPO. With the measured 8-GPU H20 configuration,
+# 32 samples/GPU gives the same effective global batch of 256. Four thousand
+# Light-WAM epochs are consequently 105 updates/epoch = 420,000 updates.
+lightwam_alignment:
+  criterion: same_epoch_count_and_effective_global_batch
+  epochs: 4000
+  dataset_windows: 26814
+  expected_num_processes: 8
+  batch_size_per_process: 32
+  gradient_accumulation_steps: 1
+  effective_global_batch_size: 256
+  optimizer_steps_per_epoch: 105
+  optimizer_steps: 420000
+
+lightwam:
+  vendor_root: third_party/lightwam/Light-WAM
+  model_config: configs/experiments/rl/lightwam_base_robomimic_square_model.yaml
+  local_model_root: pretrained/w0_fastwam/models
+  checkpoint: null
+  context: outputs/lightwam_base_robomimic_square/assets/square_context.pt
+  prompt: >-
+    A video recorded from a robot's point of view executing the following
+    instruction: insert the square nut into the square peg
+  image_size: [224, 224]
+  video_frames: 5
+  action_horizon: 4
+  inference_steps: 10
+  model_dtype: bf16
+  load_text_encoder: false
+  allow_download: false
+
+training:
+  batch_size: 32
+  num_workers: 0
+  learning_rate: 1.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.05
+  warmup_steps: null
+  weight_decay: 0.0
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  num_epochs: 4000
+  max_steps: 420000
+  # Optional absolute optimizer step at which a staged run saves full state
+  # and exits. The cosine scheduler still spans max_steps.
+  stop_after_steps: null
+  # DPPO saved every 500/4000 epochs. Match that 1/8 cadence in optimizer
+  # steps; each Light-WAM checkpoint is large, so budget storage explicitly.
+  save_every: 52500
+  eval_every: 0
+  log_every: 1
+  mixed_precision: bf16
+  seed: 42
+  smoke_benchmark:
+    warmup_steps: 10
+    measure_steps: 50
+
+# Closed-loop evaluation reuses the exact robomimic image wrapper and success
+# calculation from DPPO's Square eval config.  The Light-WAM model remains in
+# its own Conda environment; the simulator is hosted by a small process in the
+# pinned `dppo` environment so neither environment's packages are modified.
+evaluation:
+  dppo_root: null
+  dppo_python: null
+  normalization_path: datasets/raw/dppo/robomimic/square-img/normalization.npz
+  seeds: [1, 2, 3]
+  episodes_per_seed: 50
+  max_episode_steps: 400
+  success_threshold: 1.0
+  log_every: 1

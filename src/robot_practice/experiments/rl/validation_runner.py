@@ -13,7 +13,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Mapping
 
 import numpy as np
@@ -27,11 +26,9 @@ REQUIRED_IMPLEMENTATION_PATHS = (
     "scripts/experiments/rl/run_policy_decorator_paper_multigpu.sh",
     "scripts/experiments/rl/run_policy_decorator_official_base_eval_multigpu.sh",
     "scripts/experiments/rl/run_policy_decorator_base_then_sac_multigpu.sh",
-    "scripts/experiments/robotwin/run_lightwam_residual_rl.sh",
     "src/robot_practice/experiments/rl",
     "src/robot_practice/experiments/rl/policy_decorator_official_base_eval.py",
     "tests/experiments/rl",
-    "tests/experiments/robotwin",
 )
 PACKAGE_NAMES = (
     "torch",
@@ -206,7 +203,6 @@ def _code_hashes(config_path: Path) -> dict[str, str | None]:
     candidates = [
         config_path,
         _repo_root() / "scripts/experiments/rl/run_three_stage_validation.sh",
-        _repo_root() / "scripts/experiments/robotwin/run_lightwam_residual_rl.sh",
         _repo_root() / "src/robot_practice/experiments/rl/residual_contract.py",
         _repo_root() / "src/robot_practice/experiments/rl/validation_runner.py",
     ]
@@ -217,9 +213,6 @@ def _revisions(config: Mapping[str, Any]) -> dict[str, Any]:
     root = _repo_root()
     vendors = {
         "policy_decorator": root / "datasets/raw/policy_decorator/reference_repo",
-        "lightwam": root / "third_party/lightwam/Light-WAM",
-        "rlinf": root / "third_party/rlinf/RLinf",
-        "rlinf_robotwin": root / "third_party/rlinf/RoboTwin",
     }
     return {
         "declared": dict(config.get("revisions", {})),
@@ -241,8 +234,6 @@ def _runtime_artifacts(
     gpu = _gpu_info()
     formal_gpu_requirements = {
         "s1": int(config["stages"]["s1"].get("formal_gpu_count", 1)),
-        "s2": int(config["stages"]["s2"].get("formal_gpu_count", 4)),
-        "s3": int(config["stages"]["s3"].get("formal_gpu_count", 8)),
     }
     resource_gate = {
         stage: int(gpu["count"]) >= required
@@ -314,13 +305,6 @@ def _require_formal_artifacts(arguments: argparse.Namespace, *, stage: str) -> N
                 "formal S1 training requires the pinned Policy Decorator online script: "
                 f"{S1_TRAINING_SCRIPT}"
             )
-    elif stage == "s2":
-        if not (_repo_root() / "third_party/lightwam/Light-WAM").is_dir():
-            raise FileNotFoundError("formal S2 audit requires third_party/lightwam/Light-WAM")
-    elif stage == "s3":
-        for relative in ("third_party/rlinf/RLinf", "third_party/rlinf/RoboTwin"):
-            if not _path(relative).is_dir():
-                raise FileNotFoundError(f"formal S3 audit requires {relative}")
 
 
 def _s1_training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -342,7 +326,7 @@ def _s1_training_contract(config: Mapping[str, Any]) -> dict[str, Any]:
         "tau": float(residual.get("tau", 0.01)),
         "res_scale": float(residual.get("scale", 0.1)),
         "prog_explore": int(residual.get("progressive_exploration_actions", 30_000)),
-        # The shared config's actor_input describes the S2 physical-qpos
+        # The shared config's actor_input describes the physical-qpos
         # contract; S1 follows the pinned Policy Decorator recipe and uses obs.
         "actor_input": "obs",
         "critic_input": "sum",
@@ -622,11 +606,9 @@ def _run_preflight(arguments: argparse.Namespace, *, phase: str) -> int:
     output = _path(arguments.output_root)
     _prepare_output(output)
     required_stages = {
-        "preflight": ("s1", "s2", "s3"),
+        "preflight": ("s1",),
         "s1-audit": ("s1",),
-        "s2-audit": ("s2",),
-        "s3-audit": ("s3",),
-    }.get(phase, ("s1", "s2", "s3"))
+    }.get(phase, ("s1",))
     formal_artifacts_checked = phase.endswith("-audit") and not dummy
     runtime = _runtime_artifacts(
         output,
@@ -644,7 +626,6 @@ def _run_preflight(arguments: argparse.Namespace, *, phase: str) -> int:
                 "dummy smoke uses synthetic model/data and does not produce a formal result",
                 "S1 formal PegInsertionSide-v2 registration remains supplied by Policy "
                 "Decorator envs.maniskill_fixed",
-                "S2/S3 formal GPU gates are recorded but not satisfied by a one-GPU smoke",
             ]
         )
     failed_stages = [
@@ -742,73 +723,6 @@ def _summarize(arguments: argparse.Namespace, *, phase: str) -> int:
     return 0
 
 
-def _dummy_s2_eval(arguments: argparse.Namespace) -> int:
-    from .robotwin_residual import run_dummy_rollout
-
-    output = _path(arguments.output_root)
-    _prepare_output(output)
-    for replan_steps in (arguments.residual_replan_steps, arguments.official_replan_steps):
-        if not replan_steps:
-            continue
-        target = output / ("replan4" if replan_steps == 4 else f"replan{replan_steps}")
-        if replan_steps > 4:
-            _prepare_output(target)
-            _write_json(
-                target / "metrics.json",
-                {
-                    "result_label": "Smoke",
-                    "dummy": True,
-                    "formal_result": False,
-                    "executed": False,
-                    "limitation": (
-                        "dummy residual harness only models the 4-step residual decision horizon"
-                    ),
-                    "requested_replan_steps": replan_steps,
-                },
-            )
-            continue
-        child = SimpleNamespace(
-            output_root=str(target),
-            episodes=arguments.episodes,
-            replan_steps=replan_steps,
-            seed=arguments.seed,
-            eval_seed=arguments.seed,
-            task=arguments.task,
-            task_config="dummy",
-            zero_residual=True,
-            res_scale=0.1,
-            base_checkpoint=arguments.released_checkpoint,
-            base_run=arguments.local_run,
-            max_steps=max(8, replan_steps),
-        )
-        run_dummy_rollout(child)
-    _write_json(output / "audit.json", {"dummy": True, "formal_result": False})
-    return 0
-
-
-def _s3_summary(arguments: argparse.Namespace) -> int:
-    output = _path(arguments.output_root)
-    _prepare_output(output)
-    _write_json(
-        output / "metrics.json",
-        {
-            "phase": "s3-summarize",
-            "result_label": "Smoke",
-            "dummy": bool(arguments.dummy),
-            "formal_result": False,
-            "released_eval_path_present": bool(
-                arguments.released_eval and _path(arguments.released_eval).exists()
-            ),
-            "training_path_present": bool(
-                arguments.training_runs and _path(arguments.training_runs).exists()
-            ),
-        },
-    )
-    _status(output, "STATUS", 1, 1)
-    _status(output, "DONE", 1, 1)
-    return 0
-
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", required=True)
@@ -864,24 +778,8 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.dummy:
             return _dummy_s1_train(arguments)
         return _run_s1_formal_training(arguments)
-    if phase in {"s1-summarize", "s2-summarize"}:
+    if phase == "s1-summarize":
         return _summarize(arguments, phase=phase)
-    if phase == "s2-audit":
-        if not arguments.dummy:
-            _require_formal_artifacts(arguments, stage="s2")
-        return _run_preflight(arguments, phase=phase)
-    if phase == "s2-eval-base":
-        if not arguments.dummy:
-            raise SystemExit(
-                "formal Light-WAM evaluation is vendor-specific; use --dummy for wiring smoke"
-            )
-        return _dummy_s2_eval(arguments)
-    if phase == "s3-audit":
-        if not arguments.dummy:
-            _require_formal_artifacts(arguments, stage="s3")
-        return _run_preflight(arguments, phase=phase)
-    if phase == "s3-summarize":
-        return _s3_summary(arguments)
     raise SystemExit(f"unsupported validation phase: {phase}")
 
 

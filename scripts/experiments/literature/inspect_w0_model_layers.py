@@ -465,7 +465,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strict-environment",
         action="store_true",
-        help="Fail if TorchCodec cannot load or PYTHONNOUSERSITE is not 1",
+        help="Fail if CUDA/TorchCodec cannot load or PYTHONNOUSERSITE is not 1",
     )
     parser.add_argument(
         "--keep-going-on-missing-checkpoint",
@@ -907,6 +907,20 @@ def main() -> int:
     registry: HookRegistry | None = None
     try:
         report = _environment_report(paths, args, log)
+        if str(args.device).startswith("cuda"):
+            import torch
+
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    f"CUDA device {args.device!r} was requested, but torch.cuda.is_available() is false. "
+                    "Stop before model construction; check the container GPU runtime and nvidia-smi."
+                )
+            requested_device = torch.device(args.device)
+            if requested_device.index is not None and requested_device.index >= torch.cuda.device_count():
+                raise RuntimeError(
+                    f"CUDA device {args.device!r} is unavailable; visible device count is "
+                    f"{torch.cuda.device_count()}."
+                )
         del report
         dataset_root = _find_dataset_root(paths["cache_root"], args.dataset_root, paths["repo"])
         files = {
