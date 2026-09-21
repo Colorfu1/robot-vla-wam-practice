@@ -1,5 +1,8 @@
 # 文献模型复现实验指南
 
+- [DM0.5 模型结构与张量维度](../dm05/01_dm05_model_architecture.md)：参照 FastWAM 架构说明，
+  展开本地 DM05-libero 的视觉语言前缀、动作专家、Flow Matching 与形状实测。
+
 当前 WAM 路线先做 LIBERO 文献锚点，再迁移到 StackCube；W0/W1 的文献复现结果与 W2/W3 的
 本地 StackCube 结果不合并。总依赖、gate 和停止条件见
 [WAM 文献锚点复现与 StackCube 迁移路线](../../../plans/2026-08-17-WAM文献锚点复现与StackCube迁移路线.md)。

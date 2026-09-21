@@ -10,6 +10,9 @@
 
 ## 实验指南
 
+- [DM0.5 本地 LIBERO 推理与闭环验证](guides/dm05/README.md)
+  · [模型结构与张量维度](guides/dm05/01_dm05_model_architecture.md)
+
 - [实验指南总览](guides/README.md)
 - [ACT 实验指南](guides/act/README.md)
 - [PushT Diffusion Pilot](guides/pusht_diffusion/README.md)
@@ -22,6 +25,10 @@
 还需要在 [实验运行记录](experiment_log.md) 中补充对应条目。
 
 ## 每日进展
+
+- [2026-09-21 DM0.5在Square上的零样本推理](daily/2026-09-21-DM0.5在Square上的零样本推理.md)
+
+- [2026-09-21 DM0.5本地推理与LIBERO闭环验证](daily/2026-09-21-DM0.5本地推理与LIBERO闭环验证.md)
 
 [每日进展索引](daily/README.md) 按日期记录阶段性结论、实现进展、验证结果、限制和下一步。
 每日进展不能替代实验指南，也不能把尚未运行的计划写成实验结论。

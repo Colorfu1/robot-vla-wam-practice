@@ -1668,3 +1668,32 @@ Use one section per run. Record incomplete or failed runs too.
   2026-08-25 两条对失败原因的推测部分；那两条的数字仍然有效，但「`FW-V` 学到了域内动力学」
   这一读法已被本条收紧。可支持的表述是：`FW-FZ` 只在其预训练分辨率附近可用，`FW-V` 只在其微调
   帧长下可用，两者都不能写成「无条件保持」或「无条件丧失」。
+
+## 2026-09-21 DM0.5 本地验证（Smoke）
+
+- Task suite：libero_spatial task 0；dataset size：无训练集，5 次合成请求、1 个闭环 episode。
+- Observation keys：agentview_image、robot0_eye_in_hand_image、eef pose、gripper qpos、语言指令；action space：7D OSC_POSE + 连续夹爪；action horizon：10；control frequency：仿真 20Hz。
+- Train loss：不适用；open-loop action error：未测；closed-loop success rate：1/1（Smoke），77 步成功。
+- Latency：合成输入预热后平均 328.6ms；闭环 HTTP 平均 443.8ms（含首次请求）；PyTorch 峰值分配显存 11.13GiB。
+- Failure cases：FA2 构造期缺包已由本地预设注意力后端解决；单 episode 无失败，未完成系统失败分析或正式评测。
+- [详细记录](daily/2026-09-21-DM0.5本地推理与LIBERO闭环验证.md)；[复现指南](guides/dm05/README.md)。
+
+
+## 2026-09-21 DM0.5 架构形状核验（Smoke）
+
+- Task suite：DM05-libero 合成输入；dataset size：1 个合成样本，1 次推理积分、1 次 train-mode/no_grad forward。
+- Observation keys：双 RGB 图像、语言指令、8D state 接口（add_state=False）；action space：内部 32D、LIBERO 有效 7D；action horizon：10；control frequency：不适用，无环境交互。
+- Train loss：仅验证合成目标得到有限标量，不报告训练效果；open-loop action error：未测；closed-loop success rate：未测；latency：未测，带 hook 且关闭 CUDA Graph。
+- Failure cases：本次前向无失败；未执行 backward/optimizer，未验证训练显存。确认前缀长度为推理 564 / 训练 padding 1024，完整参数 5,829,112,208。
+- [详细架构与复现命令](guides/dm05/01_dm05_model_architecture.md)。
+
+
+## 2026-09-21 DM05-libero Square 零样本迁移（Smoke）
+
+- Task suite：robomimic NutAssemblySquare；dataset size：源 NPZ 100 条、27214 帧，抽样 4 条 / 32 窗口，闭环 1 episode。
+- Observation keys：agentview_image、robot0_eye_in_hand_image、EEF pose、gripper qpos、任务语言；8D state 仅满足接口，add_state=False。
+- Action space：6D delta OSC_POSE + 1D 连续夹爪；action horizon：10；control frequency：20Hz 仿真；train loss：不适用，未训练。
+- Offline / Smoke：open-loop action error MSE=0.223752、MAE=0.226476；零动作 MSE=0.181756，训练集均值 MSE=0.180350；预热后 HTTP 394.0ms。
+- Closed-loop / Smoke：示教初始场景 600 步，success=0/1，HTTP 平均 417.5ms；非正式全任务成功率。
+- Failure cases：误差高于简单基线，单场景未装配成功；保持 LIBERO 权重与统计量，无 FT，未确认迁移失败根因。
+- [详细报告](daily/2026-09-21-DM0.5在Square上的零样本推理.md)；[复现指南](guides/dm05/02_square_zero_shot.md)。

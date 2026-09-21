@@ -2,6 +2,9 @@
 
 实验指南按实验族组织：
 
+- [DM0.5](dm05/README.md)：独立环境、离线推理 smoke、LIBERO 单任务闭环
+  与[模型结构 / 张量维度](dm05/01_dm05_model_architecture.md)
+
 - [ACT](act/README.md)：A-Sanity、Action Chunking、动作差分损失、Temporal Ensemble、
   observation 等权和 VAE
 - [PushT Diffusion Pilot](pusht_diffusion/README.md)：Smoke、正式 benchmark、固定输入采样、
