@@ -1,5 +1,35 @@
 # Robot VLA WAM Practice
 
+## 开源许可证与第三方使用要求
+
+**本项目自有代码和文档采用 [Apache License 2.0](LICENSE)。第三方代码、补丁中的上游
+内容、数据集、模型权重和机器人资产保留各自的许可证，不因存放在本仓库或被本项目调用
+而统一变成 Apache-2.0。**
+
+2026-09-23 核对了根许可证、已提交的第三方源码与补丁、对应上游许可证和来源记录：
+
+| 内容 | 适用许可证与说明 |
+| --- | --- |
+| 项目自有实验代码、工具和文档 | Apache-2.0；允许依照条款使用、修改和分发，包括商业用途 |
+| `third_party/maniskill_official/` | ManiSkill 的 Apache-2.0；其 Diffusion Policy 派生内容另保留原项目的 MIT 声明 |
+| DPPO 配置补丁 | 上游 MIT；两处补丁目录均由同一份 DPPO 版权及许可声明覆盖 |
+| FastWAM / Light-WAM 补丁 | 上游 MIT；各项目内部另有许可的第三方文件仍遵循其原许可 |
+| LeRobot 相关补丁、gym-aloha 派生参数 | Apache-2.0；gym-aloha 来源中还需保留原 ALOHA 的 MIT 声明 |
+| 下载的数据、预训练权重、仿真资产及其派生产物 | 单独检查对应版本的数据卡、模型卡、资产许可与再分发条件；本项目不另行授予这些权利 |
+
+完整来源、版本和许可副本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+分发源代码、二进制或包含依赖的 Docker 镜像时，应随附适用许可证，保留版权和归属声明；
+Apache-2.0 派生文件须显著标明修改，并保留上游适用的 NOTICE 内容；MIT 内容须保留
+版权与许可声明。引用论文不能代替履行许可证要求。
+条款依据：[Apache-2.0 第 4 节](https://www.apache.org/licenses/LICENSE-2.0#redistribution)
+及 [MIT License](https://opensource.org/license/mit)。
+
+本次已补充上述直接纳入源码和补丁的许可说明。该核对不是所有传递依赖、镜像层、
+模型权重和资产的完整法律审计，也不构成对整个实验产物可任意商用或再分发的保证。
+新增或更新第三方内容时，须同时核对其具体版本的 LICENSE、NOTICE 和文件级声明。
+
+## 项目概览
+
 这是一个以 LeRobot 为工作流层的机器人操作实验仓库。当前 README 总结
 `LIBERO`、`PushT`、`SmolVLA`、`Residual RL` 四条实验线，以及 WAM 文献复现与迁移路线；
 `ManiSkill` 是这些实验共用的仿真 benchmark，它自身的数据/协议与模型对照结果记在第 4、7 节。
@@ -412,6 +442,3 @@ Zero/Random Residual 对照，6.1 都没有。不将 `M1-R` 的 50 条 smoke 写
   （`contiguous_disjoint_v1`）下为 `161/200`（80.50%），属于本地诊断，不与上游数字混列或相减。
   S1 的结果不替代 R0：R0 要求 M2-R 的 state Flow base、冻结 state bank 与 Zero/Random Residual 对照。
 - 计划仍放在 [`plans/`](plans/README.md)，实际结果仍放在 [`reports/`](reports/README.md)；数据、checkpoint、视频、Rerun recording 和日志等生成物不提交到 Git。
-
-项目代码和文档使用 [Apache License 2.0](LICENSE)；第三方软件和数据集说明见
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

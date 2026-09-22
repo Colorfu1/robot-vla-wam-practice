@@ -1,3 +1,7 @@
+# Modified by Robot VLA WAM Practice: support Gymnasium 1.x episode/_episode
+# metadata while retaining compatibility with the older final_info schema.
+# Upstream provenance and licenses: see the bundled README and THIRD_PARTY_NOTICES.md.
+
 from collections import defaultdict
 
 import numpy as np

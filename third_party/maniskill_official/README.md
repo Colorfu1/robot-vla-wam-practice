@@ -8,7 +8,9 @@ network access or an online git clone.
 - Upstream repository: https://github.com/haosulab/ManiSkill
 - Source revision: `62ff3a5896b4d5b4cf0ac4c8d79afe600c9404a3`
 - Upstream baseline path: `examples/baselines/diffusion_policy`
-- License: Apache-2.0; see [LICENSE](LICENSE)
+- License: Apache-2.0; see [LICENSE](LICENSE). The baseline also derives from
+  Diffusion Policy; retain its [MIT notice](../licenses/Diffusion-Policy-MIT.txt).
+  See the repository [third-party notices](../../THIRD_PARTY_NOTICES.md).
 
 The bundled files are source dependencies, not generated experiment outputs.
 
