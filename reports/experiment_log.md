@@ -1697,3 +1697,14 @@ Use one section per run. Record incomplete or failed runs too.
 - Closed-loop / Smoke：示教初始场景 600 步，success=0/1，HTTP 平均 417.5ms；非正式全任务成功率。
 - Failure cases：误差高于简单基线，单场景未装配成功；保持 LIBERO 权重与统计量，无 FT，未确认迁移失败根因。
 - [详细报告](daily/2026-09-21-DM0.5在Square上的零样本推理.md)；[复现指南](guides/dm05/02_square_zero_shot.md)。
+
+## 2026-09-22 FastWAM单次图像替换实验
+
+- Task suite：Square；dataset size：训练轨迹16的一对分支；observation keys：RGB及9D自身状态。
+- Action space：7D；action horizon：4；control frequency：20Hz；默认260步分支，回合总预算600步。
+- Train loss / open-loop action error / latency：本次无新增测量；closed-loop success：原始输入0/1，单次替换示教87帧图像1/1，接管后第113控制步首次成功；仅为单案例结果。
+- 两组恢复的物理状态、积分状态、RGB及自身状态误差均为0；原始分支首次动作完全复现原失败记录。
+- uint8/float32检查修复后7项本地测试通过，远端两组均已完成；首次夹爪行为由保持打开变为闭合，随后恢复实时输入仍完成任务。
+- Failure cases：原始图像分支继续失败；初步支持视觉输入干预足以改变本案例结果，不证明视频驱动动作，也不能把原因唯一归为夹爪指令。
+- 当前决定：归档初步结论，暂不执行仅改夹爪指令的对照。
+- [单次图像替换协议](2026-09-22-FastWAM单次图像替换实验.md)。
