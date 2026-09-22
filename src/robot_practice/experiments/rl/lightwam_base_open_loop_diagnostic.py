@@ -183,6 +183,8 @@ def _compute_metrics(
         for step in range(action_horizon)
     ]
     overall = {
+        "mae_raw": float(np.mean(np.abs(raw_flat - target_flat))),
+        "mae_clipped": float(np.mean(np.abs(clipped_flat - target_flat))),
         "mse_raw": float(np.mean((raw_flat - target_flat) ** 2)),
         "mse_clipped": float(np.mean((clipped_flat - target_flat) ** 2)),
         "clip_rate": float(clip_mask.mean()),
@@ -205,7 +207,41 @@ def _compute_metrics(
         "overall": overall,
         "per_step_mse": per_step_mse,
         "per_dim": per_dim,
+        "arm_mse_clipped": float(np.mean((clipped_flat[:, :6] - target_flat[:, :6]) ** 2)),
+        "arm_mae_clipped": float(np.mean(np.abs(clipped_flat[:, :6] - target_flat[:, :6]))),
+        "gripper_mse_clipped": float(np.mean((clipped_flat[:, -1] - target_flat[:, -1]) ** 2)),
+        "gripper_sign_accuracy": float(
+            np.mean(np.sign(clipped_flat[:, -1]) == np.sign(target_flat[:, -1]))
+        ),
+        "gripper_close_recall": (
+            float(np.mean(clipped_flat[target_flat[:, -1] > 0, -1] > 0))
+            if np.any(target_flat[:, -1] > 0)
+            else None
+        ),
+        "gripper_target_close_count": int(np.sum(target_flat[:, -1] > 0)),
     }
+
+
+def trajectory_windows(dataset, trajectory_ids):
+    """Select complete windows only; IDs index NPZ trajectories, not HDF5 demo names."""
+    ids = list(trajectory_ids)
+    if not ids or len(set(ids)) != len(ids):
+        raise ValueError("Trajectory IDs must be nonempty and unique")
+    if min(ids) < 0 or max(ids) >= len(dataset.traj_lengths):
+        raise ValueError("Trajectory ID out of range")
+    ends = np.cumsum(dataset.traj_lengths)
+    indices, records = [], []
+    for index, (start, _) in enumerate(dataset.windows):
+        trajectory = int(np.searchsorted(ends, start, side="right"))
+        if trajectory in ids:
+            offset = 0 if trajectory == 0 else int(ends[trajectory - 1])
+            indices.append(index)
+            records.append(
+                {"trajectory_id": trajectory, "frame": int(start - offset), "window_index": index}
+            )
+    if {r["trajectory_id"] for r in records} != set(ids):
+        raise ValueError("Selected trajectory has no complete windows")
+    return indices, records
 
 
 def _evaluate_model(
@@ -271,6 +307,22 @@ def _evaluate_model(
     )
     metrics["elapsed_seconds"] = float(time.perf_counter() - started)
     metrics["seconds_per_window"] = metrics["elapsed_seconds"] / len(indices)
+    ends = np.cumsum(dataset.traj_lengths)
+    trajectory_ids = np.asarray(
+        [np.searchsorted(ends, dataset.windows[i][0], side="right") for i in indices]
+    )
+    metrics["per_trajectory"] = {
+        str(int(t)): _compute_metrics(
+            target_array[trajectory_ids == t],
+            pred_array[trajectory_ids == t],
+            action_dim=action_dim,
+            action_horizon=action_horizon,
+        )
+        for t in np.unique(trajectory_ids)
+    }
+    metrics["trajectory_macro_mse_clipped"] = float(
+        np.mean([row["overall"]["mse_clipped"] for row in metrics["per_trajectory"].values()])
+    )
     prediction_path = output_dir / f"predictions_{label}.npz"
     np.savez_compressed(
         str(prediction_path),
@@ -278,6 +330,7 @@ def _evaluate_model(
         pred_raw=pred_array,
         pred_clipped=np.clip(pred_array, -1.0, 1.0),
         window_indices=np.asarray(indices, dtype=np.int64),
+        trajectory_ids=trajectory_ids,
     )
     metrics["predictions_path"] = str(prediction_path)
     _log(log_file, f"DONE model={label} windows={len(indices)} path={prediction_path}")
@@ -311,6 +364,11 @@ def parse_args() -> argparse.Namespace:
         help="Use DummyLightWAMCore instead of the official model; local CPU contract smoke only",
     )
     parser.add_argument("--num-windows", type=int, default=512)
+    parser.add_argument(
+        "--trajectory-ids",
+        default=None,
+        help="Comma-separated NPZ trajectory IDs; evaluate ALL their valid windows",
+    )
     parser.add_argument(
         "--random-sample",
         action="store_true",
@@ -391,6 +449,31 @@ def main() -> int:
             seed=arguments.seed,
             random_sample=arguments.random_sample,
         )
+        if arguments.trajectory_ids is not None:
+            import hashlib
+
+            if arguments.random_sample:
+                raise ValueError("--trajectory-ids cannot be combined with --random-sample")
+            indices, records = trajectory_windows(
+                dataset, [int(x) for x in arguments.trajectory_ids.split(",")]
+            )
+            digest = hashlib.sha256()
+            with data_path.open("rb") as source:
+                for block in iter(lambda: source.read(8 * 1024 * 1024), b""):
+                    digest.update(block)
+            selection = {
+                "dataset_sha256": digest.hexdigest(),
+                "training_set_only": True,
+                "trajectory_ids": sorted({r["trajectory_id"] for r in records}),
+                "windows": records,
+                "action_horizon": action_horizon,
+                "video_frames": video_frames,
+                "closed_loop_status": "blocked_missing_verified_demo_initial_state_mapping",
+                "id_namespace": "NPZ trajectory order; not assumed equal to HDF5 demo IDs",
+            }
+            (output_dir / "trajectory_selection.json").write_text(
+                json.dumps(selection, indent=2) + "\n", encoding="utf-8"
+            )
         _log(
             log_file,
             f"STATUS phase=windows total={len(dataset)} sampled={len(indices)} "
@@ -455,6 +538,9 @@ def main() -> int:
                 "conditioning": "first_window_frame",
                 "seed": arguments.seed,
                 "random_sample": arguments.random_sample,
+                "trajectory_ids": arguments.trajectory_ids,
+                "training_set_only": True,
+                "action_error_space": "normalized; raw means unclipped, not denormalized",
             },
             "models": model_results,
         }

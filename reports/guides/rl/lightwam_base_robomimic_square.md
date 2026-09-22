@@ -319,3 +319,89 @@ tail -f outputs/lightwam_base_robomimic_square/offline_diag_26350_52500/run.log
   冻结或饱和。
 - 与 `untrained_random_init` 对比：训练后 MSE、相关性和分布是否真的移动。
 - `per_step_mse`：4 步 chunk 内误差是否随步数漂移。
+
+## 6. 同数据小型 Diffusion Policy 对照（2026-09-18）
+
+目的：区分训练预算不足与策略设计差异。使用相同 100 条 / 27,214 帧 NPZ，
+从随机初始化训练上游 DPPO ViT + MLP diffusion；不是 PPO，也不加载发布的预训练权重。
+保留上游 epsilon loss、数据增强、AdamW、EMA；单卡 batch 256。
+学习率周期为 4000 epoch，默认先到 1000 epoch，每 250 epoch 保存并评测。
+每 epoch 106 updates，默认约 106,000 updates。checkpoint 编号是 epoch，不是 update。
+
+闭环使用 EMA、DDIM 5、单帧 agentview 96×96 + 9D proprio、7D 动作、horizon 4、20 Hz，
+OSMesa/MSAA4、spawn、串行环境 step、8 个 seeds 10001–10008、每回合 400 原始步。
+这对齐最近 Light-WAM OSMesa 诊断，不等于旧 EGL / 150 回合协议。
+不提供训练场景恢复，也不代表原始 Diffusion Policy 双相机绝对动作配置。
+
+在已安装 DPPO 的容器内、仓库根目录执行：
+
+```bash
+# Smoke：两次真实梯度更新 + 一个完整 400 步回合
+GPU=0 bash scripts/experiments/rl/run_dppo_square_bc_control.sh --smoke --envs=1
+
+# 阶段性对照训练；新建独立输出目录，不覆盖历史结果
+GPU=0 bash scripts/experiments/rl/run_dppo_square_bc_control.sh \
+  --stop-after=1000 --eval-every=250 --envs=8
+```
+
+结果：`outputs/dppo_square_bc_control_*/run.log` 提供训练与评测 completed/total；
+`train_metrics.jsonl` 保存 epoch、实际更新数和训练 loss；`metrics.json` 汇总成功率曲线；
+`eval_epoch_*/metrics.json` 保存逐回合结果；`manifest.json` 保存数据与上游源码校验值。
+`training_state.pt` 保存最新训练状态，但当前入口不支持自动 resume，失败后不要直接复用目录。
+
+验证情况：本地 Docker Smoke 已完成两次更新及一个完整回合；未运行正式长训。
+判断：比较 26.5k、53k、79.5k、106k updates 的闭环曲线与对应 Light-WAM 结果；
+只有单训练 seed、8 个评测初始状态，改善需扩大样本复核。低训练 loss 不能替代成功率。
+
+## 7. 锁定官方配置复现（2026-09-18）
+
+入口 `scripts/experiments/rl/run_dppo_square_official.sh` 独立下载上游至
+`third_party/dppo_official` 并锁定 `cc7234ad7ff39a8f32de3af903606723a16f0648`。
+拒绝脏的 tracked 源码或不同 commit，不覆盖已有 DPPO runtime。
+沿用现有发布版 Square NPZ，不重复下载；保存输入文件 SHA256。
+
+直接调用官方 TrainDiffusionAgent.run：2000 epochs、batch 256、LR 1e-4、
+cycle 2000、warmup 100、EMA 0.995，其余沿用该 revision YAML。
+训练结束后独立评测 epochs 500/1000/1500/2000；直接调用官方 EvalImgDiffusionAgent.run，
+20 environments、400 policy iterations、400 environment steps/episode、seed 42、DDIM 5。
+官方加载器选择 `model` 而非 `ema`，入口不更改这一行为；不额外 clip action。
+没有语言输入：单相机图像加 9D proprio。
+
+显式兼容差异：修正官方 YAML 已失效的 diffusion_eval_ft 模块引用；使用 OSMesa、
+spawn、保留共享缓冲区以避开已观察到的 EGL abort 和 semaphore 生命周期问题。
+不声称已复现历史论文成绩或原版 Diffusion Policy 的约 90% 成功率。
+
+```bash
+# 先测试完整一轮训练 + 单环境 400 步；仅缩短预算，不改变 batch 或 LR schedule。
+GPU=0 bash scripts/experiments/rl/run_dppo_square_official.sh --smoke
+
+# 完整训练，然后评测四个保存节点；输出目录必须是新目录。
+export OUTPUT_ROOT="outputs/dppo_square_official_$(date +%Y%m%d_%H%M%S)"
+GPU=0 nohup bash scripts/experiments/rl/run_dppo_square_official.sh \
+  > "${OUTPUT_ROOT}.launch.log" 2>&1 &
+echo "PID=$! RESULT_DIR=$OUTPUT_ROOT"
+```
+
+训练日志与解析配置在 `train/run.log`、`train/config.yaml`；评测结果为
+`eval_epoch_*/result.npz`，不是旧对照入口的 metrics.json。每个子任务记录 manifest.json。
+训练和评测持续写 completed/total。当前不支持续训；不要把 smoke checkpoint 当成正式结果。
+
+## 8. 已发布 checkpoint 与训练 checkpoint 的 EMA 对照
+
+`scripts/experiments/rl/run_dppo_square_ema_controls.sh` 接收两个 checkpoint 路径：
+官方发布 state_4000 和当前训练 state_2000。仅运行评测，按官方 EMA、当前 EMA 顺序执行。
+默认 GPU 0；默认协议与第 7 节一致（20 envs、400 policy iterations、seed 42、DDIM 5、OSMesa）。
+保留每项 `result.npz`、`run.log`、config/manifest，额外生成 `summary.json` 及源 checkpoint SHA256。
+源 checkpoint 不修改；EMA 提取副本只写入本次新输出目录。
+
+```bash
+export OUTPUT_ROOT="outputs/dppo_square_ema_controls_$(date +%Y%m%d_%H%M%S)"
+GPU=0 nohup bash scripts/experiments/rl/run_dppo_square_ema_controls.sh \
+  "$OFFICIAL_CKPT" "$TRAINED_CKPT" > "${OUTPUT_ROOT}.launch.log" 2>&1 &
+echo "PID=$! RESULT_DIR=$OUTPUT_ROOT"
+```
+
+远端无网，先从本地同步脚本及官方 checkpoint。正式入口校验两份权重 epoch 分别为 4000/2000，
+EMA 必须存在，并验证发布版 normalization 校验值。若仅验证链路可追加 `--smoke`，
+它将每项缩短到单环境完整一回合，并允许第二份使用本地 smoke checkpoint；结果明确标记 smoke。
+当前原始 model 的 24/80 基线与新 EMA 结果分开报告，不以烟测成绩替代正式对照。

@@ -2,6 +2,8 @@
 
 本目录收录 base policy 训练、Residual RL 复现与下游验证的可执行说明。
 
+- [FastWAM Square原生双视角与32步预测训练](fastwam_square_dual.md)
+
 - [Policy Decorator 在 ManiSkill2 的 Residual RL 复现](policy_decorator_maniskill2_residual_rl.md)
 - [robomimic + DPPO pixel Residual RL](robomimic_dppo_pixel_residual.md)
 - [Light-WAM base：robomimic Square pixel 训练路径](lightwam_base_robomimic_square.md)

@@ -64,9 +64,10 @@ DPPO 侧的固定合同（全部读自 commit `cc7234ad7ff39a8f32de3af903606723a
   `images.npy` 未压缩尺寸 752,412,800 = `27214×3×96×96+128` 逐字吻合、本地字节数与远端
   Content-Length 相同），也确实来自 `download_url.py` 声明的那个 folder，不是下载残缺。
   文件日期揭示了不一致：日志与 `normalization.npz` 是 8月27，`state_4000.pt` 是 8月29，
-  而 `train.npz` 是 **9月9**——**发布的 checkpoint 训在 300 条上，现在能下到的数据是 100 条子集**。
-  → 这只说明官方 checkpoint 的训练来源；当前路线不重新生成 demonstrations。若未来重新 pretrain，
-  再按下面延期的数据路径生成 300 条，届时 `Diffusion Policy` 论文的 Square-MH 数字才作为同源参照。
+  而 `train.npz` 是 **9月9**。**更正：这些日期不能证明 checkpoint 训练用了 300 条。**
+  v0.6 图像 MLP 配置限制前 100 条；先按公开配置复现，不以处理全集数量替代训练使用数量。
+  参见 [2026-09-18 核验](../reports/2026-09-18-DPPO历史版本与训练数据核验.md)。
+  下面生成 300 条的路线仅为可选扩展，不再视为官方复现的必需步骤。
 - [x] **G2 pixel 配置名**：`pre_diffusion_mlp_img.yaml` / `ft_ppo_diffusion_mlp_img.yaml` /
   `eval_diffusion_mlp_img.yaml`，另有 unet 与 gaussian 的 img 变体。
 - [x] **G3 观测无泄漏**：pixel config 的 `low_dim_keys` 只有三个自身状态键，`image_keys` 只有

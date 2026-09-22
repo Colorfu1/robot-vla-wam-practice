@@ -1184,6 +1184,27 @@ def _build_dppo_square_env(
     from env.gym_utils import make_async
     from omegaconf import OmegaConf
 
+    if os.environ.get("ROBOT_PRACTICE_READPIXELS_PROBE") == "1":
+        if not os.environ.get("ROBOT_PRACTICE_ROLLOUT_FORENSICS"):
+            raise ValueError("readPixels probe requires a diagnostic evidence directory")
+        from robot_practice.experiments.rl.readpixels_probe import probed_shared_worker
+
+        worker_module = importlib.import_module("env.gym_utils.async_vector_env")
+        if worker_module._worker_shared_memory is not probed_shared_worker:
+            worker_module._probe_original_shared_worker = worker_module._worker_shared_memory
+            worker_module._worker_shared_memory = probed_shared_worker
+
+    # Keep shared-memory synchronization handles alive for the opt-in spawn probe.
+    if os.environ.get("ROBOT_PRACTICE_ROLLOUT_FORENSICS") and os.environ.get(
+        "ROBOT_PRACTICE_ROLLOUT_START_METHOD"
+    ) in ("spawn", "forkserver"):
+        from functools import partial
+
+        from robot_practice.experiments.rl.rollout_forensics import retain_shared_buffers
+
+        vector_module = importlib.import_module("env.gym_utils.async_vector_env")
+        make_async = partial(retain_shared_buffers, vector_module, make_async)
+
     shape_meta = {
         "obs": {
             "rgb": {"shape": [3, 96, 96]},
@@ -1235,6 +1256,17 @@ def run_dppo_square_env_worker(arguments: argparse.Namespace) -> int:
 
     from multiprocessing.connection import Listener
 
+    # Explicit diagnostic experiment only; never change the ordinary eval default.
+    if os.environ.get("ROBOT_PRACTICE_ROLLOUT_FORENSICS"):
+        method = os.environ.get("ROBOT_PRACTICE_ROLLOUT_START_METHOD")
+        if method:
+            import multiprocessing
+
+            if method not in ("fork", "spawn", "forkserver"):
+                raise ValueError(f"Unsupported diagnostic start method: {method}")
+            multiprocessing.set_start_method(method, force=True)
+            print(f"[DEBUG-rollout] multiprocessing_start_method={method}", flush=True)
+
     socket_path = Path(arguments.control_socket)
     dppo_root = Path(arguments.dppo_root).expanduser().resolve()
     normalization_path = Path(arguments.normalization_path).expanduser().resolve()
@@ -1257,6 +1289,12 @@ def run_dppo_square_env_worker(arguments: argparse.Namespace) -> int:
                 max_episode_steps=int(arguments.max_episode_steps),
                 action_horizon=int(arguments.action_horizon),
             )
+            # Diagnostic-only hook; absent for ordinary training/formal evaluation.
+            evidence_dir = os.environ.get("ROBOT_PRACTICE_ROLLOUT_FORENSICS")
+            if evidence_dir:
+                from robot_practice.experiments.rl.rollout_forensics import ForensicVector
+
+                vector_env = ForensicVector(vector_env, evidence_dir)
             environment_seeds = [
                 int(arguments.worker_seed) + index
                 for index in range(int(arguments.num_envs))

@@ -6,7 +6,49 @@ Use one section per run. Record incomplete or failed runs too.
 - 模式：`Offline` / `Closed-loop` / `Smoke` / `Formal`
 - 结果落点（`metrics.json` / `eval_info.json` / `rollouts.parquet` / `prediction.rrd`）
 
+## 2026-09-20：DP 与 LightWAM 训练场景 600 步对照（待运行）
+
+- 模式：Closed-loop diagnostic；入口验证完成，远端结果待回传。
+- Task suite: robomimic NutAssemblySquare。
+- Dataset size: 100 条 NPZ 中选 8 条训练示范。
+- Observation keys: agentview RGB、eef position/quaternion、gripper qpos；LightWAM 固定任务 context。
+- Action space: 7D OSC delta pose + gripper；Action horizon: 4；Control frequency: 20 Hz。
+- Policy: DP v06 训练 state_4000 的 model 权重，与 LightWAM step_102500。
+- Train loss: 本次不训练；Open-loop action error: 本次不测。
+- Closed-loop success rate: 600 步待测；另保留前 400 步统计。
+- Latency: 待测；Failure cases: 待回传，真值两条超过 400 步不能直接视为回放失败。
+- Verification: 七项本地测试通过、Ruff 与 shell 语法检查通过；未声称真实权重 smoke 或远端评测完成。
+- Result artifacts: 新输出目录中的 metrics.json 和每场景 rollout；不提交生成制品。
+- Notes: 详见 [600步对照](2026-09-20-DP与LightWAM训练场景600步对照.md)。
+
+## 2026-09-20：Square 随机初始化统一 600 步评测（待运行）
+
+- 模式：Closed-loop；相同显式环境 seed 列表，非训练示范恢复。
+- Task suite: robomimic NutAssemblySquare。
+- Dataset size: 两策略来自已有 100 条训练 NPZ；本次每模型随机初始化 80 局。
+- Observation keys: agentview RGB + 9D proprio；LightWAM 固定语言 context。
+- Action space: 7D OSC delta pose + gripper；Action horizon: 4；Control frequency: 20 Hz。
+- Train loss: 不训练；Open-loop action error: 不测。
+- Closed-loop success rate: 待测；同时报告 400/600 控制步的官方动作块成功判据。
+- Latency: 待测；Failure cases: 待远端结果。
+- Verification: 十项本地测试、Ruff 和 shell 语法检查通过；未声称真实模型完整评测通过。
+- Result artifacts: 新输出下 metrics.json、run.log 与分批 rollout_trace.npz；不提交生成制品。
+- Notes: [统一随机评测](2026-09-20-Square随机初始化600步统一评测.md)。
+
+## 2026-09-20：Square 多卡随机闭环重评入口（待远端运行）
+
+- Implementation record:
+  Task suite: NutAssemblySquare；dataset: 已有 100 条训练数据，评测每模型 80 局；
+  observations: agentview RGB + 9D proprio（LightWAM 固定 context）；
+  action: 7D OSC delta + gripper；horizon: 4；frequency: 20 Hz。
+  Train loss/open-loop error: 本次不测；closed-loop success/latency/failure cases: 待远端运行。
+  输出: 新目录 metrics.json、run.log 与 GPU 子目录；不复用旧结果。
+  本地验证不等于完整多卡模型运行。详见
+  [多卡统一评测](2026-09-20-Square多卡统一评测接入.md)。
+
 ## Template
+
+- 2026-09-20 future preview（待远端）：task suite=NutAssemblySquare；dataset=已有100条，选1个成功训练case及1个随机eval case；observations=当前agentview/proprio/固定context；action space=7D，horizon=4，control frequency=20Hz；train loss=不训练；open-loop action error=不测；closed-loop success=沿用已完成case选择，不重评；latency/生成失败情况=待测。输出为新目录PNG/GIF/metrics.json；两项本地测试通过，未验证真实权重生成。详见 [未来帧预览](2026-09-20-LightWAM未来帧预测预览.md)。
 
 - Date:
 - Task suite:
@@ -1668,6 +1710,118 @@ Use one section per run. Record incomplete or failed runs too.
   2026-08-25 两条对失败原因的推测部分；那两条的数字仍然有效，但「`FW-V` 学到了域内动力学」
   这一读法已被本条收紧。可支持的表述是：`FW-FZ` 只在其预训练分辨率附近可用，`FW-V` 只在其微调
   帧长下可用，两者都不能写成「无条件保持」或「无条件丧失」。
+## 2026-09-18 DPPO Square 同数据 BC 对照入口（Smoke）
+
+- Task suite：robomimic Square；dataset：100 条 / 27,214 帧。
+- Observation：单帧 agentview RGB 96×96 + 9D proprio；action：7D normalized；
+  action horizon：4；control frequency：20 Hz。
+- Completed：上游小型 diffusion 从头训练两次更新、EMA checkpoint、OSMesa 完整 400 步单回合。
+- Train loss：仅 Smoke 两个 batch，不作收敛结论；open-loop error：本次未测；
+  closed-loop success：Smoke 0/1，不作性能结果；latency：未做独立推理延迟测量。
+- Failure cases：首次烟测发现上游训练类采样接口不兼容，改用官方 DiffusionEval 后通过。
+- Remaining：阶段性 1000 epoch 训练及 8 初始状态闭环曲线尚未运行，无自动 resume。
+- Commands and protocol：[同数据对照入口](guides/rl/lightwam_base_robomimic_square.md#6-同数据小型-diffusion-policy-对照2026-09-18)。
+
+## 2026-09-18：DPPO Square 官方配置独立复现入口
+
+- Task suite：robomimic NutAssemblySquare，监督 BC，不运行 PPO。
+- Dataset size：现有官方发布 NPZ，100 trajectories、27214 frames、26914 windows；不声称已验证历史论文数据身份。
+- Observation keys：agentview RGB 96×96、eef position/quaternion、gripper qpos；无 language 或 object pose 输入。
+- Action space：7D normalized relative control；action horizon：4；control frequency：20 Hz。
+- Completed：独立下载并锁定上游 `cc7234ad7ff39a8f32de3af903606723a16f0648`；直接调用原训练/评测循环；默认完整 2000 epochs，LR cycle 2000，batch 256。
+- Verification：3 个单元测试通过；本地 Docker 一个完整训练 epoch（106 updates）及单环境 400 步官方评测通过。评测明确加载 `model`，不是 EMA。
+- Train loss：Smoke 单 epoch 1.7211，不作收敛结论；open-loop action error：未测。
+- Closed-loop success：Smoke 0/1，仅验证链路；latency：未做独立测量。
+- Failure cases：适配时修正 agent 构造调用及 buffer 保留包装参数；上游 YAML 过期采样模块路径在入口显式修正。
+- Limitations：OSMesa + spawn + shared-buffer 保留属于运行时偏差；正式默认 20 环境、400 policy steps、seed 42；尚未完成远端长训，无 resume。
+- Entry：`scripts/experiments/rl/run_dppo_square_official.sh`；原对照实验和 vendor tree 不覆盖。
+
+## 2026-09-18：DPPO v0.6 数据与配置核验
+
+- Task suite：robomimic Square-MH / NutAssemblySquare，监督 BC，无 PPO。
+- Dataset size：100 trajectories、27214 frames；重新下载的官方 NPZ/normalization 与现有文件哈希一致，动作精确匹配原始 demo_0–99。
+- Observation keys：agentview RGB 96×96、eef pos/quat、gripper qpos；无 language 或 object/goal pose。
+- Action space：7D normalized relative；action horizon：4；control frequency：20 Hz。
+- Completed：锁定 v0.6；保留原循环的 4000 epochs、LR cycle 8000、EMA 每 10 epochs；独立离线入口及数据校验。
+- Train loss：单 epoch 烟测 1.7211；open-loop action error：本次未测。
+- Closed-loop success：EMA/model 单环境烟测各 0/1，不作性能结论；latency：未独立测量。
+- Failure cases：一次开发烟测在评测完成后因运行中修改 shell 中断，最终脚本重新验证；不涉及远端作业。
+- Limitation：历史权重没有数据 manifest 或完整 launch config；旧记录依据 300 条处理日志推断训练条数的说法撤回。
+- Evidence：[历史版本与训练数据核验](2026-09-18-DPPO历史版本与训练数据核验.md)。
+
+## 2026-09-18：官方发布权重与当前训练 EMA 对照入口
+
+- Task suite：robomimic NutAssemblySquare；仅评测，不训练。
+- Dataset size：当前训练使用 100 trajectories / 27214 frames；评测默认 20 environments、80 completed episodes，seed 42。
+- Observation keys：agentview RGB 96×96 + eef pos/quat/gripper qpos；action space：7D normalized relative；action horizon：4；control frequency：20 Hz。
+- Completed：独立离线双对照入口，比较官方 state_4000 EMA 与当前训练 state_2000 EMA；检查 epoch、EMA 存在性和 normalization SHA256，记录源 checkpoint 哈希，汇总 summary.json。
+- Measured baseline（用户提供远端结果）：当前较新配置原始 model 权重在 epochs 500/1000/1500/2000 分别为 6/80、16/80、24/80、24/80；不是 EMA 结果。
+- Train loss：本入口不训练；open-loop action error：未测；latency：未独立测量。
+- Verification：4 个配置/进度单测通过；本地 Docker 双单回合烟测使用官方发布 checkpoint 和本地单 epoch 测试权重，不替代远端 epoch 2000 或 80 回合结果。
+- Closed-loop success：正式两项结果待远端运行；failure cases：此前命令出现 f-string 引号转义错误，新脚本避免该写法并自动汇总。
+- Entry：`scripts/experiments/rl/run_dppo_square_ema_controls.sh OFFICIAL.pt TRAINED.pt`；OSMesa、DDIM 5、20 envs、400 policy steps，与已有原始 model 评测一致。
+
+## 2026-09-18：官方权重低成功率的单变量诊断
+
+- Task suite：robomimic Square-MH；dataset size：100 demos，26914 valid windows 中等距抽取 256 个。
+- Observation keys：agentview RGB + 9D proprio；action space：normalized 7D；action horizon：4；control frequency：闭环协议 20 Hz，本次开环不推进仿真。
+- Train loss：未训练；open-loop action MSE：同官方 checkpoint 的 model 0.007850906、EMA 0.022978662，固定相同输入/采样种子。
+- Closed-loop success：用户远端官方 EMA 9/80、当前 epoch 2000 EMA 24/80；官方 model 同协议结果待测。latency：未独立测量。
+- Failure cases：EMA 与 model 入口语义不同；之前只测官方 EMA 不足以代表官方独立 evaluator 默认行为。
+- Conclusion：EMA 较弱是首要待验证假设，而非已确认根因；不同时改变渲染或训练配置。
+- Details：[低成功率初步诊断](2026-09-18-DPPO官方权重低成功率初步诊断.md)。
+
+## 2026-09-20：LightWAM训练场景恢复与配对评测入口
+
+- Task suite：robomimic NutAssemblySquare；dataset size：100条训练NPZ中选8条，与原始HDF5完整动作唯一匹配。
+- Observation keys：agentview RGB 96×96、eef pos/quat、gripper qpos；action space：7D归一化delta控制；action horizon：4；control frequency：20Hz。
+- Completed：独立进程OSMesa恢复XML/初始状态；示范动作连续回放；新增实时观测模型闭环入口与逐场景门槛。
+- Train loss：不训练；open-loop action error：身份匹配通过，未新增模型开环测量。
+- Closed-loop success：本地真值示范完整回放7/8任务成功、400步内6/8；不是模型成绩。LightWAM正式权重本地缺失，其训练场景闭环待远端验证。
+- Latency：未独立测模型推理延迟；failure cases：轨迹60示范回放失败，排除；轨迹50在499步才成功。
+- Verification：新增与相关回归11项通过，Ruff及shell语法检查通过；真实回放检查8条初始观测均通过。
+- Limitations：图像接近不等于模型输入等价；完整动作块成功与任意控制步任务成功分开报告；不能将排除项当模型失败。
+- Details：[训练场景配对入口](2026-09-20-LightWAM训练场景配对评测入口.md)。
+
+## 2026-09-20：LightWAM未来帧预览采样协议修正
+
+- Task suite：robomimic Square；dataset size：训练集100条，预览选1个eval与1个成功训练case。
+- Observation keys：当前agentview RGB、自身9D状态、缓存文本；无未来真值输入。
+- Action space：原7D归一化控制，本次不预测动作；action horizon：原4；control frequency：20Hz，预览5帧。
+- Completed：预览在视频训练的低分辨率latent网格初始化噪声并迭代，仅最终放大解码；不改动作推理。
+- Train loss：未训练；open-loop action error、closed-loop success、latency：本次未测。
+- Failure cases：旧预览的训练/eval未来帧均有异常纹理，旧采样空间与训练不一致；尚未证明画质问题的全部原因。
+- Verification：4项单元测试及Ruff通过；修正后的真实模型预测待远端运行。
+- Details：[未来帧预览](2026-09-20-LightWAM未来帧预测预览.md)。
+
+## 2026-09-20：FastWAM同数据训练效率基准入口
+
+- Task suite：robomimic Square；dataset size：100条NPZ轨迹，完整窗口。
+- Observation keys：单路agentview RGB、9D自身状态、缓存文本；action space：7D归一化动作。
+- Action horizon：4；control frequency：20Hz；视频5帧224×224。
+- Completed：单卡真实loss/backward/AdamW短基准，有效batch 256，预热后计时及显存、固定样本预算耗时投影。
+- Train loss：待测；open-loop action error、closed-loop success：本次不测。
+- Latency：训练吞吐待远端实测；failure cases：尚无本轮GPU运行结果，OOM不会自动更换配置。
+- Verification：5项单测、Ruff/shell/CLI检查通过；对应环境导入和接口检查通过，非完整模型训练烟测。
+- Details：[训练效率基准](2026-09-20-FastWAM同数据训练效率基准.md)。
+
+## 2026-09-21：FastWAM八卡吞吐与12小时pilot入口
+
+- Task suite：robomimic Square；dataset size：100轨迹，同一训练NPZ。
+- Observation keys：单相机RGB、9D自身状态、缓存文本；action space：7D归一化动作；action horizon：4；control frequency：20Hz。
+- Measured（用户单卡结果）：有效batch 256，25.565秒/更新，10.014窗口/秒，峰值allocated 57.475GiB。
+- Completed：DDP八卡真实更新吞吐基准、12小时预算停止、周期快照及恢复状态；架构不变。
+- Train loss：八卡待测；open-loop action error、closed-loop success：本轮未测。
+- Latency：八卡待测；failure cases：尚无真实八卡运行结果，基准失败不会自动开始正式训练。
+- Verification：双进程CPU梯度一致性、游标恢复、学习率、非有限loss测试通过；非八卡CUDA烟测。
+- Details：[八卡与12小时训练协议](2026-09-21-FastWAM八卡吞吐与十二小时训练.md)。
+
+### 同日修正：12小时完整学习率周期
+
+- 将原420000更新cosine日程替换为累计训练时间驱动：前1%时间warmup至1e-4，12小时处衰减至1e-6。
+- rank zero统一广播时钟；恢复延续已用训练时间，并保留与停止预算相同的时间口径。
+- 测试覆盖warmup、衰减中点/终点、单调性、零warmup及累计时间计算；正式训练效果尚未测量。
+
 
 ## 2026-09-21 DM0.5 本地验证（Smoke）
 
@@ -1698,6 +1852,114 @@ Use one section per run. Record incomplete or failed runs too.
 - Failure cases：误差高于简单基线，单场景未装配成功；保持 LIBERO 权重与统计量，无 FT，未确认迁移失败根因。
 - [详细报告](daily/2026-09-21-DM0.5在Square上的零样本推理.md)；[复现指南](guides/dm05/02_square_zero_shot.md)。
 
+## 2026-09-21 FastWAM Square十二小时训练完成与评测接入
+
+- Task suite：robomimic NutAssemblySquare；dataset size：100条、27214帧、26814窗口。
+- Observation keys：agentview RGB、9D proprio、固定任务文本缓存；action space：归一化7D OSC增量与夹爪；action horizon：4；control frequency：20Hz。
+- Train loss：最终总loss=0.005629，20262更新；global batch256，八卡每卡32累积1，最终lr约1e-6。
+- Open-loop action error：未测；closed-loop success rate：未测；latency：推理未测，训练平均2.0948秒/update。
+- Failure cases：尚未评测；训练记录status=complete且最终checkpoint保存成功。
+- 初始化：Wan2.2-TI2V-5B与ActionDiT预训练，resume=null；非官方训练超参数完整复现。
+- Verification：评测接入17项本地测试通过，远端实际权重推理仍待验证。
+- [训练结果与评测协议](2026-09-21-FastWAM十二小时训练结果与评测接入.md)。
+
+## 2026-09-21 FastWAM闭环完成与开环视频诊断准备
+
+- Task suite：robomimic NutAssemblySquare；dataset size：训练100轨迹；闭环80种子；计划开环8轨迹2009窗口。
+- Observation keys：单agentview RGB、9D proprio、缓存文本；action space：7D归一化增量与夹爪；action horizon：4；control frequency：20Hz。
+- Train loss：此前末次0.005629；open-loop action error：尚未运行新诊断；closed-loop success rate：400步18/80，600步20/80，已读取远端完整metrics验证。
+- Latency：新诊断未测；failure cases：600步60例未达成功，失败阶段尚未分类；视频质量待测。
+- 已接入开环与官方原生视频采样入口，本地6测试通过；远端诊断未启动，不将测试通过视为模型效果。
+- [协议、限制与可视化说明](2026-09-21-FastWAM开环误差与未来视频诊断接入.md)。
+
+## 2026-09-21 FastWAM成功失败各三例全程视频补生成接入
+
+- Task suite：robomimic NutAssemblySquare；dataset size：已完成80例评测中选6例、900个已记录策略输入。
+- Observation keys：当前agentview RGB、9D proprio、固定文本；action space：7D归一化控制；action horizon：4；control frequency：20Hz，每4步更新条件。
+- Train loss：不新增训练；open-loop action error：本任务未测新汇总；closed-loop success rate：原评测20/80，不重新运行闭环。
+- Latency：真实权重补生成未测；failure cases：从原600步失败案例取前三个，尚未完成视频人工归因。
+- 已实现6卡补生成、四种视频、逐段原始预测、HTML入口；8项本地测试通过，远端待执行。
+- [协议与验证说明](2026-09-21-FastWAM成功失败全程预测可视化.md)。
+
+## 2026-09-21 FastWAM抓取关键帧定位
+
+- Task suite：Square；dataset size：原80例中的6例、每例150策略输入；observation keys：9D proprio及已有RGB预测。
+- Action space：7D增量与夹爪；action horizon：4；control frequency：20Hz。
+- Train loss / open-loop action error / latency：本次不新增测量；closed-loop success rate：保留原20/80。
+- Failure cases：10001、10002未检测到4步内超过5mm的关节位置差缩小；10003有闭合与EEF上升但任务未成功，不能证明物体被抓起。
+- 已定位成功三例和失败10003的关键chunk，新增CPU静帧/慢放导出，三个本地测试通过；远端批量产物待生成。
+- [定位数值与限制](2026-09-21-FastWAM抓取关键帧定位.md)。
+
+## 2026-09-22 FastWAM训练场景逐步恢复证据
+
+- Task suite：Square；dataset size：100条训练示教中选8条；observation keys：实时RGB和9D自身状态，额外仿真状态仅用于诊断。
+- Action space：7D增量及夹爪；action horizon：4；control frequency：20Hz；策略预算600步。
+- Train loss / open-loop action error / closed-loop success rate / latency：本次尚无新模型测量。
+- 已完成：逐控制步场景记录、FastWAM入口与动作前缀重放验证；10项单元测试通过。
+- 本地示教smoke：127步重放，逐步仿真与积分状态、RGB、自身状态、奖励最大差异均为0；不是远端FastWAM正式结果。
+- Failure cases：远端待采集；直接中间快照恢复未验证。详见[恢复证据](2026-09-22-FastWAM训练场景逐步恢复证据.md)。
+
+## 2026-09-22 Square分辨率与腕相机诊断
+
+- Task suite：Square；dataset size：默认8条训练场景，本地smoke1条示教；observation keys：策略仍用96×96 agentview及9D自身状态，诊断额外渲染外部与腕相机224×224。
+- Action space：7D增量及夹爪；action horizon：4；control frequency：20Hz。
+- Train loss / open-loop action error / closed-loop success rate / latency：未新增远端模型测量。
+- 本地127步示教额外渲染与无额外渲染重放的状态、策略RGB、奖励差异为零；相关12项单元测试通过。
+- Failure cases：待远端采集；腕相机存在不代表模型已使用，也不证明新增视角必然提高成功率。
+- [相机诊断与缓存观测差异](2026-09-22-Square分辨率与腕相机诊断.md)。
+
+## 2026-09-22 FastWAM训练场景多卡失败选样
+
+- Task suite：Square；dataset size：100条训练场景中的24条未测轨迹；observation keys：原96×96 agentview及9D自身状态。
+- Action space：7D增量及夹爪；action horizon：4；control frequency：20Hz；每例600步。
+- Train loss / open-loop action error / closed-loop success rate / latency：此次入口改造无新增模型测量。
+- 已完成8卡独立分片、持久进度、无重复无遗漏汇总与失败候选路径输出，相关14项单元测试通过。
+- Failure cases：待远端运行后人工筛选，不能自动把全部失败归为动作偏离；不执行相机待办。
+- [多卡选样入口](2026-09-22-FastWAM训练场景多卡失败选样.md)。
+
+## 2026-09-22 FastWAM失败轨迹配对未来预测
+
+- Task suite：Square；dataset size：轨迹16示教与rollout候选区间；observation keys：RGB、自身状态。
+- Action space：7D；action horizon：4；control frequency：20Hz。
+- Train loss / open-loop action error / closed-loop success rate / latency：此入口尚无新远端测量。
+- 完成INPUT/PRED/GT/COPY分行标识及候选选择，2项本地测试通过。
+- Failure cases：用户报告16到位后未闭合，候选任务阶段对齐尚待人工确认；不把视觉观察当作根因。
+- [协议与限制](2026-09-22-FastWAM失败轨迹配对未来预测.md)。
+
+## 2026-09-22 FastWAM示教中间状态接管
+
+- Task suite：Square；dataset size：训练轨迹16的7个候选起点；observation keys：恢复后的实时RGB及9D自身状态。
+- Action space：7D；action horizon：4；control frequency：20Hz；每个有效起点额外600控制步。
+- Train loss / open-loop action error / closed-loop success rate / latency：尚无新增远端模型测量。
+- 本地恢复第85帧误差0并执行4步；9项相关测试通过，不代表完整接管成功。
+- Failure cases：剩余示教续跑失败则排除该起点；候选帧不自动标注已抓稳。
+- [中间状态接管协议](2026-09-22-FastWAM示教中间状态接管实验.md)。
+
+## 2026-09-22 FastWAM示教连续窗口预测检查
+
+- Task suite：Square；dataset size：轨迹16第80至120帧共41个连续输入窗口；observation keys：真实RGB和9D自身状态。
+- Action space：7D；action horizon：4；control frequency：20Hz；预测范围0.2秒。
+- Train loss / open-loop action error / closed-loop success rate / latency：此项无新增远端测量。
+- 增加demo-only入口和逐帧浏览页面，明确GT事件是否落入预测范围；3项本地测试通过。
+- Failure cases：待观察事件前能否预测闭合及带起物体；不能将窗口外事件或只依赖视觉的假设当作结论。
+
+## 2026-09-22 FastWAM原生双视角长窗口接入（Smoke）
+
+- Task suite：Square；dataset size：目标原100条轨迹，本地导出Smoke为1条127帧；observation keys：原生agentview224＋腕部224横向拼接、9D自身状态。
+- Action space：7D；action horizon：预测32、执行4；control frequency：20Hz；video：9帧、间隔4控制步，覆盖1.6秒。
+- 初始化：原始Wan与ActionDiT，不加载Square已训练checkpoint；新优化器与12小时计时cosine计划。
+- Train loss / open-loop action error / closed-loop success / latency：尚无新正式测量；18项本地测试、127帧导出和双视角模拟器接口Smoke通过。
+- Failure cases：完整8卡训练与显存待验证；长窗口、分辨率和视角同时改变，不单独归因。
+- [执行指南](guides/rl/fastwam_square_dual.md)。
+
+## 2026-09-22 Square同轨迹相机重放入口
+
+- Task suite：Square；dataset size：训练轨迹16的失败、成功干预分支及原示教；observation keys：原96 RGB、自身状态，另存诊断外部224与腕相机224。
+- Action space：7D；action horizon：沿用记录4步；control frequency：20Hz。
+- Train loss / open-loop error / closed-loop success / latency：本次无新增测量；不重跑策略，不改变模型输入。
+- 新增动作重放入口，核对原记录与额外渲染的状态、观测、奖励和成功标记；远端采集待运行。
+- Failure cases：恢复或渲染非干扰检查失败则停止；腕相机缺失显式报告，额外视角可见不代表模型成功率改善。
+
 ## 2026-09-22 FastWAM单次图像替换实验
 
 - Task suite：Square；dataset size：训练轨迹16的一对分支；observation keys：RGB及9D自身状态。
@@ -1708,6 +1970,15 @@ Use one section per run. Record incomplete or failed runs too.
 - Failure cases：原始图像分支继续失败；初步支持视觉输入干预足以改变本案例结果，不证明视频驱动动作，也不能把原因唯一归为夹爪指令。
 - 当前决定：归档初步结论，暂不执行仅改夹爪指令的对照。
 - [单次图像替换协议](2026-09-22-FastWAM单次图像替换实验.md)。
+
+## 2026-09-22 FastWAM三路未来预测对照
+
+- Task suite：Square；dataset size：轨迹16三类来源，计划164个窗口；observation keys：RGB及9D自身状态。
+- Action space：7D；action horizon：4；control frequency：20Hz。
+- Train loss / open-loop action error / latency：此项无新增测量；closed-loop success：已有接管第85帧失败、第117帧成功，不是新闭环实验。
+- 完成三列独立时间轴、来源核验、各自真实未来对照；6项本地测试及Ruff通过，完整预测尚待远端运行。
+- Failure cases：其他接管起点被排除，不用示教画面填补；视频预测与策略失败的因果关系尚未确定。
+- [三路协议与限制](2026-09-22-FastWAM三路未来预测对照.md)。
 
 ## 2026-09-23 Square图像转换EGL退出清理（Smoke）
 

@@ -43,6 +43,7 @@ datasets/raw/*
 !datasets/raw/.gitkeep
 datasets/lerobot/*
 !datasets/lerobot/.gitkeep
+datasets/derived/
 outputs/*
 !outputs/.gitkeep
 *.pt
@@ -99,3 +100,8 @@ pretrained/vbench_i2v/
 
 # Local publication audit
 docs/superpowers/specs/2026-07-21-public-release-sanitization-design.md
+
+# Reproducible DPPO checkouts; local edits live in third_party/patches/dppo/
+third_party/dppo/
+third_party/dppo_official/
+third_party/dppo_v06/
