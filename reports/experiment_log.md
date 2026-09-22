@@ -1708,3 +1708,15 @@ Use one section per run. Record incomplete or failed runs too.
 - Failure cases：原始图像分支继续失败；初步支持视觉输入干预足以改变本案例结果，不证明视频驱动动作，也不能把原因唯一归为夹爪指令。
 - 当前决定：归档初步结论，暂不执行仅改夹爪指令的对照。
 - [单次图像替换协议](2026-09-22-FastWAM单次图像替换实验.md)。
+
+## 2026-09-23 Square图像转换EGL退出清理（Smoke）
+
+- Task suite：robomimic NutAssemblySquare / mh；dataset size：2条轨迹、250步。
+- Observation keys：agentview_image、robot0_eye_in_hand_image，uint8、224×224×3，全部可读。
+- Action space：7D OSC_POSE；action horizon：逐步转换，无策略chunk；control frequency：20Hz。
+- Train loss / open-loop action error / closed-loop success rate：不适用；latency：未做受控测量。
+- 远端生命周期对照：free→terminate退出码0，反向顺序复现EGL_NOT_INITIALIZED、退出码1。
+- Failure cases：官方写入后析构异常；原进程退出码未知；清理顺序为高可信解释但原时序未追踪。
+- 已新增finally关闭环境的仓库包装入口，不改安装包；修复后远端两轨迹转换完成，清理errors=0、退出码0，用户提供末尾未再出现EGL析构异常。
+- 本地7项生命周期单元测试、Ruff与bash语法检查通过；本地真实转换受依赖阻塞。远端修复后新文件完整性与画面检查尚待执行，前述250步可读结果来自修复前产物。
+- [诊断证据、实现与验证命令](daily/2026-09-23-Square图像转换EGL退出清理修复.md)。

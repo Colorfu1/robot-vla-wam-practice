@@ -1,5 +1,14 @@
 # Robot VLA WAM Practice Agent Notes
 
+## Robomimic EGL Conversion Diagnostic Record
+
+For Square image conversion and exit-time `EGL_NOT_INITIALIZED`, read
+`reports/daily/2026-09-23-Square图像转换EGL退出清理修复.md` before changing dependencies.
+Use `scripts/experiments/rl/run_square_states_to_obs.sh` for the managed converter.
+The cleanup-order mechanism was reproduced; the remote managed two-trajectory
+conversion completed with cleanup errors=0 and exit code 0. The new output still
+needs HDF5 and visual checks. Do not treat this smoke as rollout validation.
+
 ## Project Identity
 
 This is a LeRobot-first practice workspace for robot manipulation, VLA policy
