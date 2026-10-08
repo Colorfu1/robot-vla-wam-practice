@@ -2,11 +2,46 @@ import numpy as np
 import pytest
 
 from robot_practice.experiments.rl.lightwam_train_scene_eval import (
+    egl_worker_log_error,
     match_demo,
     normalize,
     policy_action,
+    simulator_worker_environment,
     summarize,
 )
+
+
+def test_egl_teardown_error_is_not_silently_counted_as_success():
+    assert egl_worker_log_error("Exception ignored in: <function EGLGLContext.__del__>\n"
+                                "EGL_NOT_INITIALIZED")
+    assert egl_worker_log_error("Fatal Python error: Segmentation fault")
+    assert not egl_worker_log_error("Created environment with name NutAssemblySquare\n")
+
+
+def test_egl_worker_uses_unmasked_device_id_without_changing_model_process(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setenv("MUJOCO_EGL_DEVICE_ID", "7")
+    env = simulator_worker_environment("egl", 6)
+    assert env["MUJOCO_GL"] == env["PYOPENGL_PLATFORM"] == "egl"
+    assert env["MUJOCO_EGL_DEVICE_ID"] == "6"
+    assert "CUDA_VISIBLE_DEVICES" not in env
+    assert env["__EGL_VENDOR_LIBRARY_FILENAMES"].endswith("10_nvidia.json")
+    assert __import__("os").environ["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+def test_osmesa_worker_keeps_existing_default(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+    monkeypatch.setenv("MUJOCO_EGL_DEVICE_ID", "6")
+    env = simulator_worker_environment("osmesa", None)
+    assert env["MUJOCO_GL"] == env["PYOPENGL_PLATFORM"] == "osmesa"
+    assert env["CUDA_VISIBLE_DEVICES"] == "2"
+    assert "MUJOCO_EGL_DEVICE_ID" not in env
+
+
+@pytest.mark.parametrize("backend,egl_id", [("egl", None), ("osmesa", 1), ("x11", None)])
+def test_invalid_simulator_backend_selection(backend, egl_id):
+    with pytest.raises(ValueError):
+        simulator_worker_environment(backend, egl_id)
 
 
 def test_mapping_uses_full_actions_not_demo_number():

@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from pathlib import Path
 
@@ -20,6 +21,7 @@ import numpy as np
 
 LOG = logging.getLogger(__name__)
 LOW_DIM = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
+NVIDIA_EGL_VENDOR = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
 
 
 def write_json(path, value):
@@ -102,6 +104,36 @@ def summarize(rewards, successes):
         ),
         "first_success_step": next((i + 1 for i, s in enumerate(successes) if s), None),
     }
+
+
+def simulator_worker_environment(render_backend="osmesa", egl_device_id=None):
+    """Configure only the simulator child; the parent model keeps its CUDA mask."""
+    if render_backend not in ("osmesa", "egl"):
+        raise ValueError(f"Unsupported simulator backend: {render_backend}")
+    if render_backend == "egl" and (not isinstance(egl_device_id, int) or egl_device_id < 0):
+        raise ValueError("EGL requires a nonnegative, mapped EGL device id")
+    if render_backend == "osmesa" and egl_device_id is not None:
+        raise ValueError("OSMesa does not take an EGL device id")
+    env = os.environ.copy()
+    env["MUJOCO_GL"] = env["PYOPENGL_PLATFORM"] = render_backend
+    if render_backend == "egl":
+        # Robosuite 1.4.1 compares MUJOCO_EGL_DEVICE_ID against CUDA_VISIBLE_DEVICES
+        # as a string, even though their indices can refer to different enumerations.
+        env.pop("CUDA_VISIBLE_DEVICES", None)
+        env["MUJOCO_EGL_DEVICE_ID"] = str(egl_device_id)
+        env["__EGL_VENDOR_LIBRARY_FILENAMES"] = NVIDIA_EGL_VENDOR
+        env["PYTHONFAULTHANDLER"] = "1"
+    else:
+        env.pop("MUJOCO_EGL_DEVICE_ID", None)
+    return env
+
+
+def egl_worker_log_error(log_text):
+    """Treat native/atexit errors as failures even when Python exits with code zero."""
+    return any(marker in log_text for marker in (
+        "Exception ignored in", "EGL_NOT_INITIALIZED", "EGL_BAD_DISPLAY",
+        "Fatal Python error", "Segmentation fault",
+    ))
 
 
 def worker(args):
@@ -202,6 +234,15 @@ def worker(args):
                     from robot_practice.experiments.rl.fastwam_dual_data import render_dual_rgb
 
                     result = {"state": obs["state"].copy(), "rgb": render_dual_rgb(env)}
+                elif command == "rendering_info":
+                    context = env.env.sim._render_context_offscreen
+                    gl_context = getattr(context, "gl_ctx", None)
+                    result = {
+                        "backend": os.environ.get("MUJOCO_GL"),
+                        "context_class": type(gl_context).__name__ if gl_context else None,
+                        "egl_device_id": os.environ.get("MUJOCO_EGL_DEVICE_ID"),
+                        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                    }
                 elif command == "capture_start":
                     from robot_practice.experiments.rl.scene_capture import SceneCapture
 
@@ -319,19 +360,22 @@ def worker(args):
 
 
 class Simulator:
-    def __init__(self, args, output, python, root):
+    def __init__(self, args, output, python, root, render_backend="osmesa", egl_device_id=None):
         self.args, self.output, self.python, self.root = args, output, python, root
+        self.render_backend, self.egl_device_id = render_backend, egl_device_id
 
     def __enter__(self):
         from multiprocessing.connection import Listener
 
+        env = simulator_worker_environment(self.render_backend, self.egl_device_id)
+        if self.render_backend == "egl" and not Path(NVIDIA_EGL_VENDOR).is_file():
+            raise FileNotFoundError(NVIDIA_EGL_VENDOR)
         self.temp = tempfile.TemporaryDirectory(prefix="train-scene-")
-        socket = str(Path(self.temp.name) / "worker.sock")
+        socket_path = str(Path(self.temp.name) / "worker.sock")
         auth = os.urandom(32)
-        self.listener = Listener(socket, family="AF_UNIX", authkey=auth)
-        self.listener._listener._socket.settimeout(180)
+        self.listener = Listener(socket_path, family="AF_UNIX", authkey=auth)
+        self.listener._listener._socket.settimeout(2)
         self.log = (self.output / "env_worker.log").open("w")
-        env = dict(os.environ, MUJOCO_GL="osmesa", PYOPENGL_PLATFORM="osmesa")
         command = [
             str(self.python),
             "-u",
@@ -339,7 +383,7 @@ class Simulator:
             __name__,
             "--worker",
             "--socket",
-            socket,
+            socket_path,
             "--auth",
             auth.hex(),
             "--dppo-root",
@@ -359,28 +403,74 @@ class Simulator:
         command[3] = "robot_practice.experiments.rl.lightwam_train_scene_eval"
         if getattr(self.args, "diagnostic_views", False):
             command.append("--diagnostic-views")
-        self.process = subprocess.Popen(command, env=env, stdout=self.log, stderr=subprocess.STDOUT)
         try:
-            self.connection = self.listener.accept()
+            self.process = subprocess.Popen(
+                command, env=env, stdout=self.log, stderr=subprocess.STDOUT
+            )
+        except BaseException:
+            self.listener.close()
+            self.log.close()
+            self.temp.cleanup()
+            raise
+        try:
+            deadline = time.monotonic() + 180
+            while True:
+                try:
+                    self.connection = self.listener.accept()
+                    break
+                except TimeoutError:
+                    code = self.process.poll()
+                    if code is not None:
+                        raise RuntimeError(
+                            f"Simulator exited during startup code={code}; "
+                            f"inspect {self.output / 'env_worker.log'}"
+                        ) from None
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Simulator startup timeout; inspect {self.output / 'env_worker.log'}"
+                        ) from None
             self.audit = self.receive()
         except BaseException:
-            self.__exit__(None, None, None)
+            self.__exit__(*sys.exc_info())
             raise
         return self
 
     def receive(self):
-        if not self.connection.poll(180):
-            raise TimeoutError(f"Simulator timeout; inspect {self.output / 'env_worker.log'}")
-        result = self.connection.recv()
+        deadline = time.monotonic() + 180
+        while not self.connection.poll(5):
+            code = self.process.poll()
+            if code is not None:
+                raise RuntimeError(
+                    f"Simulator exited before reply code={code}; "
+                    f"inspect {self.output / 'env_worker.log'}"
+                )
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Simulator timeout; inspect {self.output / 'env_worker.log'}")
+        try:
+            result = self.connection.recv()
+        except (EOFError, OSError) as exc:
+            try:
+                code = self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                code = self.process.poll()
+            raise RuntimeError(
+                f"Simulator pipe closed code={code}; inspect {self.output / 'env_worker.log'}"
+            ) from exc
         if not result["ok"]:
             raise RuntimeError(result["error"])
         return result["value"]
 
     def call(self, command, value):
-        self.connection.send((command, value))
+        try:
+            self.connection.send((command, value))
+        except (BrokenPipeError, EOFError, OSError) as exc:
+            raise RuntimeError(
+                f"Simulator send failed code={self.process.poll()}; "
+                f"inspect {self.output / 'env_worker.log'}"
+            ) from exc
         return self.receive()
 
-    def __exit__(self, *_):
+    def __exit__(self, exc_type, *_):
         if hasattr(self, "connection"):
             try:
                 self.connection.send(("close", None))
@@ -388,17 +478,27 @@ class Simulator:
                 pass
             self.connection.close()
         try:
-            self.process.wait(timeout=10)
+            code = self.process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             self.process.terminate()
             try:
-                self.process.wait(timeout=10)
+                code = self.process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-                self.process.wait()
+                code = self.process.wait()
         self.listener.close()
         self.log.close()
         self.temp.cleanup()
+        if code != 0 and exc_type is None:
+            raise RuntimeError(
+                f"Simulator cleanup failed code={code}; inspect {self.output / 'env_worker.log'}"
+            )
+        if self.render_backend == "egl" and exc_type is None:
+            log_path = self.output / "env_worker.log"
+            if egl_worker_log_error(log_path.read_text(errors="replace")):
+                raise RuntimeError(
+                    f"Simulator EGL teardown/error marker despite code={code}; inspect {log_path}"
+                )
 
 
 def run(args):

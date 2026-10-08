@@ -1,5 +1,75 @@
 # 实验日志（Experiment Log）
 
+## 2026-09-23 FastWAM执行窗口4/8/16/32配对实验（待远端运行）
+
+- Task suite：Square；dataset size：训练轨迹0的两个已捕获历史分支，控制步124各分4种执行窗口。
+- Observation keys：双224×224图像、9D自身状态、语言；action space：7D归一化OSC_POSE；action horizon：预测32，执行4/8/16/32；control frequency：20Hz；总预算600控制步（含前缀）。
+- 固定checkpoint与噪声种子；前缀物理状态、实际图像及首次动作匹配门控；4步基线需复现原始后缀。8卡EGL各跑一项，视频仅记录真实画面，不做新的GT图像干预。
+- Train loss / open-loop action error：不测；closed-loop success rate / latency：待测。
+- Failure cases：验证闭合是否持续被重规划推迟；长执行窗口也可能放大定位误差，不预设它必然提升成功率。夹持/抬升/掉落需人工核对GIF，不用闭合命令替代。
+- 实现入口：`fastwam_execution_window_probe.py`；本地测试不代表远端实验通过。
+
+## 2026-09-23 FastWAM远期闭合与前4步执行窗口检查（已有产物只读分析）
+
+- Task suite：Square；dataset size：100条训练示教中8个场景、各原始/图像干预两分支。
+- Observation keys：双224×224图像、9D自身状态、语言；action space：7D归一化OSC_POSE；action horizon：32、执行4；control frequency：20Hz。
+- Train loss / open-loop action error / latency：不新增测量；closed-loop success rate：已有产物原始0/8，图像干预2/8，非泛化结果。
+- Failure cases：原始轨迹0和60均没有执行闭合，但分别146/150和112/150次决策包含远期闭合。
+- 轨迹0从124～596的两个分支各119次决策，均只有执行窗口之外的闭合；两个分支的执行与预测前4步一致。其余6条原始轨迹执行过闭合，因此不是全部失败的唯一解释。
+- 8条轨迹双分支均无联合/原生推理前4步夹爪符号分歧。未改协议、未重跑推理，延长执行窗口效果尚未测试。
+- [完整检查记录](2026-09-23-FastWAM闭合计划持续后移检查.md)。
+
+## 2026-09-23 FastWAM双视角闭环未来预测与一次GT图像干预（待远端验证）
+
+- Task suite：robomimic Square；dataset size：100条示教中选8条训练轨迹。
+- Observation keys：双相机原生224×224，横向拼接、9D自身状态、语言；action space：7D归一化OSC_POSE。
+- Action horizon：32，执行前4；control frequency：20Hz；视频9帧、间隔4控制步。
+- 新入口重跑原始闭环，每次决策生成未来帧；另在启发式匹配的决策点仅替换一次GT双相机RGB。恢复动作前缀并验证物理状态/观测，后续自主闭环。视频从不作为控制输入。
+- Train loss：不训练；open-loop action error / closed-loop success rate / latency：本项尚未测量。
+- Failure cases：待远端运行；GT图像可能与物理状态矛盾，闭合命令不等于抓住。旧帧87不直接复用于新轨迹。
+- 本地配对控制、选帧、合并及旧入口回归测试17项通过；完整模型/模拟器尚未验证。
+- 方法与结论边界见[模型验证方法](guides/rl/model_validation_methods.md)。
+
+## 2026-09-23 FastWAM完整20步动作采样autocast对照（待运行）
+
+- Task suite：robomimic Square；dataset size：8条训练轨迹，各32个均匀窗口并补充夹爪指令切换窗口；与训练子集拟合检查采用相同选窗规则。
+- Observation keys：保存的双224×224图像、当前9D自身状态、缓存语言；action space：7D归一化OSC_POSE；action horizon：预测32步，分别统计前4步及全32步；control frequency：源数据20Hz，本实验不执行动作。
+- 固定checkpoint、观测、噪声种子及20步采样，只改变BF16 autocast开关；两侧权重均保持BF16。每个分支重复一次验证可复现性，8卡按轨迹分片。
+- Train loss：不训练；open-loop action error：待测；closed-loop success rate：不测；latency：未测。Failure cases：比较最终动作而非流速度，单次噪声种子与训练子集结果不能直接推出闭环改善。
+
+## 2026-09-23 FastWAM双视角训练与缓存推理数值对照（待运行）
+
+- Task suite：robomimic Square；dataset size：8条训练示教，每条初帧及首次闭合指令附近最多4个窗口；不运行模拟器。
+- Observation keys：双224×224 RGB、9D自身状态、缓存语言；action space：归一化7D；action horizon：32，另统计前4步；control frequency：源数据20Hz，本检查不执行动作。
+- 对照：整段视频首帧latent与单图latent；混合精度联合前向、仅首帧联合前向、KV缓存前向；固定同一带噪动作与条件，并增加重复推理控制。数值为流速度输出，不是最终采样动作。
+- Train loss / open-loop action error / closed-loop success rate：本项不测；latency：未测。Failure cases：待远端结果；本地替身测试只验证诊断编排，不证明真实权重的GPU数值等价。完成状态与等价性结论分开。
+
+## 2026-09-23 FastWAM双视角抓取阶段视频采样审查（待运行）
+
+- Task suite：robomimic Square；dataset size：100条数据统计合法窗口覆盖，8条选定示教导出闭合指令附近连续帧。
+- Observation keys：原生224×224 agentview与腕相机，拼接224×448；9D归一化自身状态。Action space：7D归一化OSC_POSE；action horizon：32；control frequency：20Hz。
+- 比较连续20Hz原图与4种相邻窗口起点的9帧、stride4视频监督；保存无损PNG、逐帧CSV及可交互网页，不调用模型或模拟器。
+- Train loss / open-loop action error / closed-loop success rate：本数据审查不测；latency：待运行。Failure cases：接触、夹稳、抬起及腕相机遮挡待人工标记，不能从闭合指令自动推定；覆盖统计是可能窗口，不是实际训练抽样记录。
+
+## 2026-09-23 FastWAM双相机保存图像与EGL重渲染配对诊断（待运行）
+
+- Task suite：robomimic Square；dataset size：100条中选8条训练示教，在闭合指令前后采样，不将指令切换等同于抓稳。
+- Observation keys：224×224外部及腕相机拼接、9D自身状态、固定语言上下文；两分支固定自身状态与噪声，仅替换RGB。
+- Action space：7D归一化OSC_POSE；action horizon：32，重点统计前4步；control frequency：20Hz，本检查不执行动作。
+- Train loss：不训练；open-loop action error：待测；closed-loop success rate：本检查不测；latency：待测。
+- Failure cases：逐帧检查状态恢复及同输入重复推理误差；保存两种输入图、逐帧夹爪输出和配对动作差。采用8卡EGL；真实结果待远端回传，不据静态诊断直接判定闭环失败根因。
+
+## 2026-09-23 FastWAM双相机训练子集拟合检查（入口已实现，待运行）
+
+- 模式：Offline / Closed-loop diagnostic；结果落点：新输出目录的 `metrics.json`、`open_loop.npz`、逐轨迹真实 `rollout.gif`。
+- Task suite：robomimic Square；dataset size：100条训练示教中选0、10、20、30、40、50、60、70，每条32个均匀窗口并补充夹爪转折窗口。
+- Observation keys：agentview及腕相机，各224×224，左右拼接；9D归一化自身状态；缓存语言上下文。
+- Action space：7D归一化OSC_POSE；action horizon：预测32、执行4；control frequency：20Hz。
+- Train loss：该12小时训练末值约0.03275（综合损失）；本项不训练。Open-loop action error / closed-loop success rate / latency：待测。
+- 校验双视角训练初帧、自身状态及仿真状态；完整真值动作回放成功后再运行600步自主闭环，同时报告400步结果。
+- 执行入口：`fastwam_dual_train_fit_multigpu`，默认8卡按轨迹分片，开环与闭环均并行；采用已验证的GPU/EGL映射及独立模拟器进程，不调用额外GL字符串查询。逐卡日志与总进度持久化，汇总开环误差按窗口计算，闭环按有效场景计算；远端结果待测。
+- Failure cases：示教动作回放失败的场景单列排除，报告实际覆盖数；本实验只判断选定训练子集拟合，不代表全部训练集或泛化能力。
+
 Use one section per run. Record incomplete or failed runs too.
 每条记录必须至少包含：
 

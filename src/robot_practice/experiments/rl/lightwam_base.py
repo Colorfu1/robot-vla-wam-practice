@@ -1169,6 +1169,8 @@ def _build_dppo_square_env(
     num_envs: int,
     max_episode_steps: int,
     action_horizon: int,
+    dual_view: bool = False,
+    env_meta_path: Path | None = None,
 ):
     """Construct the exact official DPPO Square image-wrapper stack.
 
@@ -1205,9 +1207,11 @@ def _build_dppo_square_env(
         vector_module = importlib.import_module("env.gym_utils.async_vector_env")
         make_async = partial(retain_shared_buffers, vector_module, make_async)
 
+    if dual_view and env_meta_path is None:
+        raise ValueError("Dual-view vector environment requires its camera metadata")
     shape_meta = {
         "obs": {
-            "rgb": {"shape": [3, 96, 96]},
+            "rgb": {"shape": [6, 224, 224] if dual_view else [3, 96, 96]},
             "state": {"shape": [9]},
         },
         "action": {"shape": [DEFAULT_ACTION_DIM]},
@@ -1221,7 +1225,10 @@ def _build_dppo_square_env(
                     "robot0_eef_quat",
                     "robot0_gripper_qpos",
                 ],
-                "image_keys": ["agentview_image"],
+                "image_keys": (
+                    ["agentview_image", "robot0_eye_in_hand_image"]
+                    if dual_view else ["agentview_image"]
+                ),
                 "shape_meta": shape_meta,
             },
             "multi_step": {
@@ -1238,7 +1245,7 @@ def _build_dppo_square_env(
         asynchronous=True,
         wrappers=wrappers,
         robomimic_env_cfg_path=str(
-            dppo_root / "cfg/robomimic/env_meta/square-img.json"
+            env_meta_path or dppo_root / "cfg/robomimic/env_meta/square-img.json"
         ),
         use_image_obs=True,
         render_offscreen=True,
@@ -1279,15 +1286,35 @@ def run_dppo_square_env_worker(arguments: argparse.Namespace) -> int:
     listener = Listener(str(socket_path), family="AF_UNIX")
     connection = None
     vector_env = None
+    dual_env_meta_path = None
     try:
         connection = listener.accept()
         try:
+            if getattr(arguments, "dual_view", False):
+                source = dppo_root / "cfg/robomimic/env_meta/square-img.json"
+                env_meta = json.loads(source.read_text())
+                env_meta["env_kwargs"].update(
+                    camera_names=["agentview", "robot0_eye_in_hand"],
+                    camera_heights=224,
+                    camera_widths=224,
+                )
+                if arguments.egl_device_id is not None:
+                    env_meta["env_kwargs"]["render_gpu_device_id"] = int(
+                        arguments.egl_device_id
+                    )
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".json", prefix="square-dual-env-", delete=False
+                ) as stream:
+                    json.dump(env_meta, stream)
+                    dual_env_meta_path = Path(stream.name)
             vector_env = _build_dppo_square_env(
                 dppo_root=dppo_root,
                 normalization_path=normalization_path,
                 num_envs=int(arguments.num_envs),
                 max_episode_steps=int(arguments.max_episode_steps),
                 action_horizon=int(arguments.action_horizon),
+                dual_view=bool(getattr(arguments, "dual_view", False)),
+                env_meta_path=dual_env_meta_path,
             )
             # Diagnostic-only hook; absent for ordinary training/formal evaluation.
             evidence_dir = os.environ.get("ROBOT_PRACTICE_ROLLOUT_FORENSICS")
@@ -1365,12 +1392,16 @@ def run_dppo_square_env_worker(arguments: argparse.Namespace) -> int:
     except EOFError:
         print("LIGHTWAM_SQUARE_ENV_WORKER client disconnected", flush=True)
     finally:
-        if vector_env is not None:
-            vector_env.close()
-        if connection is not None:
-            connection.close()
-        listener.close()
-        socket_path.unlink(missing_ok=True)
+        try:
+            if vector_env is not None:
+                vector_env.close()
+        finally:
+            if dual_env_meta_path is not None:
+                dual_env_meta_path.unlink(missing_ok=True)
+            if connection is not None:
+                connection.close()
+            listener.close()
+            socket_path.unlink(missing_ok=True)
     return 0
 
 
@@ -1436,6 +1467,8 @@ class _DPPOSquareEnvClient:
         action_horizon: int,
         policy_seed: int,
         worker_log: Path,
+        dual_view: bool = False,
+        egl_device_id: int | None = None,
     ) -> None:
         self.dppo_python = dppo_python
         self.dppo_root = dppo_root
@@ -1445,12 +1478,17 @@ class _DPPOSquareEnvClient:
         self.action_horizon = int(action_horizon)
         self.policy_seed = int(policy_seed)
         self.worker_log = worker_log
+        self.dual_view = bool(dual_view)
+        self.egl_device_id = egl_device_id
+        if self.dual_view and (egl_device_id is None or egl_device_id < 0):
+            raise ValueError("Dual-view official evaluation requires a mapped EGL device id")
         self.socket_path = Path(tempfile.gettempdir()) / (
             f"lightwam-square-{os.getpid()}-{uuid.uuid4().hex[:10]}.sock"
         )
         self.process: subprocess.Popen[str] | None = None
         self.connection = None
         self.log_handle = None
+        self.last_worker_exit_code: int | None = None
 
     def __enter__(self):
         from multiprocessing.connection import Client
@@ -1459,7 +1497,14 @@ class _DPPOSquareEnvClient:
             self.worker_log.parent.mkdir(parents=True, exist_ok=True)
             self.log_handle = self.worker_log.open("a", encoding="utf-8")
             source_root = Path(__file__).resolve().parents[4]
-            environment = os.environ.copy()
+            if self.dual_view:
+                from robot_practice.experiments.rl.lightwam_train_scene_eval import (
+                    simulator_worker_environment,
+                )
+
+                environment = simulator_worker_environment("egl", self.egl_device_id)
+            else:
+                environment = os.environ.copy()
             source_path = str(source_root / "src")
             environment["PYTHONPATH"] = source_path + (
                 f":{environment['PYTHONPATH']}" if environment.get("PYTHONPATH") else ""
@@ -1478,6 +1523,8 @@ class _DPPOSquareEnvClient:
                 f"--action-horizon={self.action_horizon}",
                 f"--worker-seed={self.policy_seed}",
             ]
+            if self.dual_view:
+                command.extend(["--dual-view", f"--egl-device-id={self.egl_device_id}"])
             self.process = subprocess.Popen(
                 command,
                 cwd=source_root,
@@ -1544,6 +1591,7 @@ class _DPPOSquareEnvClient:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=10)
+            self.last_worker_exit_code = self.process.returncode
             self.process = None
         if self.log_handle is not None:
             self.log_handle.close()
@@ -1563,6 +1611,18 @@ class _DPPOSquareEnvClient:
                 self._check(reply)
         finally:
             self._cleanup(terminate=exc_type is not None)
+        if self.dual_view and exc_type is None:
+            from robot_practice.experiments.rl.lightwam_train_scene_eval import (
+                egl_worker_log_error,
+            )
+
+            if self.last_worker_exit_code != 0 or egl_worker_log_error(
+                self.worker_log.read_text(errors="replace")
+            ):
+                raise RuntimeError(
+                    "Official dual-view environment worker exited with an EGL/native error; "
+                    f"code={self.last_worker_exit_code}; see {self.worker_log}"
+                )
 
 
 def _summarize_official_square_rollout(
@@ -2277,6 +2337,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--control-socket")
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--worker-seed", type=int)
+    parser.add_argument("--dual-view", action="store_true")
+    parser.add_argument("--egl-device-id", type=int)
     parser.add_argument("--allow-download", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")

@@ -2,6 +2,8 @@
 
 本目录收录 base policy 训练、Residual RL 复现与下游验证的可执行说明。
 
+- [模型验证方法：动作、闭环、未来图像与受控干预](model_validation_methods.md)
+
 - [FastWAM Square原生双视角与32步预测训练](fastwam_square_dual.md)
 
 - [Policy Decorator 在 ManiSkill2 的 Residual RL 复现](policy_decorator_maniskill2_residual_rl.md)

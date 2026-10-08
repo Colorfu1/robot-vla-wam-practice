@@ -11,6 +11,11 @@ needs HDF5 and visual checks. Do not treat this smoke as rollout validation.
 
 ## Project Identity
 
+For model diagnostics (open-loop fitting, closed-loop evaluation, future-image
+previews, and one-shot GT RGB interventions), read
+[Model validation methods](reports/guides/rl/model_validation_methods.md).
+Check each entrypoint's checkpoint/protocol compatibility before reusing it.
+
 This is a LeRobot-first practice workspace for robot manipulation, VLA policy
 experiments, ManiSkill simulation work, and future LIBERO language-conditioned
 manipulation experiments. It is not an upstream LeRobot source checkout. Treat

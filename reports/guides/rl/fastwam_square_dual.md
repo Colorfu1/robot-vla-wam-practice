@@ -61,9 +61,90 @@ conda run --no-capture-output -n fastwam-upstream python -u \
   --output "outputs/fastwam_dual_eval_$(date +%Y%m%d_%H%M%S)"
 ```
 
+### 多卡 EGL 闭环测试（Smoke，待运行）
+
+这次使用最终双相机权重，仍为32步动作预测、只执行前4步、20Hz控制，
+每个策略步从仿真器读取原生agentview和腕相机各224×224图像。
+8张物理GPU各运行一个策略进程和一个DPPO仿真进程；启动器先按PCI身份查询
+物理GPU到CUDA ordinal及EGL ID的映射，不能把这些编号直接视为相同。
+仿真子进程使用NVIDIA-only EGL且取消CUDA_VISIBLE_DEVICES；策略进程仍只看自己的GPU。
+用渲染context的Python类型验证EGL，不调用先前崩溃位置的`glGetString`。
+
+在远端仓库根目录、8卡无其他高显存作业时先跑每卡一例，共8例的稳定性测试：
+
+```bash
+export PYTHONNOUSERSITE=1
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+export CHECKPOINT=outputs/fastwam_dual_b16_acc2_12h_20260922_164223/checkpoints/step_006954.pt
+export OUT="outputs/fastwam_dual_egl8_smoke_$(date +%Y%m%d_%H%M%S)"
+test -s "$CHECKPOINT"
+mkdir -p outputs
+nohup conda run --no-capture-output -n fastwam-upstream python -u \
+  -m robot_practice.experiments.rl.fastwam_dual_eval_multigpu \
+  --checkpoint "$CHECKPOINT" --output "$OUT" \
+  --gpus 0,1,2,3,4,5,6,7 --episodes 8 --seed 10001 --max-steps 600 \
+  --render-backend egl --cpu-threads 2 \
+  --hdf5 datasets/raw/robomimic/square/mh/demo_v141.hdf5 \
+  --normalization datasets/raw/dppo/robomimic/square-img/normalization.npz \
+  > "${OUT}.launch.log" 2>&1 &
+echo "PID=$! RESULT_DIR=$OUT"
+tail -F "${OUT}.launch.log"
+```
+
+`Ctrl-C`只停止tail，不停止nohup任务。先验收`metrics.json`中`status=complete`、
+`evaluated=8`、每个shard退出码0及`rendering.context_class=EGLGLContext`，
+并检查`mapping.log`、各`gpu_*.launch.log`和`gpu_*/env_worker.log`无EGL/readPixels崩溃。
+若这8例通过，再用新输出目录、把`--episodes 8`改为`--episodes 80`运行同一命令；
+80例使用连续seed 10001–10080，汇总分别给出400/600步成功率。
+这两个命令的输出不能覆盖已有OSMesa评测或训练输出。
+
+### 官方 DPPO reset/seed 协议对照
+
+上述10001–10080是我们自定的配对初始状态集合，不是官方DPPO默认80局。
+官方Square evaluator使用`seed=42`、20个异步环境（初始seed42–61）、每个环境
+连续执行400个策略调用；每次执行4个控制动作，100次调用后由官方`MultiStep`
+包装器自动reset，合计20×4=80个完整400控制步episode。
+下面的FastWAM入口复用官方向量环境和成功判据，将8卡各分配连续的2–3个环境。
+双视角输入是FastWAM所需的改动：官方图像包装器先输出6×224×224，策略进程再
+拼成训练时的3×224×448（agentview左、腕相机右）。因此这对齐了环境的seed、
+reset、动作执行和统计协议，但不是把FastWAM变成官方DP模型；两者网络和动作采样仍不同。
+
+先在远端仓库根目录执行三环境、100次调用的非正式smoke，验证最满的单卡分片：
+
+```bash
+export PYTHONNOUSERSITE=1
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+export CHECKPOINT=outputs/fastwam_dual_b16_acc2_12h_20260922_164223/checkpoints/step_006954.pt
+export OUT="outputs/fastwam_dual_official_smoke_$(date +%Y%m%d_%H%M%S)"
+test -s "$CHECKPOINT"
+nohup conda run --no-capture-output -n fastwam-upstream python -u \
+  -m robot_practice.experiments.rl.fastwam_dual_official_multigpu \
+  --checkpoint "$CHECKPOINT" --output "$OUT" --gpus 0 --smoke \
+  > "${OUT}.launch.log" 2>&1 &
+echo "PID=$! RESULT_DIR=$OUT"
+tail -F "${OUT}.launch.log"
+```
+
+只有`status=complete`、`evaluated=3`、退出码0，且`gpu_0/first_observation.png`
+左右相机顺序正确时，才启动完整80局：
+
+```bash
+export OUT="outputs/fastwam_dual_official80_$(date +%Y%m%d_%H%M%S)"
+nohup conda run --no-capture-output -n fastwam-upstream python -u \
+  -m robot_practice.experiments.rl.fastwam_dual_official_multigpu \
+  --checkpoint "$CHECKPOINT" --output "$OUT" --gpus 0,1,2,3,4,5,6,7 \
+  > "${OUT}.launch.log" 2>&1 &
+echo "PID=$! RESULT_DIR=$OUT"
+tail -F "${OUT}.launch.log"
+```
+
+顶层`metrics.json`必须有`status=complete`、`evaluated=80`、20个环境各4局、
+每个shard退出码0；子目录`gpu_*/env_worker.log`不可有native/EGL错误。
+这两个运行使用全新输出目录，不覆盖旧的10001–10080评测。
+
 ## 结果落点
 
-### EGL 数据导出可行性（Smoke，远端待测）
+### EGL 数据导出可行性（Smoke，已测）
 
 生产导出默认仍为 OSMesa。独立目录测试同样的前两条示教：OSMesa 一次、
 NVIDIA-only EGL 三次，每次独立进程。按物理 GPU 索引查询唯一 EGL ID，
@@ -88,16 +169,13 @@ echo "PID=$! RESULT_DIR=$PROBE_OUT"
 小样本通过不保证长跑或多进程 rollout 稳定；并行生产时吞吐受资源竞争影响。
 已有导出入口也支持显式 `--render-backend egl`，但生产切换需另行决定。
 
-本地改动后 OSMesa 导出 127 帧完成；远端 EGL 测试尚未执行。
-
-后续远端 Smoke：OSMesa 250 帧完成，EGL 三次均 SIGSEGV；用户提供的栈均位于
-新增 `glGetString` 信息查询处，该调用在首帧双视角渲染返回之后。
-因此不能把这次失败直接归因于 `mjr_readPixels` 或设备错配。
-可在上述测试命令追加 `--skip-renderer-query` 并使用新的输出目录，
-只跳过两种后端的 renderer 信息查询，保留全部渲染、状态核验与图像对比。
-导出模块也接受同名开关；manifest 标记 `renderer_query=skipped`。
-此对照尚待远端执行，即使通过，实际 GL renderer 身份仍未由查询验证，
-也不代表已确定查询崩溃的底层原因。
+本地OSMesa导出127帧完成。第一次远端Smoke中OSMesa 250帧完成，EGL三次均
+SIGSEGV；栈在新增`glGetString`查询处，不能直接归因于`mjr_readPixels`。
+跳过该查询后的独立远端Smoke：OSMesa 250帧6.26帧/秒；EGL三轮均完成、
+57.8–59.0帧/秒；EGL对OSMesa的agentview平均MAE约0.89/255、腕相机约0.54/255。
+这些是静态状态渲染结果，不证明闭环rollout稳定，也不确定底层查询崩溃原因。
+官方示教图像转换另有两条轨迹的EGL退出清理Smoke，见
+[EGL退出清理记录](../../daily/2026-09-23-Square图像转换EGL退出清理修复.md)。
 
 - 数据：`manifest.json`（相机和时序协议、源及数组哈希、逐轨迹恢复检查）、mmap数组、原生双视角预览PNG。
 - 训练：`metrics.json`、`run.log`、各rank日志、`checkpoints/step_*.pt`及独立恢复状态。
@@ -108,5 +186,5 @@ echo "PID=$! RESULT_DIR=$PROBE_OUT"
 - 导出要求完整动作匹配唯一、状态误差不超过1e-8、自身状态误差不超过1e-3；相机缺失即失败。
 - 训练要求100条轨迹、完整数据manifest及数组哈希通过；恢复训练不能混用新旧协议。
 - Smoke已完成：本地127帧双视角导出；同seed随机重置一致，模拟器返回3×224×448图像并执行4步。相关18项测试通过。
-- 尚未验证：8卡显存、吞吐、完整模型前反向及正式闭环效果。此次Smoke不证明训练收敛或成功率改善。
+- 多卡EGL闭环尚未远端验证；静态EGL导出通过不代表高频闭环读取和退出清理通过。
 - 评测是种子随机重置，不是恢复示教状态；跨模型正式比较需另核验实际初始状态和成功统计口径一致，不只依据相同seed。
