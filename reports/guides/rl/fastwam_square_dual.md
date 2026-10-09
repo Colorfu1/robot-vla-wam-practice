@@ -4,6 +4,15 @@
 
 从原始Wan视频预训练与ActionDiT初始化重新训练，不加载Square step_020262。比较高清双视角与长预测窗口组合配置；不能将收益单独归因于腕相机或分辨率。
 
+## 已测状态（2026-10-08产物复核）
+
+这不是待启动实验：双视角12小时训练已完成6,954更新，实际配置为8卡、每卡16、
+累积2、全局256；每卡32曾OOM。最终`step_006954`在官方环境400步协议0/80，
+选定训练初态600步0/8；EGL多卡闭环有完整退出码0的结果。
+训练集开环、渲染配对、协议/精度对照、一次GT图像干预和执行窗口实验均已有产物，
+见[复核报告](../../daily/2026-10-08-FastWAM历史结果复核与执行窗口分析.md)。
+以下命令是复现入口，不表示需要再次运行。
+
 ## 实验思路
 
 - 保留原100条Square训练轨迹的动作及9D自身状态，按完整动作序列匹配HDF5示教。
@@ -27,17 +36,18 @@ bash scripts/experiments/rl/run_fastwam_square_dual.sh export
 ```bash
 export DUAL_DATA=datasets/derived/square_dual224_v1
 export GPUS=0,1,2,3,4,5,6,7
-export MICROBATCH=2 ACCUMULATION=16
+export MICROBATCH=16 ACCUMULATION=2
 export OUT="outputs/fastwam_square_dual_bench_$(date +%Y%m%d_%H%M%S)"
 bash scripts/experiments/rl/run_fastwam_square_dual.sh benchmark
 ```
 
-上述batch为保守起点，启用梯度检查点；远端显存与吞吐尚未实测。只有benchmark正常完成且显存安全后再训练。
+上述为已有训练成功使用的batch，启用梯度检查点；相同硬件环境变化后仍应先benchmark确认显存安全。
+脚本自身的保守默认值仍为2×16，因此复现时要显式设置这两个环境变量。
 
 ```bash
 export DUAL_DATA=datasets/derived/square_dual224_v1
 export GPUS=0,1,2,3,4,5,6,7
-export MICROBATCH=2 ACCUMULATION=16 TRAIN_HOURS=12
+export MICROBATCH=16 ACCUMULATION=2 TRAIN_HOURS=12
 export OUT="outputs/fastwam_square_dual_train12h_$(date +%Y%m%d_%H%M%S)"
 mkdir -p outputs
 nohup bash scripts/experiments/rl/run_fastwam_square_dual.sh train > "${OUT}.launch.log" 2>&1 &
@@ -61,7 +71,7 @@ conda run --no-capture-output -n fastwam-upstream python -u \
   --output "outputs/fastwam_dual_eval_$(date +%Y%m%d_%H%M%S)"
 ```
 
-### 多卡 EGL 闭环测试（Smoke，待运行）
+### 多卡 EGL 闭环测试（已有完成产物）
 
 这次使用最终双相机权重，仍为32步动作预测、只执行前4步、20Hz控制，
 每个策略步从仿真器读取原生agentview和腕相机各224×224图像。
@@ -186,5 +196,5 @@ SIGSEGV；栈在新增`glGetString`查询处，不能直接归因于`mjr_readPix
 - 导出要求完整动作匹配唯一、状态误差不超过1e-8、自身状态误差不超过1e-3；相机缺失即失败。
 - 训练要求100条轨迹、完整数据manifest及数组哈希通过；恢复训练不能混用新旧协议。
 - Smoke已完成：本地127帧双视角导出；同seed随机重置一致，模拟器返回3×224×448图像并执行4步。相关18项测试通过。
-- 多卡EGL闭环尚未远端验证；静态EGL导出通过不代表高频闭环读取和退出清理通过。
+- 多卡EGL闭环已在模型评测中完成，不能把0成功率误读为渲染进程崩溃；这不保证所有后续版本或环境稳定。
 - 评测是种子随机重置，不是恢复示教状态；跨模型正式比较需另核验实际初始状态和成功统计口径一致，不只依据相同seed。

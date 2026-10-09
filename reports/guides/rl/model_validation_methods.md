@@ -25,6 +25,7 @@ agentview 是外部相机，不应未经核实就称为顶部相机。
 | 视觉输入是否改变闭合行为 | 下述一次性GT图像干预 | 图像预测对动作存在因果控制 |
 | 渲染差异是否影响输出 | 同一GT状态，保存RGB/重渲染RGB配对采样 | 单个后端就是低成功率根因 |
 | 推理实现是否偏离训练 | 固定输入/噪声，分解条件、VAE、缓存、精度差异 | 单步网络差异等于最终动作误差 |
+| 长执行完成抓取后，短重规划是否有利 | 下述同历史切回4步对照 | 已获得通用阶段切换控制器 |
 
 开环至少分开报告前4步与完整预测长度、arm MAE/MSE、夹爪符号准确率、闭合召回、
 闭合样本数、逐轨迹结果；不能把动作误差叫作“开环成功率”。
@@ -75,6 +76,66 @@ GT图像与真实物理状态可能矛盾；夹爪闭合却没抓住不等于未
 即使图像替换同时改变未来预测和动作，也只支持视觉条件影响两种输出，
 不证明“生成视频驱动动作”。少量案例是诊断，不是泛化成功率。
 
+## 验证三：长执行抓取后切回4步重规划
+
+目标：区分“抓取阶段需要完成较长动作段”和“抓取之后也必须保持长执行窗口”。
+模式为 `Closed-loop diagnostic`，不重新训练，不做新的图像或夹爪指令干预。
+
+### 实验思路
+
+1. 从已完成且通过恢复检查的 `original_execute32` 选择一个或多个已抬升候选决策点；
+   选点与阶段门控必须使用同一个高度参照。
+2. 每个点都重放同一XML、初态和**已有策略动作**前缀，不逐帧恢复GT状态。
+3. 先检查前缀一致性、物体高度及双指接触，再分为继续32步或切回4步重规划。
+4. 两侧checkpoint、切换时当前双RGB/自身状态、采样种子和首个32步计划一致。
+5. 总预算仍到绝对控制步600；32步对照还必须精确复现已保存的后缀。
+6. 每控制步保存物理证据；网页仅展示 `ACTUAL`，不将真实画面标作预测。
+
+### 完整命令与产物
+
+当前固定案例的启动命令见[短线执行计划](../../../plans/2026-10-08-FastWAM抓取后短重规划对照.md)。
+当前仅补跑412控制步的执行4/32对照，使用2卡EGL，不是重跑80局评测。
+原脚本 `scripts/experiments/rl/run_fastwam_grasp_handoff.sh` 仍固定380/412共4项，
+不要直接用它做本次补跑。原运行中止原因与结论边界见
+[诊断记录](../../daily/2026-10-09-FastWAM抓取后重规划诊断结论与复现步骤.md)。
+直接命令如下（仓库根目录执行）：
+
+```bash
+export PYTHONNOUSERSITE=1
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 DIFFSYNTH_SKIP_DOWNLOAD=true
+export OMP_NUM_THREADS=2
+export OUT="outputs/fastwam_grasp_handoff412_$(date +%Y%m%d_%H%M%S)"
+mkdir -p outputs
+conda run --no-capture-output -n fastwam-upstream python -u \
+  -m robot_practice.experiments.rl.fastwam_execution_window_probe \
+  --source outputs/fastwam_dual_visual_checks_20260923_102341 \
+  --handoff-source outputs/fastwam_execution_window_probe_20261008_063142/original_execute32 \
+  --trajectory 0 --switch-steps 412 --max-steps 600 \
+  --gpus 0,1 --output "$OUT"
+```
+
+根目录保存 `metrics.json`、`run.log`、`index.html`；每个 `handoff_XXXX_executeK/` 保存：
+
+- `prefix/`、`continuation/`：实际动作及恢复证据，不是示教动作续接。
+- `prefix_stage_evidence.npz`：初态至分支点的物体高度、末端位置、手指关节、双指接触。
+  即使物理阶段门控失败也保留此文件。
+- `stage_evidence.npz`：完整逐控制步物理证据；`plans.npz`：各次32步预测与实际执行长度。
+- `actual_5hz.gif`：切换前32步及后续真实画面，带绝对控制步，不生成未来视频。
+- `metrics.json`：各项门控、首次张开指令、持续接触丢失、物体高度和任务成功。
+
+### 判断标准与边界
+
+- 门控预先固定：分支点最近5个控制端点均比reset物体高度高至少20毫米，
+  且至少3个端点满足robosuite双指接触判据。它是诊断代理指标，不证明稳定抓持。
+- 前缀状态/动作/观测恢复及首次预测逐值一致；
+  同一切换点两侧输入hash一致；32步后缀对照必须逐值一致。
+  任一不通过则停止解释策略差异，先检查恢复证据，不临时放宽门限。
+- 比较切回4步是否持续保持夹持、完成搬运/插入，以及何时再次张开或失去接触。
+  物体下降或接触丢失也可能是正常放置，必须结合实际GIF和任务成功判据解释。
+- 切换后使用实时观测，不输入GT或物理诊断信息；切换时刻来自事后选点，
+  成功也仅支持该案例阶段执行策略有效，不等于学会在线识别抓稳，更不证明视频驱动动作。
+
 ## 已有入口与兼容性
 
 源码均位于 `src/robot_practice/experiments/rl/`：
@@ -85,6 +146,9 @@ GT图像与真实物理状态可能矛盾；夹爪闭合却没抓住不等于未
   4步基线还需复现源轨迹后缀；不重新注入GT图像，也不生成视频参与控制。
   真实GIF以统一5 Hz保存，手指状态和闭合命令单独记录；是否夹住/掉落需人工复核。
   入口默认轨迹0、控制步124、总600步预算；不把不同历史分支的状态视作相同状态。
+  添加 `--handoff-source` 可运行上述抓取后配对续跑；此模式默认切换点380、412，
+  默认需要显式传4张GPU，不沿用普通模式默认的8张；单点412应显式传2张GPU。
+  只接受兼容的已完成original_execute32产物。候选不合格目前仍会触发整组终止，尚未实现自动跳过。
 
 - `fastwam_dual_visual_checks.py`：当前双视角专用预览与一次性图像干预，
   通过 `fastwam_dual_train_fit_multigpu --visual-checks-only` 启动。

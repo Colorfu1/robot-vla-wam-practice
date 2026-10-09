@@ -5,6 +5,21 @@ import numpy as np
 from robot_practice.experiments.rl.rollout_forensics import record
 
 
+def square_snapshot(env):
+    """Passive endpoint evidence, never a policy input or a grasp-success label."""
+    nuts = [nut for nut in env.nuts if nut.name == "SquareNut"]
+    if len(nuts) != 1:
+        raise ValueError("Expected exactly one SquareNut")
+    nut, robot = nuts[0], env.robots[0]
+    data = env.sim.data
+    return {
+        "nut_xyz": np.asarray(data.body_xpos[env.obj_body_id[nut.name]]).tolist(),
+        "eef_xyz": np.asarray(data.site_xpos[robot.eef_site_id]).tolist(),
+        "finger_q": np.asarray(data.qpos[robot._ref_gripper_joint_pos_indexes]).tolist(),
+        "bilateral_contact": bool(env._check_grasp(robot.gripper, nut.contact_geoms)),
+    }
+
+
 def snapshot(env):
     """No forward(), controller update, or state mutation; contacts are endpoint-only."""
     model, data = env.sim.model, env.sim.data

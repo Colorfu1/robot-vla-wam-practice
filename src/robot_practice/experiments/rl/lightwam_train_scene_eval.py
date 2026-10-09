@@ -234,6 +234,10 @@ def worker(args):
                     from robot_practice.experiments.rl.fastwam_dual_data import render_dual_rgb
 
                     result = {"state": obs["state"].copy(), "rgb": render_dual_rgb(env)}
+                elif command == "square_grasp_evidence":
+                    from robot_practice.experiments.rl.grasp_probe import square_snapshot
+
+                    result = square_snapshot(env.env)
                 elif command == "rendering_info":
                     context = env.env.sim._render_context_offscreen
                     gl_context = getattr(context, "gl_ctx", None)
@@ -312,15 +316,20 @@ def worker(args):
                     if not any(x in renderer.lower() for x in ("llvmpipe", "softpipe", "software")):
                         raise ValueError(f"Software renderer not verified: {renderer}")
                     result = {"checks": checks, "renderer": renderer}
-                elif command == "step":
+                elif command in ("step", "step_grasp"):
                     action, expected_frame = value
                     rewards, successes, drift = [], [], []
+                    grasp_evidence = []
                     for offset, a in enumerate(action):
                         if a.shape != (7,) or not np.isfinite(a).all():
                             raise ValueError("Invalid action")
                         obs, reward, _, _ = wrapper.step(a)
                         rewards.append(float(reward))
                         successes.append(bool(env.is_success()["task"]))
+                        if command == "step_grasp":
+                            from robot_practice.experiments.rl.grasp_probe import square_snapshot
+
+                            grasp_evidence.append(square_snapshot(env.env))
                         if capture is not None:
                             capture.step(a, obs, float(reward), successes[-1])
                         if expected_frame is not None:
@@ -342,6 +351,8 @@ def worker(args):
                         "successes": successes,
                         "sim_state_errors": drift,
                     }
+                    if command == "step_grasp":
+                        result["grasp_evidence"] = grasp_evidence
                 else:
                     raise ValueError(command)
                 connection.send({"ok": True, "value": result})
